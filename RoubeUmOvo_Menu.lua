@@ -1,65 +1,62 @@
 --[[
-PSICOSENATICO | Roube um Ovo - Precision Menu V8.2
+PSICOSENATICO | Roube um Ovo - Precision Menu V8.2.1
 Stable loader path: RoubeUmOvo_Menu.lua
 
-V8.2
-- ESP principal por rendimento do pet ($/s), com filtro K/M/B/T.
-- Valor do ovo e peso viraram informacoes opcionais.
-- Risco de fuga usa os modulos reais GuardEscapePrediction/Requirement do jogo.
-- Boost temporario e penalidade de carry entram automaticamente no risco.
-- SpeedMultiplier pre-pickup e estimado por BoundsSize; depois do pickup o servidor continua sendo a fonte real.
-- Filtros removem somente objetos de ESP; nunca destroem o modelo real do ovo.
+- ESP por rendimento do pet ($/s) com filtro K/M/B/T.
+- Valor do ovo e peso opcionais.
+- Risco de fuga usa GuardEscapePrediction/GuardEscapeRequirement.
+- Boost atual entra automaticamente no calculo de risco.
+- Filtros removem somente ESP; nunca o modelo real do ovo.
 ]]
 
 if _G.PSICO_ROUBE_SCANNER_CLEANUP then pcall(_G.PSICO_ROUBE_SCANNER_CLEANUP) end
 if _G.PSICO_ROUBE_MENU_CLEANUP then pcall(_G.PSICO_ROUBE_MENU_CLEANUP) end
 
-local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local CoreGui = game:GetService("CoreGui")
-local UIS = game:GetService("UserInputService")
+local Players=game:GetService("Players")
+local Workspace=game:GetService("Workspace")
+local ReplicatedStorage=game:GetService("ReplicatedStorage")
+local CoreGui=game:GetService("CoreGui")
+local UIS=game:GetService("UserInputService")
+local LP=Players.LocalPlayer
 
-local LP = Players.LocalPlayer
-
-local CONFIG = {
-    EggESP = true,
-    InstantPrompt = true,
-    InstantHit = true,
-    MinRarity = 0,
-    MinEarnings = 0,
-    MinSellPrice = 0,
-    SelectedPet = "",
-    MutationMode = "Todas",
-    PetListAvailableOnly = false,
-    ShowEarnings = true,
-    ShowEggValue = false,
-    ShowWeight = false,
-    ShowRisk = true,
-    BoostAuto = true,
-    MaxEspDistance = 10000,
+local CONFIG={
+    EggESP=true,
+    InstantPrompt=true,
+    InstantHit=true,
+    MinRarity=0,
+    MinEarnings=0,
+    MinSellPrice=0,
+    SelectedPet="",
+    MutationMode="Todas",
+    PetListAvailableOnly=false,
+    ShowEarnings=true,
+    ShowEggValue=false,
+    ShowWeight=false,
+    ShowRisk=true,
+    BoostAuto=true,
+    MaxEspDistance=10000,
 }
 
-local RARITY_ORDER = {
+local RARITY_ORDER={
     "Common","Uncommon","Rare","Epic","Legendary",
     "Mythic","Cosmic","Secret","Eternal","Divine"
 }
 
-local State = {
-    Alive = true,
-    Connections = {},
-    RemoteConnections = {},
-    Eggs = {},
-    CatalogIndex = {},
-    CatalogEntries = {},
-    MutationScalars = {},
-    ESP = {},
-    PromptOriginals = setmetatable({}, {__mode="k"}),
-    BatOriginals = setmetatable({}, {__mode="k"}),
-    WatchedBats = setmetatable({}, {__mode="k"}),
-    AreaParams = {},
-    CarryMultiplier = 1,
-    Stats = {EspVisible=0,CatalogPets=0},
+local State={
+    Alive=true,
+    Connections={},
+    RemoteConnections={},
+    Eggs={},
+    CatalogIndex={},
+    CatalogEntries={},
+    MutationScalars={},
+    ESP={},
+    PromptOriginals=setmetatable({}, {__mode="k"}),
+    BatOriginals=setmetatable({}, {__mode="k"}),
+    WatchedBats=setmetatable({}, {__mode="k"}),
+    AreaParams={},
+    CarryMultiplier=1,
+    Stats={EspVisible=0,CatalogPets=0},
 }
 
 local AssetsData
@@ -71,15 +68,14 @@ local GuardEscapeRequirement
 local TreadmillUtil
 local SpeedPowerProjection
 
-local gui, mainFrame, uiScale, floatButton
-local statusLabel, liveInfoLabel
-local rarityButton, mutationButton, petButton, availabilityButton
-local espToggleButton, promptToggleButton, hitToggleButton
-local petModal, petSearchBox, petList
-local displayToggleButtons = {}
+local gui,mainFrame,uiScale,floatButton
+local statusLabel,liveInfoLabel
+local rarityButton,mutationButton,petButton,availabilityButton
+local espToggleButton,promptToggleButton,hitToggleButton
+local petModal,petSearchBox,petList
 
 local function safeString(v)
-    local ok,s = pcall(tostring,v)
+    local ok,s=pcall(tostring,v)
     return ok and s or "?"
 end
 
@@ -169,11 +165,11 @@ end
 
 local function rarityFallbackColor(rarity)
     local map={
-        Common=Color3.fromRGB(210,210,210), Uncommon=Color3.fromRGB(91,210,116),
-        Rare=Color3.fromRGB(77,151,255), Epic=Color3.fromRGB(181,91,255),
-        Legendary=Color3.fromRGB(255,174,58), Mythic=Color3.fromRGB(255,71,121),
-        Cosmic=Color3.fromRGB(150,67,255), Secret=Color3.fromRGB(245,245,245),
-        Eternal=Color3.fromRGB(245,71,255), Divine=Color3.fromRGB(52,255,238),
+        Common=Color3.fromRGB(210,210,210),Uncommon=Color3.fromRGB(91,210,116),
+        Rare=Color3.fromRGB(77,151,255),Epic=Color3.fromRGB(181,91,255),
+        Legendary=Color3.fromRGB(255,174,58),Mythic=Color3.fromRGB(255,71,121),
+        Cosmic=Color3.fromRGB(150,67,255),Secret=Color3.fromRGB(245,245,245),
+        Eternal=Color3.fromRGB(245,71,255),Divine=Color3.fromRGB(52,255,238),
     }
     return map[rarity] or Color3.fromRGB(230,235,255)
 end
@@ -184,7 +180,10 @@ local function copyMutations(v)
         for _,m in pairs(v) do
             local s=safeString(m)
             local k=normalize(s)
-            if k~="" and not seen[k] then seen[k]=true out[#out+1]=s end
+            if k~="" and not seen[k] then
+                seen[k]=true
+                out[#out+1]=s
+            end
         end
     end
     table.sort(out)
@@ -323,7 +322,6 @@ end
 local function estimateCarryMultiplier(record)
     local mag=boundsMagnitude(record.BoundsSize)
     if not finite(mag) then return nil end
-    -- Ajuste empirico V13: 3 amostras reais, RMSE ~0.00037. O servidor segue sendo a fonte final no pickup.
     return math.clamp(1.0000706-(0.0079809*mag),0.55,0.96)
 end
 
@@ -348,9 +346,7 @@ local function fallbackEarnings(record,cfg)
     local base=cfg and tonumber(cfg.EarningRate)
     local scale=tonumber(record.AssetScale or record.Scale)
     if not (finite(base) and finite(scale) and scale>0) then return nil end
-    local sizeFactor
-    if scale<=5 then sizeFactor=scale^1.85
-    else sizeFactor=(5^1.85)*((scale/5)^1.2) end
+    local sizeFactor=scale<=5 and scale^1.85 or (5^1.85)*((scale/5)^1.2)
     return math.floor(base*sizeFactor*mutationFactor(record)+0.5)
 end
 
@@ -364,30 +360,29 @@ local function resolveEarnings(record,cfg)
         if cfg then probe.DisplayName=probe.DisplayName or cfg.PetName end
         local v,ok=callTableFn(AssetEarnings,"MutationOnlyRatePerSecond",probe)
         v=tonumber(v)
-        if ok and finite(v) and v>=0 then return math.floor(v+0.5),"game" end
+        if ok and finite(v) and v>=0 then return math.floor(v+0.5) end
     end
-    local v=fallbackEarnings(record,cfg)
-    return v,v and "fallback" or nil
+    return fallbackEarnings(record,cfg)
 end
 
-local function enrichRecord(record,source)
+local function enrichRecord(record)
     if typeof(record)~="table" or type(record.Uid)~="string" or not validEggState(record.State) then return false end
     local cfg=findCatalog(record.AssetCategory)
     local weight,wok=callTableFn(EggRecords,"WeightKg",record)
     local weightLabel,lok=callTableFn(EggRecords,"WeightLabel",record)
     local sell,sok=callTableFn(EggRecords,"SellPrice",record)
-    local earnings,earningSource=resolveEarnings(record,cfg)
     State.Eggs[record.Uid]={
-        Uid=record.Uid, Source=source, State=record.State,
-        AreaId=record.AreaId, NestId=record.NestId,
-        AssetCategory=record.AssetCategory, AssetScale=record.AssetScale, NestScale=record.NestScale,
-        BoundsSize=record.BoundsSize,
-        BaseMutation=record.BaseMutation, Mutations=copyMutations(record.Mutations), HasParasite=record.HasParasite==true,
+        Uid=record.Uid,
+        State=record.State,
+        AreaId=record.AreaId,
+        AssetCategory=record.AssetCategory,
+        Mutations=copyMutations(record.Mutations),
+        HasParasite=record.HasParasite==true,
         PetName=cfg and cfg.PetName or record.AssetCategory,
         Rarity=cfg and cfg.Rarity or record.Rarity,
         RarityNumber=cfg and cfg.RarityNumber or nil,
         RarityColor=cfg and cfg.RarityColor or nil,
-        EarningsPerSecond=earnings, EarningsSource=earningSource,
+        EarningsPerSecond=resolveEarnings(record,cfg),
         WeightKg=(wok and finite(tonumber(weight))) and tonumber(weight) or nil,
         WeightLabel=lok and safeString(weightLabel) or nil,
         SellPrice=(sok and finite(tonumber(sell))) and tonumber(sell) or nil,
@@ -400,23 +395,25 @@ local function removeEgg(uid)
     if type(uid)=="string" then State.Eggs[uid]=nil end
 end
 
-local function ingestTree(value,source,seen,depth)
+local function ingestTree(value,seen,depth)
     if typeof(value)~="table" then return 0 end
-    seen=seen or {}; depth=depth or 0
+    seen=seen or {}
+    depth=depth or 0
     if depth>8 or seen[value] then return 0 end
     seen[value]=true
     local found=0
     if type(value.Uid)=="string" and value.State~=nil then
         if validEggState(value.State) then
-            if enrichRecord(value,source) then found=1 end
+            if enrichRecord(value) then found=1 end
         else
             removeEgg(value.Uid)
         end
     else
         local n=0
         for _,child in pairs(value) do
-            n=n+1; if n>2200 then break end
-            if typeof(child)=="table" then found=found+ingestTree(child,source,seen,depth+1) end
+            n=n+1
+            if n>2200 then break end
+            if typeof(child)=="table" then found=found+ingestTree(child,seen,depth+1) end
         end
     end
     seen[value]=nil
@@ -429,7 +426,7 @@ local function requestSnapshots()
         local rf=findExact("RemoteFunction",name)
         if rf then
             local ok,res=pcall(function() return rf:InvokeServer() end)
-            if ok then total=total+ingestTree(res,"snapshot") end
+            if ok then total=total+ingestTree(res) end
         end
     end
     return total
@@ -536,12 +533,12 @@ local function copyTable(t)
 end
 
 local function resolveRisk(egg,visual)
-    if egg.State~="Slot" then return nil,nil end
+    if egg.State~="Slot" then return nil end
     local mult=tonumber(egg.CarryMultiplierEstimate)
     local free=riskFreeWalkSpeed()
-    if not (finite(mult) and finite(free)) then return nil,nil end
+    if not (finite(mult) and finite(free)) then return nil end
     local cached=basePathParams(egg.AreaId)
-    if not cached then return nil,nil end
+    if not cached then return nil end
     local params=copyTable(cached.Params)
     local pos=visualPosition(visual)
     if pos then
@@ -555,20 +552,20 @@ local function resolveRisk(egg,visual)
     params.PlayerWalkSpeed=free*mult
     local result,ok=callTableFn(GuardEscapePrediction,"Resolve",params)
     if ok and typeof(result)=="table" then
-        local outcome=result.Outcome
-        if outcome=="EscapedSafely" then return "Seguro",result end
-        if outcome=="EscapedAtRisk" then return "Arriscado",result end
-        if outcome=="Caught" then return "Alto risco",result end
+        if result.Outcome=="EscapedSafely" then return "Seguro" end
+        if result.Outcome=="EscapedAtRisk" then return "Arriscado" end
+        if result.Outcome=="Caught" then return "Alto risco" end
     end
     local min,okMin=callTableFn(GuardEscapePrediction,"ResolvePlayerWalkSpeedRequirement",params,1)
     local green,okGreen=callTableFn(GuardEscapePrediction,"ResolveGreenPlayerWalkSpeedRequirement",params)
-    min=tonumber(min); green=tonumber(green)
+    min=tonumber(min)
+    green=tonumber(green)
     if okMin and finite(min) then
-        if params.PlayerWalkSpeed<min then return "Alto risco",nil end
-        if okGreen and finite(green) and params.PlayerWalkSpeed<green then return "Arriscado",nil end
-        return "Seguro",nil
+        if params.PlayerWalkSpeed<min then return "Alto risco" end
+        if okGreen and finite(green) and params.PlayerWalkSpeed<green then return "Arriscado" end
+        return "Seguro"
     end
-    return nil,nil
+    return nil
 end
 
 local function currentAreaName()
@@ -622,9 +619,9 @@ local function currentMutationOptions()
     for _,egg in pairs(State.Eggs) do
         for _,m in ipairs(egg.Mutations or {}) do
             local k=normalize(m)
-            if not seen[k] then seen[k]=true out[#out+1]=m end
+            if not seen[k] then seen[k]=true; out[#out+1]=m end
         end
-        if egg.HasParasite and not seen.parasite then seen.parasite=true out[#out+1]="Parasite" end
+        if egg.HasParasite and not seen.parasite then seen.parasite=true; out[#out+1]="Parasite" end
     end
     table.sort(out,function(a,b)
         local fixed={ ["Todas"]=1,["Com mutação"]=2,["Sem mutação"]=3 }
@@ -650,8 +647,9 @@ local function eggPasses(egg)
 end
 
 local function espLines(egg,visual)
-    local lines={}
-    lines[#lines+1]={Text=(egg.PetName or egg.AssetCategory or "Ovo").." • "..(egg.Rarity or "?"),Color=eggColor(egg),Bold=true}
+    local lines={
+        {Text=(egg.PetName or egg.AssetCategory or "Ovo").." • "..(egg.Rarity or "?"),Color=eggColor(egg),Bold=true}
+    }
     if CONFIG.ShowEarnings then
         local e=egg.EarningsPerSecond and ("$"..formatCompact(egg.EarningsPerSecond).."/s") or "$?/s"
         lines[#lines+1]={Text=e.." • "..mutationText(egg),Color=Color3.fromRGB(245,248,255),Bold=true}
@@ -663,10 +661,11 @@ local function espLines(egg,visual)
     if CONFIG.ShowEggValue then
         extra[#extra+1]=egg.SellPrice and ("Ovo $"..formatCompact(egg.SellPrice)) or "Ovo $?"
     end
-    if #extra>0 then lines[#lines+1]={Text=table.concat(extra," • "),Color=Color3.fromRGB(220,228,242)} end
+    if #extra>0 then
+        lines[#lines+1]={Text=table.concat(extra," • "),Color=Color3.fromRGB(220,228,242)}
+    end
     if CONFIG.ShowRisk then
-        local risk,detail=resolveRisk(egg,visual)
-        egg.Risk=risk; egg.RiskDetail=detail
+        local risk=resolveRisk(egg,visual)
         lines[#lines+1]={Text="Risco: "..(risk or "?"),Color=riskColor(risk),Bold=true}
     end
     return lines
@@ -675,7 +674,6 @@ end
 local function destroyEspRecord(uid)
     local rec=State.ESP[uid]
     if not rec then return end
-    -- Visual e o modelo real do jogo: nunca destruir.
     for _,key in ipairs({"Highlight","Billboard"}) do
         local obj=rec[key]
         if typeof(obj)=="Instance" then pcall(function() obj:Destroy() end) end
@@ -686,29 +684,54 @@ end
 local function sweepOwnedESP()
     for uid in pairs(State.ESP) do destroyEspRecord(uid) end
     local owned={PSICO_EGG_HIGHLIGHT=true,PSICO_EGG_BILLBOARD=true}
-    for _,d in ipairs(Workspace:GetDescendants()) do if owned[d.Name] then pcall(function() d:Destroy() end) end end
-    if gui then for _,d in ipairs(gui:GetDescendants()) do if owned[d.Name] then pcall(function() d:Destroy() end) end end end
+    for _,d in ipairs(Workspace:GetDescendants()) do
+        if owned[d.Name] then pcall(function() d:Destroy() end) end
+    end
+    if gui then
+        for _,d in ipairs(gui:GetDescendants()) do
+            if owned[d.Name] then pcall(function() d:Destroy() end) end
+        end
+    end
 end
 
 local function createESP(uid,egg,visual)
     local adornee=getAdornee(visual)
     if not adornee then return end
     local color=eggColor(egg)
+
     local h=Instance.new("Highlight")
-    h.Name="PSICO_EGG_HIGHLIGHT"; h.Adornee=visual; h.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
-    h.FillColor=color; h.OutlineColor=color; h.FillTransparency=.87; h.OutlineTransparency=.12; h.Parent=visual
+    h.Name="PSICO_EGG_HIGHLIGHT"
+    h.Adornee=visual
+    h.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+    h.FillColor=color
+    h.OutlineColor=color
+    h.FillTransparency=.87
+    h.OutlineTransparency=.12
+    h.Parent=visual
 
     local bb=Instance.new("BillboardGui")
-    bb.Name="PSICO_EGG_BILLBOARD"; bb.Adornee=adornee; bb.AlwaysOnTop=true; bb.MaxDistance=CONFIG.MaxEspDistance
-    bb.Size=UDim2.fromOffset(168,54); bb.StudsOffset=Vector3.new(0,1.9,0); bb.Parent=gui
+    bb.Name="PSICO_EGG_BILLBOARD"
+    bb.Adornee=adornee
+    bb.AlwaysOnTop=true
+    bb.MaxDistance=CONFIG.MaxEspDistance
+    bb.Size=UDim2.fromOffset(168,54)
+    bb.StudsOffset=Vector3.new(0,1.9,0)
+    bb.Parent=gui
 
     local labels={}
     for i=1,4 do
         local l=Instance.new("TextLabel")
-        l.BackgroundTransparency=1; l.Position=UDim2.fromOffset(0,(i-1)*13); l.Size=UDim2.new(1,0,0,13)
-        l.Font=Enum.Font.Gotham; l.TextSize=(i==1 and 10 or 9); l.TextXAlignment=Enum.TextXAlignment.Center
-        l.TextColor3=Color3.fromRGB(240,245,255); l.TextStrokeColor3=Color3.new(0,0,0); l.TextStrokeTransparency=.14
-        l.Parent=bb; labels[i]=l
+        l.BackgroundTransparency=1
+        l.Position=UDim2.fromOffset(0,(i-1)*13)
+        l.Size=UDim2.new(1,0,0,13)
+        l.Font=Enum.Font.Gotham
+        l.TextSize=(i==1 and 10 or 9)
+        l.TextXAlignment=Enum.TextXAlignment.Center
+        l.TextColor3=Color3.fromRGB(240,245,255)
+        l.TextStrokeColor3=Color3.new(0,0,0)
+        l.TextStrokeTransparency=.14
+        l.Parent=bb
+        labels[i]=l
     end
     State.ESP[uid]={Highlight=h,Billboard=bb,Visual=visual,Labels=labels}
 end
@@ -716,20 +739,26 @@ end
 local function updateESPRecord(uid,egg,visual)
     local rec=State.ESP[uid]
     if not rec or rec.Visual~=visual or not rec.Highlight.Parent or not rec.Billboard.Parent then
-        destroyEspRecord(uid); createESP(uid,egg,visual); rec=State.ESP[uid]
+        destroyEspRecord(uid)
+        createESP(uid,egg,visual)
+        rec=State.ESP[uid]
     end
     if not rec then return end
     local color=eggColor(egg)
-    rec.Highlight.FillColor=color; rec.Highlight.OutlineColor=color
+    rec.Highlight.FillColor=color
+    rec.Highlight.OutlineColor=color
     local lines=espLines(egg,visual)
     rec.Billboard.Size=UDim2.fromOffset(168,math.max(28,#lines*13+3))
     for i,l in ipairs(rec.Labels) do
         local row=lines[i]
         if row then
-            l.Visible=true; l.Text=row.Text; l.TextColor3=row.Color
+            l.Visible=true
+            l.Text=row.Text
+            l.TextColor3=row.Color
             l.Font=row.Bold and Enum.Font.GothamBold or Enum.Font.Gotham
         else
-            l.Visible=false; l.Text=""
+            l.Visible=false
+            l.Text=""
         end
     end
 end
@@ -741,12 +770,15 @@ local function refreshESP()
         if eggPasses(egg) then
             local visual=visualForUid(uid)
             if visual then
-                keep[uid]=true; visible=visible+1
+                keep[uid]=true
+                visible=visible+1
                 updateESPRecord(uid,egg,visual)
             end
         end
     end
-    for uid in pairs(State.ESP) do if not keep[uid] then destroyEspRecord(uid) end end
+    for uid in pairs(State.ESP) do
+        if not keep[uid] then destroyEspRecord(uid) end
+    end
     State.Stats.EspVisible=visible
 end
 
@@ -761,7 +793,11 @@ end
 local function refreshStatus(extra)
     if not statusLabel then return end
     local slots,dropped=stateCounts()
-    statusLabel.Text=string.format("Ovos:%d • Chão:%d • ESP:%d%s",slots,dropped,State.Stats.EspVisible,extra and (" • "..extra) or "")
+    statusLabel.Text=string.format(
+        "Ovos:%d • Chão:%d • ESP:%d • Catálogo:%d%s",
+        slots,dropped,State.Stats.EspVisible,State.Stats.CatalogPets,
+        extra and (" • "..extra) or ""
+    )
 end
 
 local function refreshLiveInfo()
@@ -785,14 +821,21 @@ end
 local function applyPrompt(prompt)
     if not prompt:IsA("ProximityPrompt") then return end
     local original=State.PromptOriginals[prompt]
-    if not original and prompt.HoldDuration>0 then original=prompt.HoldDuration State.PromptOriginals[prompt]=original end
+    if not original and prompt.HoldDuration>0 then
+        original=prompt.HoldDuration
+        State.PromptOriginals[prompt]=original
+    end
     if CONFIG.InstantPrompt then
         if original and prompt.HoldDuration~=0 then pcall(function() prompt.HoldDuration=0 end) end
-    elseif original then pcall(function() prompt.HoldDuration=original end) end
+    elseif original then
+        pcall(function() prompt.HoldDuration=original end)
+    end
 end
 
 local function refreshPrompts()
-    for _,d in ipairs(Workspace:GetDescendants()) do if d:IsA("ProximityPrompt") then applyPrompt(d) end end
+    for _,d in ipairs(Workspace:GetDescendants()) do
+        if d:IsA("ProximityPrompt") then applyPrompt(d) end
+    end
 end
 
 local BAT_ATTRS={"CooldownActive","CooldownEndTime","CooldownDuration"}
@@ -817,13 +860,17 @@ local function patchBat(tool)
         pcall(function() tool:SetAttribute("CooldownDuration",0) end)
     else
         pcall(function() tool.Enabled=original.Enabled end)
-        for _,a in ipairs(BAT_ATTRS) do pcall(function() tool:SetAttribute(a,original.Attrs[a]) end) end
+        for _,a in ipairs(BAT_ATTRS) do
+            pcall(function() tool:SetAttribute(a,original.Attrs[a]) end)
+        end
     end
     if not State.WatchedBats[tool] then
         State.WatchedBats[tool]=true
         for _,a in ipairs(BAT_ATTRS) do
             connect(tool:GetAttributeChangedSignal(a),function()
-                if State.Alive and CONFIG.InstantHit then task.defer(function() if tool.Parent then patchBat(tool) end end) end
+                if State.Alive and CONFIG.InstantHit then
+                    task.defer(function() if tool.Parent then patchBat(tool) end end)
+                end
             end)
         end
     end
@@ -832,7 +879,11 @@ end
 
 local function refreshBats()
     for _,container in ipairs({LP.Character,LP:FindFirstChildOfClass("Backpack")}) do
-        if container then for _,child in ipairs(container:GetChildren()) do if child:IsA("Tool") then patchBat(child) end end end
+        if container then
+            for _,child in ipairs(container:GetChildren()) do
+                if child:IsA("Tool") then patchBat(child) end
+            end
+        end
     end
 end
 
@@ -840,7 +891,9 @@ local function restoreBats()
     for tool,original in pairs(State.BatOriginals) do
         if tool and tool.Parent then
             pcall(function() tool.Enabled=original.Enabled end)
-            for _,a in ipairs(BAT_ATTRS) do pcall(function() tool:SetAttribute(a,original.Attrs[a]) end) end
+            for _,a in ipairs(BAT_ATTRS) do
+                pcall(function() tool:SetAttribute(a,original.Attrs[a]) end)
+            end
         end
     end
 end
@@ -850,8 +903,11 @@ local function queueRefresh()
     if refreshQueued then return end
     refreshQueued=true
     task.defer(function()
-        task.wait(.05); refreshQueued=false
-        refreshESP(); refreshStatus(); refreshLiveInfo()
+        task.wait(.05)
+        refreshQueued=false
+        refreshESP()
+        refreshStatus()
+        refreshLiveInfo()
     end)
 end
 
@@ -861,17 +917,21 @@ local function hookEggRemotes()
             if d.Name=="RE/EggWorld/FieldEggShifted" then
                 connect(d.OnClientEvent,function(record)
                     if not State.Alive or typeof(record)~="table" then return end
-                    if validEggState(record.State) then enrichRecord(record,"shifted") elseif type(record.Uid)=="string" then removeEgg(record.Uid) end
+                    if validEggState(record.State) then enrichRecord(record)
+                    elseif type(record.Uid)=="string" then removeEgg(record.Uid) end
                     queueRefresh()
                 end,State.RemoteConnections)
             elseif d.Name=="RE/EggWorld/FieldEggBatchShifted" then
                 connect(d.OnClientEvent,function(payload)
                     if not State.Alive or typeof(payload)~="table" then return end
-                    if typeof(payload.RemovedUids)=="table" then for _,uid in pairs(payload.RemovedUids) do removeEgg(uid) end end
+                    if typeof(payload.RemovedUids)=="table" then
+                        for _,uid in pairs(payload.RemovedUids) do removeEgg(uid) end
+                    end
                     if typeof(payload.UpdatedRecords)=="table" then
                         for _,record in pairs(payload.UpdatedRecords) do
                             if typeof(record)=="table" then
-                                if validEggState(record.State) then enrichRecord(record,"batch") elseif type(record.Uid)=="string" then removeEgg(record.Uid) end
+                                if validEggState(record.State) then enrichRecord(record)
+                                elseif type(record.Uid)=="string" then removeEgg(record.Uid) end
                             end
                         end
                     end
@@ -880,20 +940,26 @@ local function hookEggRemotes()
             elseif d.Name=="RE/EggWorld/FieldEggGone" then
                 connect(d.OnClientEvent,function(uid)
                     if typeof(uid)=="table" then uid=uid.Uid end
-                    removeEgg(uid); queueRefresh()
+                    removeEgg(uid)
+                    queueRefresh()
                 end,State.RemoteConnections)
             elseif d.Name=="RE/EggWorld/FieldEggCarry" then
                 connect(d.OnClientEvent,function(payload)
                     if typeof(payload)=="table" then
-                        if payload.IsCarrying==true and finite(tonumber(payload.SpeedMultiplier)) then State.CarryMultiplier=tonumber(payload.SpeedMultiplier)
-                        else State.CarryMultiplier=1 end
+                        if payload.IsCarrying==true and finite(tonumber(payload.SpeedMultiplier)) then
+                            State.CarryMultiplier=tonumber(payload.SpeedMultiplier)
+                        else
+                            State.CarryMultiplier=1
+                        end
                         queueRefresh()
                     end
                 end,State.RemoteConnections)
             elseif d.Name=="RE/EggWorld/OwnerDropped" or d.Name=="RE/EggWorld/OwnerShifted" then
                 connect(d.OnClientEvent,function(...)
                     local args=table.pack(...)
-                    for i=1,args.n do if typeof(args[i])=="table" then ingestTree(args[i],"owner") end end
+                    for i=1,args.n do
+                        if typeof(args[i])=="table" then ingestTree(args[i]) end
+                    end
                     queueRefresh()
                 end,State.RemoteConnections)
             end
@@ -902,38 +968,72 @@ local function hookEggRemotes()
 end
 
 local function round(obj,r)
-    local c=Instance.new("UICorner") c.CornerRadius=UDim.new(0,r or 9) c.Parent=obj
+    local c=Instance.new("UICorner")
+    c.CornerRadius=UDim.new(0,r or 9)
+    c.Parent=obj
 end
 
 local function mkButton(parent,text,pos,size)
     local b=Instance.new("TextButton")
-    b.BackgroundColor3=Color3.fromRGB(35,44,61); b.BorderSizePixel=0; b.Position=pos; b.Size=size
-    b.Font=Enum.Font.GothamMedium; b.Text=text; b.TextColor3=Color3.fromRGB(239,244,255); b.TextSize=10; b.Parent=parent
-    round(b,8); return b
+    b.BackgroundColor3=Color3.fromRGB(35,44,61)
+    b.BorderSizePixel=0
+    b.Position=pos
+    b.Size=size
+    b.Font=Enum.Font.GothamMedium
+    b.Text=text
+    b.TextColor3=Color3.fromRGB(239,244,255)
+    b.TextSize=10
+    b.Parent=parent
+    round(b,8)
+    return b
 end
 
 local function mkLabel(parent,text,pos,size,fontSize)
     local l=Instance.new("TextLabel")
-    l.BackgroundTransparency=1; l.Position=pos; l.Size=size; l.Font=Enum.Font.Gotham; l.Text=text
-    l.TextColor3=Color3.fromRGB(170,184,210); l.TextSize=fontSize or 9; l.TextXAlignment=Enum.TextXAlignment.Left; l.Parent=parent
+    l.BackgroundTransparency=1
+    l.Position=pos
+    l.Size=size
+    l.Font=Enum.Font.Gotham
+    l.Text=text
+    l.TextColor3=Color3.fromRGB(170,184,210)
+    l.TextSize=fontSize or 9
+    l.TextXAlignment=Enum.TextXAlignment.Left
+    l.Parent=parent
     return l
 end
 
 local function mkTextBox(parent,placeholder,pos,size)
     local b=Instance.new("TextBox")
-    b.BackgroundColor3=Color3.fromRGB(31,40,56); b.BorderSizePixel=0; b.Position=pos; b.Size=size; b.Font=Enum.Font.GothamMedium
-    b.Text=""; b.PlaceholderText=placeholder; b.TextColor3=Color3.fromRGB(240,244,255); b.PlaceholderColor3=Color3.fromRGB(115,128,151)
-    b.TextSize=10; b.ClearTextOnFocus=false; b.Parent=parent; round(b,8); return b
+    b.BackgroundColor3=Color3.fromRGB(31,40,56)
+    b.BorderSizePixel=0
+    b.Position=pos
+    b.Size=size
+    b.Font=Enum.Font.GothamMedium
+    b.Text=""
+    b.PlaceholderText=placeholder
+    b.TextColor3=Color3.fromRGB(240,244,255)
+    b.PlaceholderColor3=Color3.fromRGB(115,128,151)
+    b.TextSize=10
+    b.ClearTextOnFocus=false
+    b.Parent=parent
+    round(b,8)
+    return b
 end
 
 local function makeMainToggle(parent,label,y,key)
     local b=mkButton(parent,label,UDim2.fromOffset(0,y),UDim2.new(1,0,0,32))
-    b:SetAttribute("BaseLabel",label); updateToggleVisual(b,CONFIG[key])
+    b:SetAttribute("BaseLabel",label)
+    updateToggleVisual(b,CONFIG[key])
     connect(b.MouseButton1Click,function()
-        CONFIG[key]=not CONFIG[key]; updateToggleVisual(b,CONFIG[key])
-        if key=="EggESP" then if CONFIG.EggESP then refreshESP() else sweepOwnedESP(); State.Stats.EspVisible=0 end
-        elseif key=="InstantPrompt" then refreshPrompts()
-        elseif key=="InstantHit" then if CONFIG.InstantHit then refreshBats() else restoreBats() end end
+        CONFIG[key]=not CONFIG[key]
+        updateToggleVisual(b,CONFIG[key])
+        if key=="EggESP" then
+            if CONFIG.EggESP then refreshESP() else sweepOwnedESP(); State.Stats.EspVisible=0 end
+        elseif key=="InstantPrompt" then
+            refreshPrompts()
+        elseif key=="InstantHit" then
+            if CONFIG.InstantHit then refreshBats() else restoreBats() end
+        end
         refreshStatus()
     end)
     return b
@@ -942,56 +1042,97 @@ end
 local function makeInlineToggle(parent,label,y,key)
     mkLabel(parent,label,UDim2.fromOffset(0,y),UDim2.new(.66,0,0,26),9)
     local b=mkButton(parent,"",UDim2.new(.70,0,0,y),UDim2.new(.30,-4,0,26))
-    displayToggleButtons[key]=b
     local function paint()
         b.Text=CONFIG[key] and "ON" or "OFF"
         b.BackgroundColor3=CONFIG[key] and Color3.fromRGB(42,91,190) or Color3.fromRGB(35,44,61)
     end
     paint()
     connect(b.MouseButton1Click,function()
-        CONFIG[key]=not CONFIG[key]; paint(); refreshESP(); refreshLiveInfo()
+        CONFIG[key]=not CONFIG[key]
+        paint()
+        refreshESP()
+        refreshLiveInfo()
     end)
     return b
 end
 
-for _,oldName in ipairs({"PsicoRoubeUmOvoV82","PsicoRoubeUmOvoV811","PsicoRoubeUmOvoV81","PsicoRoubeUmOvoV8","PsicoRoubeUmOvo"}) do
+for _,oldName in ipairs({"PsicoRoubeUmOvoV821","PsicoRoubeUmOvoV82","PsicoRoubeUmOvoV811","PsicoRoubeUmOvoV81","PsicoRoubeUmOvoV8","PsicoRoubeUmOvo"}) do
     local old=uiParent():FindFirstChild(oldName)
     if old then pcall(function() old:Destroy() end) end
 end
 
 gui=Instance.new("ScreenGui")
-gui.Name="PsicoRoubeUmOvoV82"; gui.ResetOnSpawn=false; gui.IgnoreGuiInset=true; gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling; gui.Parent=uiParent()
+gui.Name="PsicoRoubeUmOvoV821"
+gui.ResetOnSpawn=false
+gui.IgnoreGuiInset=true
+gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
+gui.Parent=uiParent()
 
 mainFrame=Instance.new("Frame")
-mainFrame.Name="Main"; mainFrame.AnchorPoint=Vector2.new(.5,.5); mainFrame.Position=UDim2.fromScale(.5,.5)
-mainFrame.Size=UDim2.fromOffset(455,320); mainFrame.BackgroundColor3=Color3.fromRGB(14,20,32); mainFrame.BorderSizePixel=0; mainFrame.Parent=gui
+mainFrame.Name="Main"
+mainFrame.AnchorPoint=Vector2.new(.5,.5)
+mainFrame.Position=UDim2.fromScale(.5,.5)
+mainFrame.Size=UDim2.fromOffset(455,320)
+mainFrame.BackgroundColor3=Color3.fromRGB(14,20,32)
+mainFrame.BorderSizePixel=0
+mainFrame.Parent=gui
 round(mainFrame,13)
-uiScale=Instance.new("UIScale"); uiScale.Scale=1; uiScale.Parent=mainFrame
-local stroke=Instance.new("UIStroke"); stroke.Thickness=1.1; stroke.Transparency=.28; stroke.Color=Color3.fromRGB(61,118,230); stroke.Parent=mainFrame
+
+uiScale=Instance.new("UIScale")
+uiScale.Scale=1
+uiScale.Parent=mainFrame
+
+local stroke=Instance.new("UIStroke")
+stroke.Thickness=1.1
+stroke.Transparency=.28
+stroke.Color=Color3.fromRGB(61,118,230)
+stroke.Parent=mainFrame
 
 local title=mkLabel(mainFrame,"PSICOSENATICO PANEL",UDim2.fromOffset(12,6),UDim2.new(1,-84,0,20),13)
-title.Font=Enum.Font.GothamBold; title.TextColor3=Color3.fromRGB(242,246,255)
-local version=mkLabel(mainFrame,"V8.2 • EARNINGS + RISK ESP",UDim2.fromOffset(12,24),UDim2.new(1,-84,0,14),8)
+title.Font=Enum.Font.GothamBold
+title.TextColor3=Color3.fromRGB(242,246,255)
+local version=mkLabel(mainFrame,"V8.2.1 • EARNINGS + RISK ESP",UDim2.fromOffset(12,24),UDim2.new(1,-84,0,14),8)
 version.TextColor3=Color3.fromRGB(102,148,232)
 local minimize=mkButton(mainFrame,"—",UDim2.new(1,-62,0,6),UDim2.fromOffset(25,25))
 local close=mkButton(mainFrame,"×",UDim2.new(1,-32,0,6),UDim2.fromOffset(25,25))
 
 local sidebar=Instance.new("Frame")
-sidebar.BackgroundTransparency=1; sidebar.Position=UDim2.fromOffset(10,47); sidebar.Size=UDim2.new(0,104,1,-77); sidebar.Parent=mainFrame
+sidebar.BackgroundTransparency=1
+sidebar.Position=UDim2.fromOffset(10,47)
+sidebar.Size=UDim2.new(0,104,1,-77)
+sidebar.Parent=mainFrame
 local tabMain=mkButton(sidebar,"FUNÇÕES",UDim2.fromOffset(0,0),UDim2.new(1,0,0,42))
 local tabFilters=mkButton(sidebar,"FILTROS ESP",UDim2.fromOffset(0,50),UDim2.new(1,0,0,42))
 
 local contentHost=Instance.new("Frame")
-contentHost.BackgroundColor3=Color3.fromRGB(20,28,43); contentHost.BackgroundTransparency=.12; contentHost.BorderSizePixel=0
-contentHost.Position=UDim2.fromOffset(122,47); contentHost.Size=UDim2.new(1,-132,1,-77); contentHost.Parent=mainFrame; round(contentHost,10)
+contentHost.BackgroundColor3=Color3.fromRGB(20,28,43)
+contentHost.BackgroundTransparency=.12
+contentHost.BorderSizePixel=0
+contentHost.Position=UDim2.fromOffset(122,47)
+contentHost.Size=UDim2.new(1,-132,1,-77)
+contentHost.Parent=mainFrame
+round(contentHost,10)
 
 local mainPage=Instance.new("ScrollingFrame")
-mainPage.BackgroundTransparency=1; mainPage.BorderSizePixel=0; mainPage.Position=UDim2.fromOffset(8,8); mainPage.Size=UDim2.new(1,-16,1,-16)
-mainPage.CanvasSize=UDim2.fromOffset(0,166); mainPage.ScrollBarThickness=3; mainPage.ScrollBarImageColor3=Color3.fromRGB(94,139,223); mainPage.Parent=contentHost
+mainPage.BackgroundTransparency=1
+mainPage.BorderSizePixel=0
+mainPage.Position=UDim2.fromOffset(8,8)
+mainPage.Size=UDim2.new(1,-16,1,-16)
+mainPage.CanvasSize=UDim2.fromOffset(0,166)
+mainPage.ScrollBarThickness=3
+mainPage.ScrollBarImageColor3=Color3.fromRGB(94,139,223)
+mainPage.Parent=contentHost
 
 local filterPage=Instance.new("ScrollingFrame")
-filterPage.BackgroundTransparency=1; filterPage.BorderSizePixel=0; filterPage.Position=UDim2.fromOffset(8,8); filterPage.Size=UDim2.new(1,-16,1,-16)
-filterPage.CanvasSize=UDim2.fromOffset(0,500); filterPage.ScrollBarThickness=3; filterPage.ScrollBarImageColor3=Color3.fromRGB(94,139,223); filterPage.Visible=false; filterPage.Parent=contentHost
+filterPage.BackgroundTransparency=1
+filterPage.BorderSizePixel=0
+filterPage.Position=UDim2.fromOffset(8,8)
+filterPage.Size=UDim2.new(1,-16,1,-16)
+filterPage.CanvasSize=UDim2.fromOffset(0,500)
+filterPage.ScrollBarThickness=3
+filterPage.ScrollBarImageColor3=Color3.fromRGB(94,139,223)
+filterPage.Visible=false
+filterPage.Parent=contentHost
 
 espToggleButton=makeMainToggle(mainPage,"ESP • Ovos",0,"EggESP")
 promptToggleButton=makeMainToggle(mainPage,"Instant Prompt",38,"InstantPrompt")
@@ -1019,19 +1160,27 @@ makeInlineToggle(filterPage,"Mostrar risco",filterY,"ShowRisk"); filterY=filterY
 makeInlineToggle(filterPage,"Boost auto",filterY,"BoostAuto"); filterY=filterY+36
 
 local liveCard=Instance.new("Frame")
-liveCard.Position=UDim2.fromOffset(0,filterY); liveCard.Size=UDim2.new(1,-4,0,72); liveCard.BackgroundColor3=Color3.fromRGB(20,31,50); liveCard.BorderSizePixel=0; liveCard.Parent=filterPage; round(liveCard,9)
+liveCard.Position=UDim2.fromOffset(0,filterY)
+liveCard.Size=UDim2.new(1,-4,0,72)
+liveCard.BackgroundColor3=Color3.fromRGB(20,31,50)
+liveCard.BorderSizePixel=0
+liveCard.Parent=filterPage
+round(liveCard,9)
 liveInfoLabel=mkLabel(liveCard,"Velocidade atual: ?\nBoost: ?\nÁrea: ?\nRisco: AUTO",UDim2.fromOffset(10,7),UDim2.new(1,-20,1,-14),9)
-liveInfoLabel.TextColor3=Color3.fromRGB(176,203,245); liveInfoLabel.TextYAlignment=Enum.TextYAlignment.Top
+liveInfoLabel.TextColor3=Color3.fromRGB(176,203,245)
+liveInfoLabel.TextYAlignment=Enum.TextYAlignment.Top
 filterY=filterY+80
 local resetFilters=mkButton(filterPage,"Limpar filtros",UDim2.fromOffset(0,filterY),UDim2.new(1,-4,0,30)); filterY=filterY+36
 filterPage.CanvasSize=UDim2.fromOffset(0,filterY)
 
 statusLabel=mkLabel(mainFrame,"Carregando dados...",UDim2.new(0,12,1,-24),UDim2.new(1,-24,0,16),8)
-statusLabel.TextXAlignment=Enum.TextXAlignment.Center; statusLabel.TextColor3=Color3.fromRGB(139,164,207)
+statusLabel.TextXAlignment=Enum.TextXAlignment.Center
+statusLabel.TextColor3=Color3.fromRGB(139,164,207)
 
 local function showPage(which)
     local filters=(which=="filters")
-    mainPage.Visible=not filters; filterPage.Visible=filters
+    mainPage.Visible=not filters
+    filterPage.Visible=filters
     tabMain.BackgroundColor3=not filters and Color3.fromRGB(42,91,190) or Color3.fromRGB(35,44,61)
     tabFilters.BackgroundColor3=filters and Color3.fromRGB(42,91,190) or Color3.fromRGB(35,44,61)
 end
@@ -1046,37 +1195,52 @@ local function applyResponsive()
     local heightLimit=math.max(210,vp.Y*.70)
     uiScale.Scale=math.min(widthLimit/455,heightLimit/320,1)
 end
-applyResponsive()
+
 local function attachCameraResize(camera)
     if camera then connect(camera:GetPropertyChangedSignal("ViewportSize"),applyResponsive) end
 end
+
+applyResponsive()
 attachCameraResize(Workspace.CurrentCamera)
 connect(Workspace:GetPropertyChangedSignal("CurrentCamera"),function()
-    task.defer(function() attachCameraResize(Workspace.CurrentCamera); applyResponsive() end)
+    task.defer(function()
+        attachCameraResize(Workspace.CurrentCamera)
+        applyResponsive()
+    end)
 end)
 
 connect(rarityButton.MouseButton1Click,function()
     CONFIG.MinRarity=CONFIG.MinRarity+1
     if CONFIG.MinRarity>#RARITY_ORDER then CONFIG.MinRarity=0 end
     rarityButton.Text=CONFIG.MinRarity==0 and "Todas" or RARITY_ORDER[CONFIG.MinRarity]
-    refreshESP(); refreshStatus()
+    refreshESP()
+    refreshStatus()
 end)
+
 connect(earningBox.FocusLost,function()
     CONFIG.MinEarnings=parseSmartNumber(earningBox.Text)
     earningBox.Text=CONFIG.MinEarnings==0 and "" or formatCompact(CONFIG.MinEarnings)
-    refreshESP(); refreshStatus()
+    refreshESP()
+    refreshStatus()
 end)
+
 connect(valueBox.FocusLost,function()
     CONFIG.MinSellPrice=parseSmartNumber(valueBox.Text)
     valueBox.Text=CONFIG.MinSellPrice==0 and "" or formatCompact(CONFIG.MinSellPrice)
-    refreshESP(); refreshStatus()
+    refreshESP()
+    refreshStatus()
 end)
+
 connect(mutationButton.MouseButton1Click,function()
-    local opts=currentMutationOptions(); local idx=1
+    local opts=currentMutationOptions()
+    local idx=1
     for i,v in ipairs(opts) do if v==CONFIG.MutationMode then idx=i break end end
-    idx=idx+1; if idx>#opts then idx=1 end
-    CONFIG.MutationMode=opts[idx]; mutationButton.Text=CONFIG.MutationMode
-    refreshESP(); refreshStatus()
+    idx=idx+1
+    if idx>#opts then idx=1 end
+    CONFIG.MutationMode=opts[idx]
+    mutationButton.Text=CONFIG.MutationMode
+    refreshESP()
+    refreshStatus()
 end)
 
 local function availablePetNames()
@@ -1091,9 +1255,11 @@ end
 local function catalogForPicker()
     local out,available,seen={},availablePetNames(),{}
     for _,entry in ipairs(State.CatalogEntries) do
-        local name=entry.PetName; local key=normalize(name)
+        local name=entry.PetName
+        local key=normalize(name)
         if name and name~="" and not seen[key] and (not CONFIG.PetListAvailableOnly or available[key]) then
-            seen[key]=true; out[#out+1]=entry
+            seen[key]=true
+            out[#out+1]=entry
         end
     end
     table.sort(out,function(a,b) return lower(a.PetName)<lower(b.PetName) end)
@@ -1101,26 +1267,46 @@ local function catalogForPicker()
 end
 
 local function closePetModal()
-    if petModal then pcall(function() petModal:Destroy() end); petModal=nil; petSearchBox=nil; petList=nil end
+    if petModal then
+        pcall(function() petModal:Destroy() end)
+        petModal=nil
+        petSearchBox=nil
+        petList=nil
+    end
 end
 
 local function buildPetRows(query)
     if not petList then return end
-    for _,child in ipairs(petList:GetChildren()) do if child:IsA("GuiObject") then child:Destroy() end end
-    local y=0; local q=lower(query or "")
+    for _,child in ipairs(petList:GetChildren()) do
+        if child:IsA("GuiObject") then child:Destroy() end
+    end
+    local y=0
+    local q=lower(query or "")
     local all=mkButton(petList,"Todos os pets",UDim2.fromOffset(0,y),UDim2.new(1,-4,0,28))
-    all.TextXAlignment=Enum.TextXAlignment.Left; all.ZIndex=32
+    all.TextXAlignment=Enum.TextXAlignment.Left
+    all.ZIndex=32
     connect(all.MouseButton1Click,function()
-        CONFIG.SelectedPet=""; petButton.Text="Selecionar pet..."; closePetModal(); refreshESP(); refreshStatus()
+        CONFIG.SelectedPet=""
+        petButton.Text="Selecionar pet..."
+        closePetModal()
+        refreshESP()
+        refreshStatus()
     end)
     y=y+32
     for _,entry in ipairs(catalogForPicker()) do
-        local name=safeString(entry.PetName); local rarity=safeString(entry.Rarity or "?")
+        local name=safeString(entry.PetName)
+        local rarity=safeString(entry.Rarity or "?")
         if q=="" or lower(name):find(q,1,true) or lower(rarity):find(q,1,true) then
             local row=mkButton(petList,name.."  •  "..rarity,UDim2.fromOffset(0,y),UDim2.new(1,-4,0,28))
-            row.TextXAlignment=Enum.TextXAlignment.Left; row.ZIndex=32; row.TextColor3=rarityFallbackColor(rarity)
+            row.TextXAlignment=Enum.TextXAlignment.Left
+            row.ZIndex=32
+            row.TextColor3=rarityFallbackColor(rarity)
             connect(row.MouseButton1Click,function()
-                CONFIG.SelectedPet=name; petButton.Text=name; closePetModal(); refreshESP(); refreshStatus()
+                CONFIG.SelectedPet=name
+                petButton.Text=name
+                closePetModal()
+                refreshESP()
+                refreshStatus()
             end)
             y=y+32
         end
@@ -1131,24 +1317,54 @@ end
 local function openPetModal()
     closePetModal()
     petModal=Instance.new("Frame")
-    petModal.Name="PetPicker"; petModal.AnchorPoint=Vector2.new(.5,.5); petModal.Position=UDim2.fromScale(.5,.5); petModal.Size=UDim2.fromOffset(300,224)
-    petModal.BackgroundColor3=Color3.fromRGB(15,22,35); petModal.BorderSizePixel=0; petModal.ZIndex=30; petModal.Parent=gui; round(petModal,11)
-    local ps=Instance.new("UIStroke"); ps.Color=Color3.fromRGB(61,118,230); ps.Transparency=.2; ps.Parent=petModal
-    local modalScale=Instance.new("UIScale"); modalScale.Scale=uiScale.Scale; modalScale.Parent=petModal
+    petModal.Name="PetPicker"
+    petModal.AnchorPoint=Vector2.new(.5,.5)
+    petModal.Position=UDim2.fromScale(.5,.5)
+    petModal.Size=UDim2.fromOffset(300,224)
+    petModal.BackgroundColor3=Color3.fromRGB(15,22,35)
+    petModal.BorderSizePixel=0
+    petModal.ZIndex=30
+    petModal.Parent=gui
+    round(petModal,11)
+
+    local ps=Instance.new("UIStroke")
+    ps.Color=Color3.fromRGB(61,118,230)
+    ps.Transparency=.2
+    ps.Parent=petModal
+
+    local modalScale=Instance.new("UIScale")
+    modalScale.Scale=uiScale.Scale
+    modalScale.Parent=petModal
+
     local pt=mkLabel(petModal,"Selecionar Pet",UDim2.fromOffset(12,7),UDim2.new(1,-50,0,20),12)
-    pt.Font=Enum.Font.GothamBold; pt.TextColor3=Color3.fromRGB(242,246,255)
-    local px=mkButton(petModal,"×",UDim2.new(1,-34,0,6),UDim2.fromOffset(26,26)); px.ZIndex=31; connect(px.MouseButton1Click,closePetModal)
-    petSearchBox=mkTextBox(petModal,"Buscar pet...",UDim2.fromOffset(12,37),UDim2.new(1,-24,0,30)); petSearchBox.ZIndex=31
-    local mode=mkButton(petModal,CONFIG.PetListAvailableOnly and "Só disponíveis agora" or "Todos os pets do jogo",UDim2.fromOffset(12,73),UDim2.new(1,-24,0,28)); mode.ZIndex=31
+    pt.Font=Enum.Font.GothamBold
+    pt.TextColor3=Color3.fromRGB(242,246,255)
+
+    local px=mkButton(petModal,"×",UDim2.new(1,-34,0,6),UDim2.fromOffset(26,26))
+    px.ZIndex=31
+    connect(px.MouseButton1Click,closePetModal)
+
+    petSearchBox=mkTextBox(petModal,"Buscar pet...",UDim2.fromOffset(12,37),UDim2.new(1,-24,0,30))
+    petSearchBox.ZIndex=31
+    local mode=mkButton(petModal,CONFIG.PetListAvailableOnly and "Só disponíveis agora" or "Todos os pets do jogo",UDim2.fromOffset(12,73),UDim2.new(1,-24,0,28))
+    mode.ZIndex=31
     connect(mode.MouseButton1Click,function()
         CONFIG.PetListAvailableOnly=not CONFIG.PetListAvailableOnly
         availabilityButton.Text=CONFIG.PetListAvailableOnly and "Só disponíveis" or "Todos do jogo"
         mode.Text=CONFIG.PetListAvailableOnly and "Só disponíveis agora" or "Todos os pets do jogo"
         buildPetRows(petSearchBox.Text)
     end)
+
     petList=Instance.new("ScrollingFrame")
-    petList.BackgroundTransparency=1; petList.BorderSizePixel=0; petList.Position=UDim2.fromOffset(12,107); petList.Size=UDim2.new(1,-24,1,-119)
-    petList.CanvasSize=UDim2.fromOffset(0,0); petList.ScrollBarThickness=3; petList.ScrollBarImageColor3=Color3.fromRGB(94,139,223); petList.ZIndex=31; petList.Parent=petModal
+    petList.BackgroundTransparency=1
+    petList.BorderSizePixel=0
+    petList.Position=UDim2.fromOffset(12,107)
+    petList.Size=UDim2.new(1,-24,1,-119)
+    petList.CanvasSize=UDim2.fromOffset(0,0)
+    petList.ScrollBarThickness=3
+    petList.ScrollBarImageColor3=Color3.fromRGB(94,139,223)
+    petList.ZIndex=31
+    petList.Parent=petModal
     connect(petSearchBox:GetPropertyChangedSignal("Text"),function() buildPetRows(petSearchBox.Text) end)
     buildPetRows("")
 end
@@ -1158,43 +1374,84 @@ connect(availabilityButton.MouseButton1Click,function()
     CONFIG.PetListAvailableOnly=not CONFIG.PetListAvailableOnly
     availabilityButton.Text=CONFIG.PetListAvailableOnly and "Só disponíveis" or "Todos do jogo"
 end)
+
 connect(resetFilters.MouseButton1Click,function()
-    CONFIG.MinRarity=0; CONFIG.MinEarnings=0; CONFIG.MinSellPrice=0; CONFIG.SelectedPet=""; CONFIG.MutationMode="Todas"; CONFIG.PetListAvailableOnly=false
-    rarityButton.Text="Todas"; mutationButton.Text="Todas"; availabilityButton.Text="Todos do jogo"; petButton.Text="Selecionar pet..."; earningBox.Text=""; valueBox.Text=""
-    refreshESP(); refreshStatus()
-end)
-connect(refreshButton.MouseButton1Click,function()
-    local old=State.Eggs; State.Eggs={}; State.AreaParams={}
-    local n=requestSnapshots()
-    if n==0 and next(old) then State.Eggs=old end
-    refreshESP(); refreshStatus("snapshot:"..tostring(n)); refreshLiveInfo()
+    CONFIG.MinRarity=0
+    CONFIG.MinEarnings=0
+    CONFIG.MinSellPrice=0
+    CONFIG.SelectedPet=""
+    CONFIG.MutationMode="Todas"
+    CONFIG.PetListAvailableOnly=false
+    rarityButton.Text="Todas"
+    mutationButton.Text="Todas"
+    availabilityButton.Text="Todos do jogo"
+    petButton.Text="Selecionar pet..."
+    earningBox.Text=""
+    valueBox.Text=""
+    refreshESP()
+    refreshStatus()
 end)
 
-local dragging=false; local dragInput,dragStart,startPos
+connect(refreshButton.MouseButton1Click,function()
+    local old=State.Eggs
+    State.Eggs={}
+    State.AreaParams={}
+    local n=requestSnapshots()
+    if n==0 and next(old) then State.Eggs=old end
+    refreshESP()
+    refreshStatus("snapshot:"..tostring(n))
+    refreshLiveInfo()
+end)
+
+local dragging=false
+local dragInput,dragStart,startPos
 connect(mainFrame.InputBegan,function(input)
-    if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then dragging=true; dragStart=input.Position; startPos=mainFrame.Position end
+    if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then
+        dragging=true
+        dragStart=input.Position
+        startPos=mainFrame.Position
+    end
 end)
 connect(mainFrame.InputChanged,function(input)
     if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseMovement then dragInput=input end
 end)
 connect(UIS.InputChanged,function(input)
-    if dragging and input==dragInput then local d=input.Position-dragStart; mainFrame.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y) end
+    if dragging and input==dragInput then
+        local d=input.Position-dragStart
+        mainFrame.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y)
+    end
 end)
 connect(UIS.InputEnded,function(input)
     if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then dragging=false end
 end)
 
 floatButton=Instance.new("TextButton")
-floatButton.Name="PSICO_FLOAT"; floatButton.Size=UDim2.fromOffset(46,46); floatButton.Position=UDim2.new(0,18,.5,-23)
-floatButton.BackgroundColor3=Color3.fromRGB(18,42,84); floatButton.BorderSizePixel=0; floatButton.Font=Enum.Font.GothamBold; floatButton.Text="PS"
-floatButton.TextColor3=Color3.fromRGB(240,245,255); floatButton.TextSize=12; floatButton.Visible=false; floatButton.Parent=gui; round(floatButton,23)
-local fdrag=false; local fstart,fpos
+floatButton.Name="PSICO_FLOAT"
+floatButton.Size=UDim2.fromOffset(46,46)
+floatButton.Position=UDim2.new(0,18,.5,-23)
+floatButton.BackgroundColor3=Color3.fromRGB(18,42,84)
+floatButton.BorderSizePixel=0
+floatButton.Font=Enum.Font.GothamBold
+floatButton.Text="PS"
+floatButton.TextColor3=Color3.fromRGB(240,245,255)
+floatButton.TextSize=12
+floatButton.Visible=false
+floatButton.Parent=gui
+round(floatButton,23)
+
+local fdrag=false
+local fstart,fpos
 connect(floatButton.InputBegan,function(input)
-    if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then fdrag=true; fstart=input.Position; fpos=floatButton.Position end
+    if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then
+        fdrag=true
+        fstart=input.Position
+        fpos=floatButton.Position
+    end
 end)
 connect(UIS.InputChanged,function(input)
     if fdrag and (input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseMovement) then
-        local d=input.Position-fstart; floatButton.Position=UDim2.new(fpos.X.Scale,fpos.X.Offset+d.X,fpos.Y.Scale,fpos.Y.Offset+d.Y)
+        local d=input.Position-fstart
+        floatButton.Position=UDim2.new(fpos.X.Scale,fpos.X.Offset+d.X,fpos.Y.Scale,fpos.Y.Offset+d.Y)
     end
 end)
 connect(UIS.InputEnded,function(input)
@@ -1207,12 +1464,18 @@ local function initializeData()
     local ok,err=resolveModules()
     if not ok then refreshStatus("ERRO:"..err); return false end
     if not buildCatalog() then refreshStatus("ERRO:catálogo"); return false end
-    requestSnapshots(); refreshESP(); refreshStatus(); refreshLiveInfo(); return true
+    requestSnapshots()
+    refreshESP()
+    refreshStatus()
+    refreshLiveInfo()
+    return true
 end
 
 hookEggRemotes()
 connect(Workspace.DescendantAdded,function(inst)
-    if inst:IsA("ProximityPrompt") then task.defer(function() if State.Alive then applyPrompt(inst) end end) end
+    if inst:IsA("ProximityPrompt") then
+        task.defer(function() if State.Alive then applyPrompt(inst) end end)
+    end
     if inst.Name=="AreaEggSlotsClient" or (inst.Parent and inst.Parent.Name=="AreaEggSlotsClient") then queueRefresh() end
     if type(inst.Name)=="string" and State.Eggs[inst.Name] then queueRefresh() end
 end)
@@ -1220,21 +1483,39 @@ connect(Workspace.DescendantRemoving,function(inst)
     if type(inst.Name)=="string" and State.Eggs[inst.Name] then queueRefresh() end
 end)
 connect(LP.ChildAdded,function(child)
-    if child:IsA("Backpack") then connect(child.ChildAdded,function(tool) if tool:IsA("Tool") then task.defer(function() patchBat(tool) end) end end) end
+    if child:IsA("Backpack") then
+        connect(child.ChildAdded,function(tool)
+            if tool:IsA("Tool") then task.defer(function() patchBat(tool) end) end
+        end)
+    end
 end)
 connect(LP.CharacterAdded,function(char)
     State.CarryMultiplier=1
-    connect(char.ChildAdded,function(tool) if tool:IsA("Tool") then task.defer(function() patchBat(tool) end) end end)
+    connect(char.ChildAdded,function(tool)
+        if tool:IsA("Tool") then task.defer(function() patchBat(tool) end) end
+    end)
     task.defer(refreshBats)
 end)
 local backpack=LP:FindFirstChildOfClass("Backpack")
-if backpack then connect(backpack.ChildAdded,function(tool) if tool:IsA("Tool") then task.defer(function() patchBat(tool) end) end end) end
-if LP.Character then connect(LP.Character.ChildAdded,function(tool) if tool:IsA("Tool") then task.defer(function() patchBat(tool) end) end end) end
+if backpack then
+    connect(backpack.ChildAdded,function(tool)
+        if tool:IsA("Tool") then task.defer(function() patchBat(tool) end) end
+    end)
+end
+if LP.Character then
+    connect(LP.Character.ChildAdded,function(tool)
+        if tool:IsA("Tool") then task.defer(function() patchBat(tool) end) end
+    end)
+end
 
 local function cleanup()
     if not State.Alive then return end
-    State.Alive=false; closePetModal(); sweepOwnedESP()
-    for prompt,original in pairs(State.PromptOriginals) do if prompt and prompt.Parent then pcall(function() prompt.HoldDuration=original end) end end
+    State.Alive=false
+    closePetModal()
+    sweepOwnedESP()
+    for prompt,original in pairs(State.PromptOriginals) do
+        if prompt and prompt.Parent then pcall(function() prompt.HoldDuration=original end) end
+    end
     restoreBats()
     for _,c in ipairs(State.RemoteConnections) do disconnect(c) end
     for _,c in ipairs(State.Connections) do disconnect(c) end
@@ -1244,17 +1525,24 @@ end
 _G.PSICO_ROUBE_MENU_CLEANUP=cleanup
 connect(close.MouseButton1Click,cleanup)
 
-sweepOwnedESP(); refreshPrompts(); refreshBats()
+sweepOwnedESP()
+refreshPrompts()
+refreshBats()
 updateToggleVisual(espToggleButton,CONFIG.EggESP)
 updateToggleVisual(promptToggleButton,CONFIG.InstantPrompt)
 updateToggleVisual(hitToggleButton,CONFIG.InstantHit)
 
-task.defer(function() task.wait(.4); if State.Alive then initializeData() end end)
+task.defer(function()
+    task.wait(.4)
+    if State.Alive then initializeData() end
+end)
+
 task.defer(function()
     while State.Alive do
         task.wait(.65)
         if CONFIG.EggESP then refreshESP() end
         if CONFIG.InstantHit then refreshBats() end
-        refreshStatus(); refreshLiveInfo()
+        refreshStatus()
+        refreshLiveInfo()
     end
 end)

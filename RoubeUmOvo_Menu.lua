@@ -1,11 +1,14 @@
 --[[
-PSICOSENATICO | Roube um Ovo - Precision Menu V8.2.1
+PSICOSENATICO | Roube um Ovo - Precision Menu V8.3
 Stable loader path: RoubeUmOvo_Menu.lua
 
-- ESP por rendimento do pet ($/s) com filtro K/M/B/T.
-- Valor do ovo e peso opcionais.
-- Risco de fuga usa GuardEscapePrediction/GuardEscapeRequirement.
-- Boost atual entra automaticamente no calculo de risco.
+- ESP por rendimento do pet ($/s), raridade, mutacao e filtros K/M/B/T.
+- Valor do ovo e peso continuam opcionais.
+- O risco agora usa velocidade efetiva carregando x referencia oficial da area.
+- Raridade e valor do pet NAO entram como penalidade de transporte.
+- Penalidade estimada usa tamanho fisico do ovo, com piso observado de x0.67.
+- Boost atual entra automaticamente no calculo quando Boost auto esta ligado.
+- GuardEscapePrediction fica somente como dado auxiliar; nao decide mais o risco principal.
 - Filtros removem somente ESP; nunca o modelo real do ovo.
 ]]
 
@@ -42,6 +45,22 @@ local RARITY_ORDER={
     "Mythic","Cosmic","Secret","Eternal","Divine"
 }
 
+-- Valores encontrados no proprio cliente do jogo (RequiredSpeedPowerByAreaId).
+local AREA_REQUIRED_POWER={
+    Forest=11,
+    Lake=900,
+    Desert=10000,
+    Jungle=40000,
+    Snow=170000,
+    Volcano=700000,
+    ["Abyss Ocean"]=2500000,
+    Prehistoric=18000000,
+    Cosmic=700000000,
+    ["Cherry Blossom"]=2500000000,
+    ["Titan Temple"]=7000000000,
+    ["Light Dark"]=20000000000,
+}
+
 local State={
     Alive=true,
     Connections={},
@@ -54,8 +73,9 @@ local State={
     PromptOriginals=setmetatable({}, {__mode="k"}),
     BatOriginals=setmetatable({}, {__mode="k"}),
     WatchedBats=setmetatable({}, {__mode="k"}),
-    AreaParams={},
     CarryMultiplier=1,
+    LastCarryUid=nil,
+    LastCarryServerMultiplier=nil,
     Stats={EspVisible=0,CatalogPets=0},
 }
 
@@ -64,7 +84,6 @@ local EggRecords
 local AssetEarnings
 local MutationCatalog
 local GuardEscapePrediction
-local GuardEscapeRequirement
 local TreadmillUtil
 local SpeedPowerProjection
 
@@ -223,7 +242,6 @@ local function resolveModules()
     AssetEarnings=requireOptional("Shared.Util.AssetEarnings")
     MutationCatalog=requireOptional("Shared.Modules.Mutations.Catalog")
     GuardEscapePrediction=requireOptional("Shared.Modules.GuardAreas.GuardEscapePrediction")
-    GuardEscapeRequirement=requireOptional("Shared.Modules.GuardAreas.GuardEscapeRequirement")
     TreadmillUtil=requireOptional("Shared.Util.TreadmillUtil")
     SpeedPowerProjection=requireOptional("Client.SpeedPowerProjection")
     indexMutationScalars()
@@ -322,7 +340,9 @@ end
 local function estimateCarryMultiplier(record)
     local mag=boundsMagnitude(record.BoundsSize)
     if not finite(mag) then return nil end
-    return math.clamp(1.0000706-(0.0079809*mag),0.55,0.96)
+    -- O V13 observou x0.9593 em ~5.11 studs, x0.7783 em ~26.72 e piso x0.67 em ovo gigante.
+    -- Mantemos a regressao mais ampla ja usada, corrigindo o piso que antes estava pessimista em x0.55.
+    return math.clamp(1.0000706-(0.0079809*mag),0.67,0.96)
 end
 
 local function mutationFactor(record)
@@ -387,6 +407,7 @@ local function enrichRecord(record)
         WeightLabel=lok and safeString(weightLabel) or nil,
         SellPrice=(sok and finite(tonumber(sell))) and tonumber(sell) or nil,
         CarryMultiplierEstimate=estimateCarryMultiplier(record),
+        BoundsMagnitude=boundsMagnitude(record.BoundsSize),
     }
     return true
 end
@@ -486,6 +507,15 @@ local function currentBoostFactor()
     return nil
 end
 
+local function areaRequiredWalkSpeed(areaId)
+    local power=AREA_REQUIRED_POWER[areaId]
+    if not finite(power) then return nil,nil end
+    local walk,ok=callTableFn(TreadmillUtil,"SpeedPowerToWalkSpeed",power)
+    walk=tonumber(walk)
+    if ok and finite(walk) and walk>0 then return walk,power end
+    return nil,power
+end
+
 local function guardAreaRoot()
     return findPath(Workspace,"__OBJECTS.Areas.GuardAreas")
 end
@@ -494,78 +524,6 @@ local function separationLine()
     local areas=findPath(Workspace,"__OBJECTS.Areas")
     local p=areas and areas:FindFirstChild("SeparationLine")
     return p and p:IsA("BasePart") and p or nil
-end
-
-local function guardPosition(areaModel)
-    if not areaModel then return nil end
-    local preferred=areaModel:FindFirstChild("Guard") or areaModel:FindFirstChild("ForestGuardAuthored")
-    if preferred then
-        if preferred:IsA("BasePart") then return preferred.Position end
-        if preferred:IsA("Model") then
-            local ok,cf=pcall(preferred.GetPivot,preferred)
-            if ok then return cf.Position end
-        end
-    end
-    for _,d in ipairs(areaModel:GetDescendants()) do
-        if (d.Name=="HumanoidRootPart" or d.Name=="CENTER" or d.Name=="Root") and d:IsA("BasePart") then return d.Position end
-    end
-    return nil
-end
-
-local function basePathParams(areaId)
-    if State.AreaParams[areaId] then return State.AreaParams[areaId] end
-    if typeof(GuardEscapeRequirement)~="table" then return nil end
-    local root=guardAreaRoot()
-    local area=root and root:FindFirstChild(areaId)
-    local line=separationLine()
-    local gpos=guardPosition(area)
-    if not (area and line and gpos) then return nil end
-    local params,ok=callTableFn(GuardEscapeRequirement,"BuildPathParameters",area,gpos,line)
-    if not ok or typeof(params)~="table" then return nil end
-    State.AreaParams[areaId]={Area=area,Params=params}
-    return State.AreaParams[areaId]
-end
-
-local function copyTable(t)
-    local o={}
-    for k,v in pairs(t or {}) do o[k]=v end
-    return o
-end
-
-local function resolveRisk(egg,visual)
-    if egg.State~="Slot" then return nil end
-    local mult=tonumber(egg.CarryMultiplierEstimate)
-    local free=riskFreeWalkSpeed()
-    if not (finite(mult) and finite(free)) then return nil end
-    local cached=basePathParams(egg.AreaId)
-    if not cached then return nil end
-    local params=copyTable(cached.Params)
-    local pos=visualPosition(visual)
-    if pos then
-        params.PlayerStartPosition=pos
-        local bounds=cached.Area:FindFirstChild("Bounds")
-        if bounds and bounds:IsA("BasePart") and typeof(GuardEscapePrediction)=="table" then
-            local dist,ok=callTableFn(GuardEscapePrediction,"ResolveExitDistance",bounds.CFrame,bounds.Size,pos,params.ExitDirection)
-            if ok and finite(tonumber(dist)) then params.ExitDistance=tonumber(dist) end
-        end
-    end
-    params.PlayerWalkSpeed=free*mult
-    local result,ok=callTableFn(GuardEscapePrediction,"Resolve",params)
-    if ok and typeof(result)=="table" then
-        if result.Outcome=="EscapedSafely" then return "Seguro" end
-        if result.Outcome=="EscapedAtRisk" then return "Arriscado" end
-        if result.Outcome=="Caught" then return "Alto risco" end
-    end
-    local min,okMin=callTableFn(GuardEscapePrediction,"ResolvePlayerWalkSpeedRequirement",params,1)
-    local green,okGreen=callTableFn(GuardEscapePrediction,"ResolveGreenPlayerWalkSpeedRequirement",params)
-    min=tonumber(min)
-    green=tonumber(green)
-    if okMin and finite(min) then
-        if params.PlayerWalkSpeed<min then return "Alto risco" end
-        if okGreen and finite(green) and params.PlayerWalkSpeed<green then return "Arriscado" end
-        return "Seguro"
-    end
-    return nil
 end
 
 local function currentAreaName()
@@ -584,10 +542,93 @@ local function currentAreaName()
     return "Safe / corredor"
 end
 
+local function contactOutcomeFor(egg,visual,carryWalk)
+    -- Auxiliar apenas: se falhar ou estiver indisponivel, o risco principal continua funcionando.
+    if typeof(GuardEscapePrediction)~="table" or type(GuardEscapePrediction.Resolve)~="function" then return nil end
+    local areas=guardAreaRoot()
+    local area=areas and areas:FindFirstChild(egg.AreaId or "")
+    local bounds=area and area:FindFirstChild("Bounds")
+    local guard=area and (area:FindFirstChild("Guard") or area:FindFirstChild("ForestGuardAuthored"))
+    local pos=visualPosition(visual)
+    if not (bounds and bounds:IsA("BasePart") and guard and pos and finite(carryWalk)) then return nil end
+
+    local guardPos
+    if guard:IsA("BasePart") then guardPos=guard.Position
+    elseif guard:IsA("Model") then
+        local ok,cf=pcall(guard.GetPivot,guard)
+        if ok then guardPos=cf.Position end
+    end
+    if not guardPos then return nil end
+
+    local exitDirection=-bounds.CFrame.LookVector
+    local exitDistance,okDist=callTableFn(GuardEscapePrediction,"ResolveExitDistance",bounds.CFrame,bounds.Size,pos,exitDirection)
+    exitDistance=tonumber(exitDistance)
+    if not (okDist and finite(exitDistance)) then return nil end
+
+    local baseGuardWalk=tonumber(guard:GetAttribute("WalkSpeed"))
+    if not finite(baseGuardWalk) and guard:IsA("Model") then
+        local hum=guard:FindFirstChildOfClass("Humanoid")
+        baseGuardWalk=hum and tonumber(hum.WalkSpeed) or nil
+    end
+    if not finite(baseGuardWalk) or baseGuardWalk<=0 then return nil end
+
+    local result,ok=callTableFn(GuardEscapePrediction,"Resolve",{
+        BaseGuardWalkSpeed=baseGuardWalk,
+        ExitDirection=exitDirection,
+        ExitDistance=exitDistance,
+        FlatRadius=tonumber(guard:GetAttribute("FlatRadius")) or 10,
+        GuardStartPosition=guardPos,
+        HitDistance=tonumber(guard:GetAttribute("HitDistance")) or 10,
+        PlayerWalkSpeed=carryWalk,
+        PlayerStartPosition=pos,
+    })
+    return ok and typeof(result)=="table" and result.Outcome or nil
+end
+
+local function resolveRisk(egg,visual)
+    local mult=tonumber(egg.CarryMultiplierEstimate)
+    local free=riskFreeWalkSpeed()
+    local required,requiredPower=areaRequiredWalkSpeed(egg.AreaId)
+    if not (finite(mult) and finite(free) and finite(required) and required>0) then return nil end
+
+    local carry=free*mult
+    local ratio=carry/required
+    local label
+    if ratio>=1 then label="Seguro"
+    elseif ratio>=0.90 then label="Viável"
+    elseif ratio>=0.80 then label="Arriscado"
+    else label="Alto risco" end
+
+    local line=separationLine()
+    local pos=visualPosition(visual)
+    local distance,timeToSafe
+    if line and pos then
+        local a=Vector3.new(pos.X,0,pos.Z)
+        local b=Vector3.new(line.Position.X,0,line.Position.Z)
+        distance=(a-b).Magnitude
+        if carry>0 then timeToSafe=distance/carry end
+    end
+
+    return {
+        Label=label,
+        Ratio=ratio,
+        FreeWalk=free,
+        CarryWalk=carry,
+        RequiredWalk=required,
+        RequiredPower=requiredPower,
+        Multiplier=mult,
+        Distance=distance,
+        TimeToSafe=timeToSafe,
+        ContactOutcome=contactOutcomeFor(egg,visual,carry),
+    }
+end
+
 local function riskColor(risk)
-    if risk=="Seguro" then return Color3.fromRGB(75,255,111) end
-    if risk=="Arriscado" then return Color3.fromRGB(255,197,63) end
-    if risk=="Alto risco" then return Color3.fromRGB(255,82,82) end
+    local label=typeof(risk)=="table" and risk.Label or risk
+    if label=="Seguro" then return Color3.fromRGB(75,255,111) end
+    if label=="Viável" then return Color3.fromRGB(97,220,255) end
+    if label=="Arriscado" then return Color3.fromRGB(255,197,63) end
+    if label=="Alto risco" then return Color3.fromRGB(255,82,82) end
     return Color3.fromRGB(205,215,235)
 end
 
@@ -666,7 +707,16 @@ local function espLines(egg,visual)
     end
     if CONFIG.ShowRisk then
         local risk=resolveRisk(egg,visual)
-        lines[#lines+1]={Text="Risco: "..(risk or "?"),Color=riskColor(risk),Bold=true}
+        if risk then
+            local pct=math.floor(risk.Ratio*100+0.5)
+            lines[#lines+1]={
+                Text=string.format("%s • %d%% • x%.3f",risk.Label,pct,risk.Multiplier),
+                Color=riskColor(risk),
+                Bold=true,
+            }
+        else
+            lines[#lines+1]={Text="Viabilidade: ?",Color=riskColor(nil),Bold=true}
+        end
     end
     return lines
 end
@@ -714,7 +764,7 @@ local function createESP(uid,egg,visual)
     bb.Adornee=adornee
     bb.AlwaysOnTop=true
     bb.MaxDistance=CONFIG.MaxEspDistance
-    bb.Size=UDim2.fromOffset(168,54)
+    bb.Size=UDim2.fromOffset(172,54)
     bb.StudsOffset=Vector3.new(0,1.9,0)
     bb.Parent=gui
 
@@ -748,7 +798,7 @@ local function updateESPRecord(uid,egg,visual)
     rec.Highlight.FillColor=color
     rec.Highlight.OutlineColor=color
     local lines=espLines(egg,visual)
-    rec.Billboard.Size=UDim2.fromOffset(168,math.max(28,#lines*13+3))
+    rec.Billboard.Size=UDim2.fromOffset(172,math.max(28,#lines*13+3))
     for i,l in ipairs(rec.Labels) do
         local row=lines[i]
         if row then
@@ -802,12 +852,25 @@ end
 
 local function refreshLiveInfo()
     if not liveInfoLabel then return end
-    local p=readSpeedPower()
+    local power=readSpeedPower()
+    local free=riskFreeWalkSpeed()
     local boost=currentBoostFactor()
-    liveInfoLabel.Text="Velocidade atual: "..(p and formatCompact(p) or "?")
-        .."\nBoost: "..(boost and ("x"..string.format("%.2f",boost)) or "?")
-        .."\nÁrea: "..currentAreaName()
-        .."\nRisco: "..((GuardEscapePrediction and GuardEscapeRequirement) and "AUTO" or "indisponível")
+    local area=currentAreaName()
+    local required,requiredPower=areaRequiredWalkSpeed(area)
+
+    local refText="?"
+    if finite(required) then
+        refText=string.format("%.0f Walk",required)
+        if finite(requiredPower) then refText=refText.." ("..formatCompact(requiredPower)..")" end
+    elseif area=="Safe / corredor" then
+        refText="sem exigência"
+    end
+
+    liveInfoLabel.Text="Speed Power: "..(power and formatCompact(power) or "?")
+        .."\nWalk livre: "..(free and string.format("%.0f",free) or "?")
+        .." • Boost "..(boost and ("x"..string.format("%.2f",boost)) or "?")
+        .."\nÁrea: "..area
+        .."\nReferência: "..refText
 end
 
 local function updateToggleVisual(btn,on)
@@ -948,8 +1011,11 @@ local function hookEggRemotes()
                     if typeof(payload)=="table" then
                         if payload.IsCarrying==true and finite(tonumber(payload.SpeedMultiplier)) then
                             State.CarryMultiplier=tonumber(payload.SpeedMultiplier)
+                            State.LastCarryUid=payload.Uid
+                            State.LastCarryServerMultiplier=State.CarryMultiplier
                         else
                             State.CarryMultiplier=1
+                            State.LastCarryUid=nil
                         end
                         queueRefresh()
                     end
@@ -1056,13 +1122,13 @@ local function makeInlineToggle(parent,label,y,key)
     return b
 end
 
-for _,oldName in ipairs({"PsicoRoubeUmOvoV821","PsicoRoubeUmOvoV82","PsicoRoubeUmOvoV811","PsicoRoubeUmOvoV81","PsicoRoubeUmOvoV8","PsicoRoubeUmOvo"}) do
+for _,oldName in ipairs({"PsicoRoubeUmOvoV83","PsicoRoubeUmOvoV821","PsicoRoubeUmOvoV82","PsicoRoubeUmOvoV811","PsicoRoubeUmOvoV81","PsicoRoubeUmOvoV8","PsicoRoubeUmOvo"}) do
     local old=uiParent():FindFirstChild(oldName)
     if old then pcall(function() old:Destroy() end) end
 end
 
 gui=Instance.new("ScreenGui")
-gui.Name="PsicoRoubeUmOvoV821"
+gui.Name="PsicoRoubeUmOvoV83"
 gui.ResetOnSpawn=false
 gui.IgnoreGuiInset=true
 gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
@@ -1091,7 +1157,7 @@ stroke.Parent=mainFrame
 local title=mkLabel(mainFrame,"PSICOSENATICO PANEL",UDim2.fromOffset(12,6),UDim2.new(1,-84,0,20),13)
 title.Font=Enum.Font.GothamBold
 title.TextColor3=Color3.fromRGB(242,246,255)
-local version=mkLabel(mainFrame,"V8.2.1 • EARNINGS + RISK ESP",UDim2.fromOffset(12,24),UDim2.new(1,-84,0,14),8)
+local version=mkLabel(mainFrame,"V8.3 • CARRY MARGIN",UDim2.fromOffset(12,24),UDim2.new(1,-84,0,14),8)
 version.TextColor3=Color3.fromRGB(102,148,232)
 local minimize=mkButton(mainFrame,"—",UDim2.new(1,-62,0,6),UDim2.fromOffset(25,25))
 local close=mkButton(mainFrame,"×",UDim2.new(1,-32,0,6),UDim2.fromOffset(25,25))
@@ -1128,7 +1194,7 @@ filterPage.BackgroundTransparency=1
 filterPage.BorderSizePixel=0
 filterPage.Position=UDim2.fromOffset(8,8)
 filterPage.Size=UDim2.new(1,-16,1,-16)
-filterPage.CanvasSize=UDim2.fromOffset(0,500)
+filterPage.CanvasSize=UDim2.fromOffset(0,520)
 filterPage.ScrollBarThickness=3
 filterPage.ScrollBarImageColor3=Color3.fromRGB(94,139,223)
 filterPage.Visible=false
@@ -1156,20 +1222,20 @@ mutationButton=mkButton(filterPage,"Todas",UDim2.new(.47,0,0,filterY),UDim2.new(
 makeInlineToggle(filterPage,"Mostrar $/s do pet",filterY,"ShowEarnings"); filterY=filterY+30
 makeInlineToggle(filterPage,"Mostrar valor do ovo",filterY,"ShowEggValue"); filterY=filterY+30
 makeInlineToggle(filterPage,"Mostrar peso",filterY,"ShowWeight"); filterY=filterY+30
-makeInlineToggle(filterPage,"Mostrar risco",filterY,"ShowRisk"); filterY=filterY+30
-makeInlineToggle(filterPage,"Boost auto",filterY,"BoostAuto"); filterY=filterY+36
+makeInlineToggle(filterPage,"Mostrar viabilidade",filterY,"ShowRisk"); filterY=filterY+30
+makeInlineToggle(filterPage,"Usar boost atual",filterY,"BoostAuto"); filterY=filterY+36
 
 local liveCard=Instance.new("Frame")
 liveCard.Position=UDim2.fromOffset(0,filterY)
-liveCard.Size=UDim2.new(1,-4,0,72)
+liveCard.Size=UDim2.new(1,-4,0,82)
 liveCard.BackgroundColor3=Color3.fromRGB(20,31,50)
 liveCard.BorderSizePixel=0
 liveCard.Parent=filterPage
 round(liveCard,9)
-liveInfoLabel=mkLabel(liveCard,"Velocidade atual: ?\nBoost: ?\nÁrea: ?\nRisco: AUTO",UDim2.fromOffset(10,7),UDim2.new(1,-20,1,-14),9)
+liveInfoLabel=mkLabel(liveCard,"Speed Power: ?\nWalk livre: ?\nÁrea: ?\nReferência: ?",UDim2.fromOffset(10,7),UDim2.new(1,-20,1,-14),9)
 liveInfoLabel.TextColor3=Color3.fromRGB(176,203,245)
 liveInfoLabel.TextYAlignment=Enum.TextYAlignment.Top
-filterY=filterY+80
+filterY=filterY+90
 local resetFilters=mkButton(filterPage,"Limpar filtros",UDim2.fromOffset(0,filterY),UDim2.new(1,-4,0,30)); filterY=filterY+36
 filterPage.CanvasSize=UDim2.fromOffset(0,filterY)
 
@@ -1395,7 +1461,6 @@ end)
 connect(refreshButton.MouseButton1Click,function()
     local old=State.Eggs
     State.Eggs={}
-    State.AreaParams={}
     local n=requestSnapshots()
     if n==0 and next(old) then State.Eggs=old end
     refreshESP()
@@ -1491,6 +1556,7 @@ connect(LP.ChildAdded,function(child)
 end)
 connect(LP.CharacterAdded,function(char)
     State.CarryMultiplier=1
+    State.LastCarryUid=nil
     connect(char.ChildAdded,function(tool)
         if tool:IsA("Tool") then task.defer(function() patchBat(tool) end) end
     end)

@@ -1,9 +1,12 @@
 --[[
-PSICOSENATICO | Roube um Ovo - Scanner V2
-Targeted passive scanner for dropped-item lifecycle and bat cooldown.
-Does not fire remotes or modify gameplay state.
+PSICOSENATICO | Roube um Ovo - Menu V2
+Built from passive Scan V2 data.
+Stable loader path: RoubeUmOvo_ScannerV2.lua
 ]]
 
+if _G.PSICO_ROUBE_MENU_CLEANUP then
+    pcall(_G.PSICO_ROUBE_MENU_CLEANUP)
+end
 if _G.PSICO_ROUBE_SCANNER_V2 then
     pcall(function() _G.PSICO_ROUBE_SCANNER_V2:Destroy() end)
     _G.PSICO_ROUBE_SCANNER_V2 = nil
@@ -12,208 +15,194 @@ end
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 
 local LP = Players.LocalPlayer
-local startedClock = os.clock()
-local startedUnix = os.time()
-local connections = {}
-local trackedRoots = setmetatable({}, {__mode = "k"})
-local trackedTools = setmetatable({}, {__mode = "k"})
-local running = true
 
-local REPORT = {
-    version = "Scanner V2",
-    meta = {
-        placeId = game.PlaceId,
-        gameId = game.GameId,
-        jobId = game.JobId,
-        startedUnix = startedUnix,
-    },
-    remoteEvents = {},
-    rootEvents = {},
-    rootSamples = {},
-    batEvents = {},
-    promptEvents = {},
-    summary = {},
+local CONFIG = {
+    InstantPrompt = true,
+    DropESP = true,
+    InstantHit = true,
 }
 
-local TARGET_REMOTE_NAMES = {
-    ["RE/EggWorld/OwnerDropped"] = true,
-    ["RE/EggWorld/OwnerShifted"] = true,
-    ["RE/EggWorld/FieldEggGone"] = true,
-    ["RE/EggWorld/FieldEggShifted"] = true,
-    ["RE/EggWorld/FieldEggCarry"] = true,
-    ["RE/EggWorld/FieldEggBatchShifted"] = true,
-    ["RE/EggWorld/FieldEggRedeemVerdict"] = true,
-    ["RE/BatSwing/Trigger"] = true,
-    ["RE/GearSatchel/Gained"] = true,
-    ["RE/GearSatchel/Lost"] = true,
+local State = {
+    Alive = true,
+    Connections = {},
+    RemoteConnections = {},
+    PromptOriginals = setmetatable({}, {__mode="k"}),
+    BatHooks = setmetatable({}, {__mode="k"}),
+    BatPatching = setmetatable({}, {__mode="k"}),
+    Drops = {},
+    ESP = {},
 }
 
 local function connect(signal, fn)
     local c = signal:Connect(fn)
-    table.insert(connections, c)
+    table.insert(State.Connections, c)
     return c
 end
 
-local function tnow()
-    return os.clock() - startedClock
+local function disconnect(c)
+    pcall(function() c:Disconnect() end)
 end
 
-local function fullname(inst)
-    local ok, value = pcall(function() return inst:GetFullName() end)
-    return ok and value or (inst and inst.Name or "?")
+local function parentGui()
+    local ok, h = pcall(function()
+        if gethui then return gethui() end
+    end)
+    return (ok and h) or CoreGui
 end
 
-local function attrs(inst)
-    local out = {}
-    local ok, a = pcall(function() return inst:GetAttributes() end)
-    if ok then
-        for k,v in pairs(a) do
-            local tv = typeof(v)
-            if tv == "string" or tv == "number" or tv == "boolean" then
-                out[k] = v
-            elseif tv == "Vector3" then
-                out[k] = {x=v.X,y=v.Y,z=v.Z}
-            elseif tv == "Color3" then
-                out[k] = {r=v.R,g=v.G,b=v.B}
-            else
-                out[k] = tostring(v)
+-- Instant Prompt -------------------------------------------------------------
+
+local function applyPrompt(prompt)
+    if not prompt:IsA("ProximityPrompt") then return end
+    if State.PromptOriginals[prompt] == nil then
+        State.PromptOriginals[prompt] = prompt.HoldDuration
+    end
+    if CONFIG.InstantPrompt then
+        pcall(function() prompt.HoldDuration = 0 end)
+    else
+        local original = State.PromptOriginals[prompt]
+        if original ~= nil then
+            pcall(function() prompt.HoldDuration = original end)
+        end
+    end
+end
+
+local function refreshPrompts()
+    for _, d in ipairs(Workspace:GetDescendants()) do
+        if d:IsA("ProximityPrompt") then
+            applyPrompt(d)
+        end
+    end
+end
+
+connect(Workspace.DescendantAdded, function(d)
+    if d:IsA("ProximityPrompt") then
+        task.defer(function()
+            if State.Alive and d.Parent then applyPrompt(d) end
+        end)
+    end
+end)
+
+-- Dropped Item ESP ------------------------------------------------------------
+
+local function getAdornee(model)
+    if not model then return nil end
+    if model:IsA("BasePart") then return model end
+    return model.PrimaryPart
+        or model:FindFirstChild("Hitbox", true)
+        or model:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function destroyESP(uid)
+    local rec = State.ESP[uid]
+    if not rec then return end
+    if rec.highlight then pcall(function() rec.highlight:Destroy() end) end
+    if rec.billboard then pcall(function() rec.billboard:Destroy() end) end
+    State.ESP[uid] = nil
+end
+
+local function createESP(uid)
+    destroyESP(uid)
+    if not CONFIG.DropESP then return end
+
+    local drop = State.Drops[uid]
+    if not drop or drop.State ~= "Dropped" then return end
+
+    local model = Workspace:FindFirstChild(uid)
+    if not model then return end
+
+    local adornee = getAdornee(model)
+    if not adornee then return end
+
+    local h = Instance.new("Highlight")
+    h.Name = "PsicoDropESP"
+    h.Adornee = model
+    h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    h.FillColor = Color3.fromRGB(255, 179, 71)
+    h.OutlineColor = Color3.fromRGB(255, 239, 190)
+    h.FillTransparency = 0.62
+    h.OutlineTransparency = 0
+    h.Parent = model
+
+    local b = Instance.new("BillboardGui")
+    b.Name = "PsicoDropLabel"
+    b.Adornee = adornee
+    b.AlwaysOnTop = true
+    b.MaxDistance = 1200
+    b.Size = UDim2.fromOffset(150, 28)
+    b.StudsOffset = Vector3.new(0, 2.2, 0)
+    b.Parent = adornee
+
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.fromScale(1,1)
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 12
+    label.TextColor3 = Color3.fromRGB(255, 238, 190)
+    label.TextStrokeTransparency = 0.25
+    label.Text = tostring(drop.AssetCategory or "Item") .. " • DROP"
+    label.Parent = b
+
+    State.ESP[uid] = {
+        model = model,
+        highlight = h,
+        billboard = b,
+    }
+end
+
+local function clearAllESP()
+    local uids = {}
+    for uid in pairs(State.ESP) do table.insert(uids, uid) end
+    for _, uid in ipairs(uids) do destroyESP(uid) end
+end
+
+local function setDropRecord(record)
+    if typeof(record) ~= "table" then return end
+    local uid = record.Uid
+    if type(uid) ~= "string" or uid == "" then return end
+
+    if record.State == "Dropped" then
+        State.Drops[uid] = record
+        task.defer(function()
+            if State.Alive then
+                task.wait()
+                createESP(uid)
+            end
+        end)
+    else
+        State.Drops[uid] = nil
+        destroyESP(uid)
+    end
+end
+
+local function onFieldEggGone(uid)
+    if type(uid) ~= "string" then return end
+    State.Drops[uid] = nil
+    destroyESP(uid)
+end
+
+local function onFieldEggBatchShifted(payload)
+    if typeof(payload) ~= "table" then return end
+
+    local removed = payload.RemovedUids
+    if typeof(removed) == "table" then
+        for _, uid in pairs(removed) do
+            if type(uid) == "string" then
+                State.Drops[uid] = nil
+                destroyESP(uid)
             end
         end
     end
-    return out
-end
 
-local function pos(inst)
-    if not inst then return nil end
-    if inst:IsA("BasePart") then
-        local p = inst.Position
-        return {x=p.X,y=p.Y,z=p.Z}
-    elseif inst:IsA("Model") then
-        local ok, cf = pcall(function() return inst:GetPivot() end)
-        if ok then
-            local p = cf.Position
-            return {x=p.X,y=p.Y,z=p.Z}
-        end
-    elseif inst:IsA("Tool") then
-        local h = inst:FindFirstChild("Handle") or inst:FindFirstChildWhichIsA("BasePart", true)
-        if h then
-            local p = h.Position
-            return {x=p.X,y=p.Y,z=p.Z}
-        end
-    end
-    return nil
-end
-
-local function isHex32(s)
-    return type(s)=="string" and #s==32 and string.match(s, "^[0-9a-fA-F]+$") ~= nil
-end
-
-local function hasHitbox(inst)
-    return inst and inst:FindFirstChild("Hitbox", true) ~= nil
-end
-
-local function rootCandidate(inst)
-    if not inst or inst.Parent ~= Workspace then return false end
-    if inst:IsA("Model") or inst:IsA("Tool") or inst:IsA("BasePart") then
-        return isHex32(inst.Name) or hasHitbox(inst)
-    end
-    return false
-end
-
-local function describeRoot(root)
-    if not root then return nil end
-    local out = {
-        name = root.Name,
-        class = root.ClassName,
-        path = fullname(root),
-        attributes = attrs(root),
-        position = pos(root),
-        descendants = {},
-    }
-    local n = 0
-    for _,d in ipairs(root:GetDescendants()) do
-        n += 1
-        if n > 180 then break end
-        local rec = {name=d.Name,class=d.ClassName,path=fullname(d),attributes=attrs(d)}
-        if d:IsA("BasePart") then rec.position = pos(d) end
-        if d:IsA("ValueBase") then
-            local ok,v = pcall(function() return d.Value end)
-            if ok then
-                local tv=typeof(v)
-                rec.value=(tv=="string" or tv=="number" or tv=="boolean") and v or tostring(v)
-            end
-        end
-        table.insert(out.descendants, rec)
-    end
-    return out
-end
-
-local function describeTool(tool)
-    return {
-        name = tool.Name,
-        path = fullname(tool),
-        parent = tool.Parent and fullname(tool.Parent) or nil,
-        attributes = attrs(tool),
-        enabled = tool.Enabled,
-        position = pos(tool),
-    }
-end
-
-local function serialize(v, depth, seen)
-    depth = depth or 0
-    seen = seen or {}
-    if depth > 5 then return "<max-depth>" end
-    local tv = typeof(v)
-    if tv == "nil" then return nil end
-    if tv == "string" or tv == "number" or tv == "boolean" then return v end
-    if tv == "Instance" then
-        return {__type="Instance",name=v.Name,class=v.ClassName,path=fullname(v),attributes=attrs(v),position=pos(v)}
-    end
-    if tv == "Vector3" then return {__type="Vector3",x=v.X,y=v.Y,z=v.Z} end
-    if tv == "Vector2" then return {__type="Vector2",x=v.X,y=v.Y} end
-    if tv == "CFrame" then local p=v.Position return {__type="CFrame",x=p.X,y=p.Y,z=p.Z} end
-    if tv == "Color3" then return {__type="Color3",r=v.R,g=v.G,b=v.B} end
-    if tv == "EnumItem" then return tostring(v) end
-    if tv == "table" then
-        if seen[v] then return "<cycle>" end
-        seen[v]=true
-        local out={}
-        local count=0
-        for k,val in pairs(v) do
-            count += 1
-            if count > 80 then break end
-            out[tostring(k)] = serialize(val, depth+1, seen)
-        end
-        seen[v]=nil
-        return out
-    end
-    return tostring(v)
-end
-
-local function add(list, rec, maxn)
-    table.insert(list, rec)
-    if #list > (maxn or 1200) then table.remove(list,1) end
-end
-
-local function eventArgs(...)
-    local packed = table.pack(...)
-    local out = {n=packed.n, values={}}
-    for i=1,packed.n do
-        out.values[i] = serialize(packed[i])
-    end
-    return out
-end
-
-local function findRemoteExact(name)
-    for _,d in ipairs(ReplicatedStorage:GetDescendants()) do
-        if d:IsA("RemoteEvent") and d.Name == name then
-            return d
+    local updated = payload.UpdatedRecords
+    if typeof(updated) == "table" then
+        for _, record in pairs(updated) do
+            setDropRecord(record)
         end
     end
 end
@@ -221,285 +210,415 @@ end
 local hookedRemotes = {}
 local function hookRemote(remote)
     if hookedRemotes[remote] then return end
-    hookedRemotes[remote]=true
-    connect(remote.OnClientEvent, function(...)
-        if not running then return end
-        add(REPORT.remoteEvents, {
-            t=tnow(),
-            name=remote.Name,
-            path=fullname(remote),
-            args=eventArgs(...),
-        })
-    end)
+    hookedRemotes[remote] = true
+
+    if remote.Name == "RE/EggWorld/FieldEggShifted" then
+        table.insert(State.RemoteConnections, remote.OnClientEvent:Connect(setDropRecord))
+    elseif remote.Name == "RE/EggWorld/FieldEggGone" then
+        table.insert(State.RemoteConnections, remote.OnClientEvent:Connect(onFieldEggGone))
+    elseif remote.Name == "RE/EggWorld/FieldEggBatchShifted" then
+        table.insert(State.RemoteConnections, remote.OnClientEvent:Connect(onFieldEggBatchShifted))
+    end
 end
 
-local function hookTargetRemotes()
-    for _,d in ipairs(ReplicatedStorage:GetDescendants()) do
-        if d:IsA("RemoteEvent") and TARGET_REMOTE_NAMES[d.Name] then
+local TARGET_REMOTES = {
+    ["RE/EggWorld/FieldEggShifted"] = true,
+    ["RE/EggWorld/FieldEggGone"] = true,
+    ["RE/EggWorld/FieldEggBatchShifted"] = true,
+}
+
+local function hookDropRemotes()
+    for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+        if d:IsA("RemoteEvent") and TARGET_REMOTES[d.Name] then
             hookRemote(d)
         end
     end
 end
 
-local function hookRoot(root, source)
-    if trackedRoots[root] then return end
-    trackedRoots[root] = true
-    add(REPORT.rootEvents, {t=tnow(),kind="root_seen",source=source,root=describeRoot(root)})
-    connect(root.AncestryChanged, function(_,parent)
-        if not running then return end
-        add(REPORT.rootEvents, {
-            t=tnow(),
-            kind=parent and "root_moved" or "root_removed",
-            root=describeRoot(root),
-            newParent=parent and fullname(parent) or nil,
-        })
-    end)
-end
-
-local function scanRoots()
-    for _,child in ipairs(Workspace:GetChildren()) do
-        if rootCandidate(child) then hookRoot(child,"initial") end
+connect(ReplicatedStorage.DescendantAdded, function(d)
+    if d:IsA("RemoteEvent") and TARGET_REMOTES[d.Name] then
+        hookRemote(d)
     end
-end
+end)
 
-local function isBat(tool)
-    if not tool or not tool:IsA("Tool") then return false end
-    local a=attrs(tool)
-    return a.IsBat == true or tostring(a.GearName or ""):lower():find("bat",1,true) ~= nil
-end
-
-local function hookBat(tool)
-    if trackedTools[tool] or not isBat(tool) then return end
-    trackedTools[tool]=true
-    local function rec(kind)
-        if running then add(REPORT.batEvents,{t=tnow(),kind=kind,tool=describeTool(tool)}) end
-    end
-    rec("bat_seen")
-    connect(tool.Activated,function() rec("activated") end)
-    connect(tool.Deactivated,function() rec("deactivated") end)
-    for _,name in ipairs({"CooldownActive","CooldownEndTime","CooldownDuration","Uses"}) do
-        connect(tool:GetAttributeChangedSignal(name),function() rec("attr_"..name) end)
-    end
-    connect(tool.AncestryChanged,function() rec("ancestry") end)
-end
-
-local function scanBats()
-    local backpack=LP:FindFirstChildOfClass("Backpack")
-    if backpack then
-        for _,d in ipairs(backpack:GetChildren()) do if d:IsA("Tool") then hookBat(d) end end
-    end
-    if LP.Character then
-        for _,d in ipairs(LP.Character:GetChildren()) do if d:IsA("Tool") then hookBat(d) end end
-    end
-end
-
-local function hookPrompts()
-    for _,d in ipairs(Workspace:GetDescendants()) do
-        if d:IsA("ProximityPrompt") and d.HoldDuration > 0 then
-            local p=d
-            connect(p.Triggered,function(player)
-                if running then
-                    add(REPORT.promptEvents,{t=tnow(),kind="triggered",localPlayer=player==LP,prompt={name=p.Name,path=fullname(p),actionText=p.ActionText,objectText=p.ObjectText,holdDuration=p.HoldDuration,parent=p.Parent and fullname(p.Parent) or nil}})
-                end
-            end)
-        end
-    end
-end
-
-connect(Workspace.ChildAdded,function(child)
-    if not running then return end
-    if rootCandidate(child) then
+connect(Workspace.ChildAdded, function(child)
+    local uid = child.Name
+    if State.Drops[uid] and State.Drops[uid].State == "Dropped" then
         task.defer(function()
-            if child.Parent==Workspace then hookRoot(child,"child_added") end
+            if State.Alive and child.Parent == Workspace then createESP(uid) end
         end)
     end
 end)
 
-connect(Workspace.ChildRemoved,function(child)
-    if not running then return end
-    if trackedRoots[child] or isHex32(child.Name) or hasHitbox(child) then
-        add(REPORT.rootEvents,{t=tnow(),kind="workspace_child_removed",root=describeRoot(child)})
+connect(Workspace.ChildRemoved, function(child)
+    local uid = child.Name
+    local rec = State.ESP[uid]
+    if rec and rec.model == child then
+        destroyESP(uid)
     end
 end)
 
-connect(ReplicatedStorage.DescendantAdded,function(d)
-    if d:IsA("RemoteEvent") and TARGET_REMOTE_NAMES[d.Name] then hookRemote(d) end
-end)
+-- Instant Hit / Bat -----------------------------------------------------------
 
-local function hookPlayerContainer(container)
+local function isBat(tool)
+    if not tool or not tool:IsA("Tool") then return false end
+    if tool:GetAttribute("IsBat") == true then return true end
+    local gearName = tostring(tool:GetAttribute("GearName") or "")
+    return string.find(string.lower(gearName), "bat", 1, true) ~= nil
+end
+
+local function patchBat(tool)
+    if not CONFIG.InstantHit or not isBat(tool) then return end
+    if State.BatPatching[tool] then return end
+    State.BatPatching[tool] = true
+
+    pcall(function() tool.Enabled = true end)
+    pcall(function()
+        if tool:GetAttribute("CooldownActive") ~= false then
+            tool:SetAttribute("CooldownActive", false)
+        end
+        if tool:GetAttribute("CooldownDuration") ~= 0 then
+            tool:SetAttribute("CooldownDuration", 0)
+        end
+        if tool:GetAttribute("CooldownEndTime") ~= 0 then
+            tool:SetAttribute("CooldownEndTime", 0)
+        end
+    end)
+
+    State.BatPatching[tool] = nil
+end
+
+local function hookBat(tool)
+    if not isBat(tool) or State.BatHooks[tool] then return end
+    State.BatHooks[tool] = true
+
+    for _, attr in ipairs({"CooldownActive","CooldownDuration","CooldownEndTime"}) do
+        connect(tool:GetAttributeChangedSignal(attr), function()
+            if CONFIG.InstantHit then
+                task.defer(function()
+                    if State.Alive and tool.Parent then patchBat(tool) end
+                end)
+            end
+        end)
+    end
+
+    connect(tool.Activated, function()
+        if CONFIG.InstantHit then
+            patchBat(tool)
+            task.defer(function()
+                if State.Alive and tool.Parent then patchBat(tool) end
+            end)
+        end
+    end)
+
+    patchBat(tool)
+end
+
+local function scanBats()
+    local backpack = LP:FindFirstChildOfClass("Backpack")
+    if backpack then
+        for _, d in ipairs(backpack:GetChildren()) do
+            if d:IsA("Tool") then hookBat(d) end
+        end
+    end
+    if LP.Character then
+        for _, d in ipairs(LP.Character:GetChildren()) do
+            if d:IsA("Tool") then hookBat(d) end
+        end
+    end
+end
+
+local function hookContainer(container)
     if not container then return end
-    for _,d in ipairs(container:GetChildren()) do if d:IsA("Tool") then hookBat(d) end end
-    connect(container.ChildAdded,function(d)
-        if d:IsA("Tool") then task.defer(function() if d.Parent then hookBat(d) end end) end
+    connect(container.ChildAdded, function(d)
+        if d:IsA("Tool") then
+            task.defer(function()
+                if State.Alive and d.Parent then hookBat(d) end
+            end)
+        end
     end)
 end
 
-hookPlayerContainer(LP:FindFirstChildOfClass("Backpack"))
-if LP.Character then hookPlayerContainer(LP.Character) end
-connect(LP.CharacterAdded,function(char)
-    task.wait(0.4)
-    hookPlayerContainer(char)
-end)
-
-hookTargetRemotes()
-scanRoots()
-scanBats()
-hookPrompts()
-
-local sampleAccumulator=0
-connect(RunService.Heartbeat,function(dt)
-    if not running then return end
-    sampleAccumulator += dt
-    if sampleAccumulator < 0.25 then return end
-    sampleAccumulator=0
-    local sample={t=tnow(),roots={}}
-    for root in pairs(trackedRoots) do
-        if root and root.Parent==Workspace then
-            table.insert(sample.roots,{name=root.Name,position=pos(root),attributes=attrs(root),hasHitbox=hasHitbox(root)})
-        end
-    end
-    add(REPORT.rootSamples,sample,500)
+hookContainer(LP:FindFirstChildOfClass("Backpack"))
+if LP.Character then hookContainer(LP.Character) end
+connect(LP.CharacterAdded, function(char)
+    task.wait(0.3)
+    if not State.Alive then return end
+    hookContainer(char)
     scanBats()
 end)
 
-local function exportReport()
-    REPORT.meta.finishedUnix=os.time()
-    REPORT.meta.durationSeconds=tnow()
-    REPORT.summary={
-        remoteEvents=#REPORT.remoteEvents,
-        rootEvents=#REPORT.rootEvents,
-        rootSamples=#REPORT.rootSamples,
-        batEvents=#REPORT.batEvents,
-        promptEvents=#REPORT.promptEvents,
-    }
-    local ok,encoded=pcall(HttpService.JSONEncode,HttpService,REPORT)
-    if not ok then return false,"JSONEncode falhou: "..tostring(encoded) end
-    local name="Psico_RoubeUmOvo_ScanV2_"..tostring(os.time())..".json"
-    if writefile then
-        local wok,werr=pcall(writefile,name,encoded)
-        if wok then return true,"Arquivo salvo: "..name end
-        return false,"writefile falhou: "..tostring(werr)
+local acc = 0
+connect(RunService.Heartbeat, function(dt)
+    if not State.Alive then return end
+    acc += dt
+    if acc < 0.12 then return end
+    acc = 0
+    if CONFIG.InstantHit then
+        scanBats()
+        local backpack = LP:FindFirstChildOfClass("Backpack")
+        if backpack then
+            for _, tool in ipairs(backpack:GetChildren()) do patchBat(tool) end
+        end
+        if LP.Character then
+            for _, tool in ipairs(LP.Character:GetChildren()) do patchBat(tool) end
+        end
     end
-    if setclipboard then
-        local cok,cerr=pcall(setclipboard,encoded)
-        if cok then return true,"JSON copiado para a área de transferência" end
-        return false,"setclipboard falhou: "..tostring(cerr)
-    end
-    return false,"Executor sem writefile/setclipboard"
+end)
+
+-- Compact UI -----------------------------------------------------------------
+
+local old = parentGui():FindFirstChild("PsicoRoubeUmOvoMenuV2")
+if old then old:Destroy() end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "PsicoRoubeUmOvoMenuV2"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = parentGui()
+
+local frame = Instance.new("Frame")
+frame.AnchorPoint = Vector2.new(.5,.5)
+frame.Position = UDim2.fromScale(.5,.5)
+frame.Size = UDim2.fromOffset(250, 190)
+frame.BackgroundColor3 = Color3.fromRGB(15,21,33)
+frame.BorderSizePixel = 0
+frame.Parent = gui
+local fc = Instance.new("UICorner", frame)
+fc.CornerRadius = UDim.new(0,11)
+
+local stroke = Instance.new("UIStroke", frame)
+stroke.Thickness = 1
+stroke.Transparency = .35
+stroke.Color = Color3.fromRGB(73,126,230)
+
+local header = Instance.new("Frame")
+header.BackgroundTransparency = 1
+header.Size = UDim2.new(1,-10,0,38)
+header.Position = UDim2.fromOffset(5,3)
+header.Parent = frame
+
+local title = Instance.new("TextLabel")
+title.BackgroundTransparency = 1
+title.Position = UDim2.fromOffset(8,4)
+title.Size = UDim2.new(1,-72,0,28)
+title.Font = Enum.Font.GothamBold
+title.Text = "ROUBE UM OVO • V2"
+title.TextColor3 = Color3.fromRGB(241,245,255)
+title.TextSize = 13
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = header
+
+local function headButton(text, x)
+    local b = Instance.new("TextButton")
+    b.AnchorPoint = Vector2.new(1,0)
+    b.Position = UDim2.new(1,x,0,3)
+    b.Size = UDim2.fromOffset(28,28)
+    b.BackgroundColor3 = Color3.fromRGB(32,42,60)
+    b.BorderSizePixel = 0
+    b.Font = Enum.Font.GothamBold
+    b.Text = text
+    b.TextColor3 = Color3.fromRGB(240,244,255)
+    b.TextSize = 15
+    b.Parent = header
+    local c = Instance.new("UICorner",b)
+    c.CornerRadius = UDim.new(0,8)
+    return b
 end
 
-local function parentGui()
-    local ok,h=pcall(function() if gethui then return gethui() end end)
-    return (ok and h) or CoreGui
+local minButton = headButton("—",-32)
+local closeButton = headButton("×",0)
+
+local body = Instance.new("Frame")
+body.BackgroundTransparency = 1
+body.Position = UDim2.fromOffset(10,43)
+body.Size = UDim2.new(1,-20,1,-53)
+body.Parent = frame
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0,6)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = body
+
+local function makeToggle(text, key, order)
+    local row = Instance.new("TextButton")
+    row.LayoutOrder = order
+    row.Size = UDim2.new(1,0,0,34)
+    row.BackgroundColor3 = Color3.fromRGB(22,30,46)
+    row.BorderSizePixel = 0
+    row.Text = ""
+    row.AutoButtonColor = false
+    row.Parent = body
+    local rc = Instance.new("UICorner",row)
+    rc.CornerRadius = UDim.new(0,8)
+
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.fromOffset(10,0)
+    label.Size = UDim2.new(1,-62,1,0)
+    label.Font = Enum.Font.GothamMedium
+    label.Text = text
+    label.TextColor3 = Color3.fromRGB(230,235,247)
+    label.TextSize = 12
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = row
+
+    local pill = Instance.new("Frame")
+    pill.AnchorPoint = Vector2.new(1,.5)
+    pill.Position = UDim2.new(1,-9,.5,0)
+    pill.Size = UDim2.fromOffset(36,20)
+    pill.BorderSizePixel = 0
+    pill.Parent = row
+    local pc = Instance.new("UICorner",pill)
+    pc.CornerRadius = UDim.new(1,0)
+
+    local dot = Instance.new("Frame")
+    dot.Size = UDim2.fromOffset(14,14)
+    dot.BorderSizePixel = 0
+    dot.Parent = pill
+    local dc = Instance.new("UICorner",dot)
+    dc.CornerRadius = UDim.new(1,0)
+
+    local function paint()
+        local on = CONFIG[key]
+        pill.BackgroundColor3 = on and Color3.fromRGB(48,109,232) or Color3.fromRGB(64,70,82)
+        dot.BackgroundColor3 = Color3.fromRGB(245,248,255)
+        dot.Position = on and UDim2.fromOffset(19,3) or UDim2.fromOffset(3,3)
+    end
+
+    row.MouseButton1Click:Connect(function()
+        CONFIG[key] = not CONFIG[key]
+        paint()
+
+        if key == "InstantPrompt" then
+            refreshPrompts()
+        elseif key == "DropESP" then
+            if CONFIG.DropESP then
+                for uid in pairs(State.Drops) do createESP(uid) end
+            else
+                clearAllESP()
+            end
+        elseif key == "InstantHit" and CONFIG.InstantHit then
+            scanBats()
+        end
+    end)
+
+    paint()
 end
 
-local gui=Instance.new("ScreenGui")
-gui.Name="PsicoRoubeUmOvoScannerV2"
-gui.ResetOnSpawn=false
-gui.IgnoreGuiInset=true
-gui.Parent=parentGui()
-_G.PSICO_ROUBE_SCANNER_V2=gui
+makeToggle("Instant Prompt","InstantPrompt",1)
+makeToggle("ESP • Drops confirmados","DropESP",2)
+makeToggle("Instant Hit • Bat","InstantHit",3)
 
-local frame=Instance.new("Frame")
-frame.AnchorPoint=Vector2.new(.5,.5)
-frame.Position=UDim2.fromScale(.5,.5)
-frame.Size=UDim2.fromOffset(286,176)
-frame.BackgroundColor3=Color3.fromRGB(15,21,33)
-frame.BorderSizePixel=0
-frame.Parent=gui
-Instance.new("UICorner",frame).CornerRadius=UDim.new(0,12)
+local status = Instance.new("TextLabel")
+status.LayoutOrder = 4
+status.Size = UDim2.new(1,0,0,24)
+status.BackgroundTransparency = 1
+status.Font = Enum.Font.Code
+status.TextColor3 = Color3.fromRGB(132,158,205)
+status.TextSize = 10
+status.TextXAlignment = Enum.TextXAlignment.Left
+status.Parent = body
 
-local title=Instance.new("TextLabel")
-title.BackgroundTransparency=1
-title.Position=UDim2.fromOffset(12,8)
-title.Size=UDim2.new(1,-52,0,24)
-title.Font=Enum.Font.GothamBold
-title.Text="ROUBE UM OVO • SCANNER V2"
-title.TextColor3=Color3.fromRGB(240,244,255)
-title.TextSize=13
-title.TextXAlignment=Enum.TextXAlignment.Left
-title.Parent=frame
+local floating = Instance.new("TextButton")
+floating.Visible = false
+floating.AnchorPoint = Vector2.new(1,.5)
+floating.Position = UDim2.new(1,-14,.55,0)
+floating.Size = UDim2.fromOffset(42,42)
+floating.BackgroundColor3 = Color3.fromRGB(18,40,78)
+floating.BorderSizePixel = 0
+floating.Font = Enum.Font.GothamBlack
+floating.Text = "P"
+floating.TextColor3 = Color3.fromRGB(240,245,255)
+floating.TextSize = 15
+floating.Parent = gui
+local flc = Instance.new("UICorner",floating)
+flc.CornerRadius = UDim.new(1,0)
 
-local close=Instance.new("TextButton")
-close.AnchorPoint=Vector2.new(1,0)
-close.Position=UDim2.new(1,-8,0,7)
-close.Size=UDim2.fromOffset(28,28)
-close.BackgroundColor3=Color3.fromRGB(35,44,62)
-close.BorderSizePixel=0
-close.Font=Enum.Font.GothamBold
-close.Text="×"
-close.TextColor3=Color3.fromRGB(240,244,255)
-close.TextSize=16
-close.Parent=frame
-Instance.new("UICorner",close).CornerRadius=UDim.new(0,8)
+local function draggable(handle,target)
+    local dragging=false
+    local dragStart,startPos,activeInput
 
-local status=Instance.new("TextLabel")
-status.Position=UDim2.fromOffset(12,42)
-status.Size=UDim2.new(1,-24,0,57)
-status.BackgroundColor3=Color3.fromRGB(20,28,43)
-status.BorderSizePixel=0
-status.Font=Enum.Font.Code
-status.TextColor3=Color3.fromRGB(165,190,239)
-status.TextSize=10
-status.TextWrapped=true
-status.Text="V2 ativo. Faça um item cair no chão, pegue-o novamente e use o bastão várias vezes."
-status.Parent=frame
-Instance.new("UICorner",status).CornerRadius=UDim.new(0,9)
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+            dragging=true
+            activeInput=input
+            dragStart=input.Position
+            startPos=target.Position
+        end
+    end)
 
-local export=Instance.new("TextButton")
-export.Position=UDim2.fromOffset(12,110)
-export.Size=UDim2.new(1,-24,0,38)
-export.BackgroundColor3=Color3.fromRGB(34,79,164)
-export.BorderSizePixel=0
-export.Font=Enum.Font.GothamMedium
-export.Text="EXPORTAR JSON V2"
-export.TextColor3=Color3.fromRGB(245,248,255)
-export.TextSize=12
-export.Parent=frame
-Instance.new("UICorner",export).CornerRadius=UDim.new(0,9)
+    handle.InputChanged:Connect(function(input)
+        if input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch then
+            activeInput=input
+        end
+    end)
 
-local hint=Instance.new("TextLabel")
-hint.BackgroundTransparency=1
-hint.Position=UDim2.fromOffset(12,151)
-hint.Size=UDim2.new(1,-24,0,18)
-hint.Font=Enum.Font.Gotham
-hint.Text="Ideal: drop → esperar 2s → pegar → bater 5x → exportar"
-hint.TextColor3=Color3.fromRGB(133,148,177)
-hint.TextSize=9
-hint.Parent=frame
+    UIS.InputChanged:Connect(function(input)
+        if dragging and input==activeInput then
+            local delta=input.Position-dragStart
+            target.Position=UDim2.new(
+                startPos.X.Scale,startPos.X.Offset+delta.X,
+                startPos.Y.Scale,startPos.Y.Offset+delta.Y
+            )
+        end
+    end)
 
-local dragging=false
-local dragStart,startPos,activeInput
-frame.InputBegan:Connect(function(input)
-    if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
-        dragging=true activeInput=input dragStart=input.Position startPos=frame.Position
+    UIS.InputEnded:Connect(function(input)
+        if input==activeInput then dragging=false end
+    end)
+end
+
+draggable(header,frame)
+draggable(floating,floating)
+
+minButton.MouseButton1Click:Connect(function()
+    frame.Visible=false
+    floating.Visible=true
+end)
+
+floating.MouseButton1Click:Connect(function()
+    floating.Visible=false
+    frame.Visible=true
+end)
+
+local function cleanup()
+    if not State.Alive then return end
+    State.Alive=false
+
+    CONFIG.InstantPrompt=false
+    for prompt, original in pairs(State.PromptOriginals) do
+        if prompt and prompt.Parent then
+            pcall(function() prompt.HoldDuration=original end)
+        end
     end
-end)
-frame.InputChanged:Connect(function(input)
-    if input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch then activeInput=input end
-end)
-UIS.InputChanged:Connect(function(input)
-    if dragging and input==activeInput then
-        local d=input.Position-dragStart
-        frame.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y)
-    end
-end)
-UIS.InputEnded:Connect(function(input) if input==activeInput then dragging=false end end)
 
-export.MouseButton1Click:Connect(function()
-    local ok,msg=exportReport()
-    status.Text=(ok and "✓ " or "✗ ")..msg
-end)
+    clearAllESP()
 
-close.MouseButton1Click:Connect(function()
-    running=false
-    for _,c in ipairs(connections) do pcall(function() c:Disconnect() end) end
-    _G.PSICO_ROUBE_SCANNER_V2=nil
-    gui:Destroy()
-end)
+    for _,c in ipairs(State.RemoteConnections) do disconnect(c) end
+    for _,c in ipairs(State.Connections) do disconnect(c) end
 
-connect(RunService.RenderStepped,function()
-    if running then
-        status.Text=string.format("V2 ativo • %.0fs\nRemotes: %d | Roots: %d | Bat: %d",tnow(),#REPORT.remoteEvents,#REPORT.rootEvents,#REPORT.batEvents)
+    _G.PSICO_ROUBE_MENU_CLEANUP=nil
+    pcall(function() gui:Destroy() end)
+end
+
+_G.PSICO_ROUBE_MENU_CLEANUP=cleanup
+closeButton.MouseButton1Click:Connect(cleanup)
+
+-- Start ----------------------------------------------------------------------
+
+hookDropRemotes()
+refreshPrompts()
+scanBats()
+
+task.spawn(function()
+    while State.Alive do
+        local drops=0
+        for uid,record in pairs(State.Drops) do
+            if record.State=="Dropped" then drops += 1 end
+            if CONFIG.DropESP and not State.ESP[uid] then createESP(uid) end
+        end
+        status.Text=string.format("Drops confirmados: %d",drops)
+        task.wait(.5)
     end
 end)

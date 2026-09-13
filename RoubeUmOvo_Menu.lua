@@ -1,15 +1,16 @@
 --[[
-PSICOSENATICO | Roube um Ovo - Precision Menu V8.1
+PSICOSENATICO | Roube um Ovo - Precision Menu V8.1.1
 Stable loader path: RoubeUmOvo_Menu.lua
 
-Changes in V8.1
+Changes in V8.1.1
+  * HOTFIX: ESP filters never destroy the game's egg visual/model.
+  * ESP cleanup now destroys only PSICOSENATICO-owned Highlight/Billboard objects.
   * Compact, fully transparent ESP text (no pet image / no info background).
   * ESP keeps metadata for Slot and Dropped eggs.
   * Responsive menu: reads viewport size and scales itself to <= 70% screen height.
   * Left vertical navigation + scrollable content.
   * Smart K/M/B/T number inputs for weight/value filters.
   * Pet picker with search, full catalog and "available now" mode.
-  * Deterministic cleanup of old/stale ESP artifacts.
 
 Ground truth from Scanner V7
   * Egg metadata: ReplicatedStorage.Data.Assets
@@ -434,7 +435,11 @@ end
 local function destroyEspRecord(uid)
     local rec=State.ESP[uid]
     if not rec then return end
-    for _,obj in pairs(rec) do
+    -- IMPORTANT: rec.Visual points at the game's real egg model. Never destroy it.
+    -- Only destroy Instances created by this script. Text labels are children of
+    -- Billboard and are destroyed together with it.
+    for _,key in ipairs({"Highlight","Billboard"}) do
+        local obj=rec[key]
         if typeof(obj)=="Instance" then pcall(function() obj:Destroy() end) end
     end
     State.ESP[uid]=nil
@@ -762,13 +767,13 @@ local function makeToggle(parent,label,y,key)
     return b
 end
 
-for _,oldName in ipairs({"PsicoRoubeUmOvoV81","PsicoRoubeUmOvoV8","PsicoRoubeUmOvo","PsicoPrecisionEggScannerV7","PsicoStaticEggScannerV6"}) do
+for _,oldName in ipairs({"PsicoRoubeUmOvoV811","PsicoRoubeUmOvoV81","PsicoRoubeUmOvoV8","PsicoRoubeUmOvo","PsicoPrecisionEggScannerV7","PsicoStaticEggScannerV6"}) do
     local old=uiParent():FindFirstChild(oldName)
     if old then pcall(function() old:Destroy() end) end
 end
 
 gui=Instance.new("ScreenGui")
-gui.Name="PsicoRoubeUmOvoV81" gui.ResetOnSpawn=false gui.IgnoreGuiInset=true gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling gui.Parent=uiParent()
+gui.Name="PsicoRoubeUmOvoV811" gui.ResetOnSpawn=false gui.IgnoreGuiInset=true gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling gui.Parent=uiParent()
 
 mainFrame=Instance.new("Frame")
 mainFrame.Name="Main" mainFrame.AnchorPoint=Vector2.new(.5,.5) mainFrame.Position=UDim2.fromScale(.5,.5)
@@ -779,7 +784,7 @@ local stroke=Instance.new("UIStroke") stroke.Thickness=1.1 stroke.Transparency=.
 
 local title=mkLabel(mainFrame,"PSICOSENATICO PANEL",UDim2.fromOffset(12,6),UDim2.new(1,-84,0,20),13)
 title.Font=Enum.Font.GothamBold title.TextColor3=Color3.fromRGB(242,246,255)
-local version=mkLabel(mainFrame,"V8.1 • EGG PRECISION ESP",UDim2.fromOffset(12,24),UDim2.new(1,-84,0,14),8)
+local version=mkLabel(mainFrame,"V8.1.1 • EGG PRECISION ESP",UDim2.fromOffset(12,24),UDim2.new(1,-84,0,14),8)
 version.TextColor3=Color3.fromRGB(102,148,232)
 local minimize=mkButton(mainFrame,"—",UDim2.new(1,-62,0,6),UDim2.fromOffset(25,25))
 local close=mkButton(mainFrame,"×",UDim2.new(1,-32,0,6),UDim2.fromOffset(25,25))

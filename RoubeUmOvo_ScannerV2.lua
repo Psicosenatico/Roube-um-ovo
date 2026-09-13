@@ -1,615 +1,88 @@
---[[
-PSICOSENATICO | Roube um Ovo - Carry / Guard Scanner V10
-Stable loader path: RoubeUmOvo_ScannerV2.lua
-
-Objetivo:
-  * Medir a penalidade real de velocidade quando um ovo e carregado.
-  * Cruzar o SpeedMultiplier recebido do servidor com o peso real do ovo.
-  * Ler a velocidade recomendada de cada GuardArea.
-  * Registrar velocidade/atributos relevantes do player antes e durante a carga.
-  * Inspecionar apenas modulos/constantes client-side ligados a carry/speed/guard.
-  * Exportar JSON focado para descobrir o limite/risco de cada ovo.
-
-O scanner nao altera velocidade, ovos, guardioes, prompts, bats ou remotes.
-Para uma boa amostra, pegue e solte/entregue 3-6 ovos de pesos diferentes.
-]]
+--[[ PSICOSENATICO | Roube um Ovo - Carry / Distance Scanner V11
+Passivo: mede peso/SpeedMultiplier, boosts, distancia ate Safe Zone e perseguição do guardiao.
+Nao altera velocidade, ovos, guardioes, prompts, bats ou remotes.
+Teste: pegue e retorne/entregue 3-6 ovos de areas e pesos diferentes. ]]
 
 if _G.PSICO_ROUBE_SCANNER_CLEANUP then pcall(_G.PSICO_ROUBE_SCANNER_CLEANUP) end
+local Players=game:GetService("Players")
+local Workspace=game:GetService("Workspace")
+local RS=game:GetService("ReplicatedStorage")
+local CoreGui=game:GetService("CoreGui")
+local Http=game:GetService("HttpService")
+local UIS=game:GetService("UserInputService")
+local LP=Players.LocalPlayer
+local S={Alive=true,C={},RC={},R={},Carries={},Move={},Current=nil,LastFree=nil,Areas={},Safes={},Corridor=nil,Gui=nil}
+local EggRecords,TreadmillUtil
 
-local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local CoreGui = game:GetService("CoreGui")
-local HttpService = game:GetService("HttpService")
-local UIS = game:GetService("UserInputService")
-
-local LP = Players.LocalPlayer
-
-local State = {
-    Alive = true,
-    Connections = {},
-    RemoteConnections = {},
-    Records = {},
-    CarrySamples = {},
-    MovementChanges = {},
-    LastFreeWalkSpeed = nil,
-    CurrentCarry = nil,
-    Report = nil,
-    Gui = nil,
-}
-
-local EggRecords
-
-local function safeString(v)
-    local ok,s = pcall(tostring,v)
-    return ok and s or "?"
+local function finite(v)return type(v)=="number" and v==v and v~=math.huge and v~=-math.huge end
+local function s(v)local ok,x=pcall(tostring,v)return ok and x or "?" end
+local function con(sig,fn,b)local c=sig:Connect(fn)table.insert(b or S.C,c)return c end
+local function pg()local ok,h=pcall(function()if gethui then return gethui()end end)return(ok and h)or CoreGui end
+local function req(m)if not(m and m:IsA("ModuleScript"))then return nil end local ok,v=pcall(require,m)return ok and v or nil end
+local function ser(v,d,seen)
+ d=d or 0;seen=seen or{};if d>6 then return"<depth>"end;local t=typeof(v)
+ if t=="nil"or t=="boolean"or t=="string"then return v end;if t=="number"then return finite(v)and v or s(v)end
+ if t=="Vector3"then return{x=v.X,y=v.Y,z=v.Z}end;if t=="CFrame"then return{position=ser(v.Position)}end
+ if t=="Instance"then return{class=v.ClassName,name=v.Name,path=v:GetFullName()}end;if t~="table"then return s(v)end
+ if seen[v]then return"<cycle>"end;seen[v]=true;local o,n={},0;for k,x in pairs(v)do n=n+1;if n>300 then o.__truncated=true break end;o[s(k)]=ser(x,d+1,seen)end;seen[v]=nil;return o
 end
-
-local function finite(v)
-    return type(v)=="number" and v==v and v~=math.huge and v~=-math.huge
+local function attrs(i)local o={}if not i then return o end;local ok,a=pcall(function()return i:GetAttributes()end);if ok then for k,v in pairs(a)do local q=string.lower(k);if q:find("speed",1,true)or q:find("carry",1,true)or q:find("boost",1,true)or q:find("power",1,true)or q:find("weight",1,true)or q:find("area",1,true)or q:find("target",1,true)then o[k]=ser(v)end end end;return o end
+local function pos(i)if not i then return nil end;if i:IsA("BasePart")then return i.Position end;if i:IsA("Model")then local ok,cf=pcall(function()return i:GetPivot()end)if ok then return cf.Position end end;local p=i:FindFirstChildWhichIsA("BasePart",true)return p and p.Position or nil end
+local function hum()local c=LP.Character return c and c:FindFirstChildOfClass("Humanoid")or nil end
+local function root()local c=LP.Character return c and(c:FindFirstChild("HumanoidRootPart")or c.PrimaryPart)or nil end
+local function leader()local l=LP:FindFirstChild("leaderstats")local v=l and l:FindFirstChild("Speed")return v and finite(v.Value)and v.Value or nil end
+local function boost()
+ local o={attrs=attrs(LP),items={}};if type(TreadmillUtil)=="table"and type(TreadmillUtil.GetTemporarySpeedBoostMultiplier)=="function"then local ok,v=pcall(TreadmillUtil.GetTemporarySpeedBoostMultiplier)if ok then o.configuredMultiplier=ser(v)end end
+ local g=LP:FindFirstChildOfClass("PlayerGui")if not g then return o end;local want={temporaryspeedboost=true,playerspeedboost=true,bossspeedboost=true,speedboost=true,speedmulti=true}
+ for _,d in ipairs(g:GetDescendants())do if want[string.lower(d.Name)]then local text={};for _,x in ipairs(d:GetDescendants())do if(x:IsA("TextLabel")or x:IsA("TextButton"))and x.Text~=""then text[#text+1]=x.Text;if#text>=8 then break end end end;o.items[#o.items+1]={path=d:GetFullName(),visible=d:IsA("GuiObject")and d.Visible or nil,text=text}end;if#o.items>=12 then break end end;return o
 end
-
-local function connect(signal,fn,bucket)
-    local c = signal:Connect(fn)
-    table.insert(bucket or State.Connections,c)
-    return c
+local function move()local h,r=hum(),root();local v=r and r.AssemblyLinearVelocity or nil;return{clock=os.clock(),walkSpeed=h and h.WalkSpeed or nil,leaderSpeed=leader(),position=r and ser(r.Position)or nil,velocity=v and ser(v)or nil,horizontalVelocity=v and math.sqrt(v.X*v.X+v.Z*v.Z)or nil}end
+local function find(class,name)for _,d in ipairs(RS:GetDescendants())do if d.ClassName==class and d.Name==name then return d end end end
+local function eggCall(n,r)if type(EggRecords)~="table"or type(EggRecords[n])~="function"then return nil,false end;local ok,v=pcall(EggRecords[n],r)if ok then return v,true end;ok,v=pcall(EggRecords[n],EggRecords,r)return ok and v or nil,ok end
+local function rpos(r)for _,k in ipairs({"BoundsCFrame","BottomCFrame"})do if typeof(r and r[k])=="CFrame"then return r[k].Position end end;local uid=r and r.Uid;if type(uid)=="string"then local f=Workspace:FindFirstChild("AreaEggSlotsClient")return pos((f and f:FindFirstChild(uid))or Workspace:FindFirstChild(uid))end end
+local function egg(r)if typeof(r)~="table"then return nil end;local w,ok=eggCall("WeightKg",r);local p=rpos(r);return{Uid=r.Uid,State=r.State,AreaId=r.AreaId,NestId=r.NestId,AssetCategory=r.AssetCategory,AssetScale=r.AssetScale,NestScale=r.NestScale,Mutations=ser(r.Mutations),WeightKg=(ok and finite(w))and w or nil,Position=p and ser(p)or nil}end
+local function ingest(v,seen,d)if typeof(v)~="table"then return 0 end;seen=seen or{};d=d or 0;if d>8 or seen[v]then return 0 end;seen[v]=true;local n=0;if type(v.Uid)=="string"and v.State~=nil then S.R[v.Uid]=v;n=1 else local c=0;for _,x in pairs(v)do c=c+1;if c>3000 then break end;if typeof(x)=="table"then n=n+ingest(x,seen,d+1)end end end;seen[v]=nil;return n end
+local function snapshots()local n=0;for _,name in ipairs({"RF/EggWorld/AskFieldEggSnapshot","RF/EggWorld/AskLiveSnapshot"})do local rf=find("RemoteFunction",name)if rf then local ok,v=pcall(function()return rf:InvokeServer()end)if ok then n=n+ingest(v)end end end;return n end
+local function guards()local o=Workspace:FindFirstChild("__OBJECTS")local a=o and o:FindFirstChild("Areas")return a and a:FindFirstChild("GuardAreas")or nil end
+local function avg(t)if#t==0 then return nil end;local v=Vector3.zero;for _,p in ipairs(t)do v=v+p end;return v/#t end
+local function geometry()
+ local out={}local g=guards()if not g then return out end;for _,a in ipairs(g:GetChildren())do local ps={}local n=a:FindFirstChild("Nests");if n then for _,d in ipairs(n:GetDescendants())do if d:IsA("BasePart")and(d.Name=="EggFitBounds"or d.Name=="EggSpotBottom")then ps[#ps+1]=d.Position end end end
+ local sign=a:FindFirstChild("RequiredSpeedSign")local txt=nil;if sign then for _,d in ipairs(sign:GetDescendants())do if(d:IsA("TextLabel")or d:IsA("TextButton"))and d.Name=="Speed"then txt=d.Text break end end end;local gd=a:FindFirstChild("Guard")local c=avg(ps)or pos(sign)or pos(a);out[a.Name]={center=c and ser(c)or nil,recommended=txt,guardPath=gd and gd:GetFullName()or nil,guardPosition=gd and ser(pos(gd))or nil}end;return out
 end
-
-local function disconnectAll()
-    for _,c in ipairs(State.RemoteConnections) do pcall(function() c:Disconnect() end) end
-    for _,c in ipairs(State.Connections) do pcall(function() c:Disconnect() end) end
-    State.RemoteConnections = {}
-    State.Connections = {}
+local function safes()
+ local out,seen={},{};local function add(i,why)if not i or seen[i]then return end;local p=pos(i)if not p then return end;seen[i]=true;out[#out+1]={path=i:GetFullName(),reason=why,position=ser(p)}end;local o=Workspace:FindFirstChild("__OBJECTS")if o then add(o:FindFirstChild("DeliveryHitbox"),"DeliveryHitbox")end
+ for _,d in ipairs(Workspace:GetDescendants())do if d:IsA("TextLabel")or d:IsA("TextButton")then local t=string.lower(d.Text or"")if t:find("safe zone",1,true)then local x=d.Parent;while x and x~=Workspace do if x:IsA("BasePart")or x:IsA("Model")then add(x,"SAFE ZONE text")break end;x=x.Parent end end end;if#out>=12 then break end end;return out
 end
-
-local function uiParent()
-    local ok,h = pcall(function() if gethui then return gethui() end end)
-    return (ok and h) or CoreGui
+local function tv(v)return type(v)=="table"and finite(v.x)and finite(v.y)and finite(v.z)and Vector3.new(v.x,v.y,v.z)or nil end
+local function corridor(a,sf)
+ local p={}for n,x in pairs(a)do local q=tv(x.center)if q then p[#p+1]={n=n,p=q}end end;if#p<2 then return{resolved=false}end;local A,B,D;for i=1,#p do for j=i+1,#p do local d=(Vector3.new(p[i].p.X,0,p[i].p.Z)-Vector3.new(p[j].p.X,0,p[j].p.Z)).Magnitude;if not D or d>D then A,B,D=p[i],p[j],d end end end;local ax=Vector3.new(B.p.X-A.p.X,0,B.p.Z-A.p.Z).Unit;local chosen,err=nil,nil
+ for _,c in ipairs(sf)do local q=tv(c.position)if q then local r=Vector3.new(q.X-A.p.X,0,q.Z-A.p.Z)local pr=r:Dot(ax)local pe=(r-ax*pr).Magnitude;if not err or pe<err then chosen,err=c,pe end end end;local o=chosen and tv(chosen.position)or A.p;local far,fa=nil,-1;for _,x in ipairs(p)do local pr=Vector3.new(x.p.X-o.X,0,x.p.Z-o.Z):Dot(ax)if math.abs(pr)>fa then fa=math.abs(pr)far=x end end;if far and Vector3.new(far.p.X-o.X,0,far.p.Z-o.Z):Dot(ax)<0 then ax=-ax end;local areas={};for _,x in ipairs(p)do local r=Vector3.new(x.p.X-o.X,0,x.p.Z-o.Z)local pr=r:Dot(ax)areas[x.n]={distance=pr,offset=(r-ax*pr).Magnitude}end;return{resolved=true,axis=ser(ax),safeOrigin=ser(o),safeSource=chosen and chosen.path or"fallback",safeError=err,areas=areas}
 end
-
-local function resolvePath(root,path)
-    local cur=root
-    for token in string.gmatch(path,"[^%.]+") do
-        if not cur then return nil end
-        cur=cur:FindFirstChild(token)
-    end
-    return cur
+local function distSafe(p)local c=S.Corridor;if not(c and c.resolved and p)then return nil,nil end;local o,a=tv(c.safeOrigin),tv(c.axis);local r=Vector3.new(p.X-o.X,0,p.Z-o.Z);local pr=r:Dot(a);return pr,(r-a*pr).Magnitude end
+local function guardSnap(area)local g=guards()local a=g and area and g:FindFirstChild(area)local m=a and a:FindFirstChild("Guard")if not m then return nil end;local p=pos(m)local h=m:FindFirstChildOfClass("Humanoid")return{path=m:GetFullName(),position=p and ser(p)or nil,walkSpeed=h and h.WalkSpeed or nil,attributes=attrs(m)}end
+local function uidArea(p)local uid=typeof(p)=="table"and type(p.Uid)=="string"and p.Uid or nil;local ar=typeof(p)=="table"and type(p.AreaId)=="string"and p.AreaId or nil;local function w(t,d)if d>3 or typeof(t)~="table"then return end;if not uid and type(t.Uid)=="string"then uid=t.Uid end;if not ar and type(t.AreaId)=="string"then ar=t.AreaId end;for _,v in pairs(t)do if typeof(v)=="table"and(not uid or not ar)then w(v,d+1)end end end;w(p,0);return uid,ar end
+local function point(c)local m=move()local pp=tv(m.position)local g=guardSnap(c.areaId)local gp=g and tv(g.position)or nil;local dg=(pp and gp)and(pp-gp).Magnitude or nil;local ds,off=nil,nil;if pp then ds,off=distSafe(pp)end;local q={t=os.clock()-c.startedClock,movement=m,guard=g,distanceToGuard=dg,distanceToSafe=ds,corridorOffset=off};c.route[#c.route+1]=q;if#c.route>900 then table.remove(c.route,1)end;if dg then if not c.minGuardDistance or dg<c.minGuardDistance then c.minGuardDistance=dg;c.minGuardDistanceAt=q.t end;if dg<=12 and not c.firstClose then c.firstClose={t=q.t,distance=dg}end end;if finite(ds)then c.lastDistanceToSafe=ds;if c.startDistanceToSafe==nil then c.startDistanceToSafe=ds end end end
+local function carry(p)
+ if typeof(p)~="table"then return end;if p.IsCarrying==true then local uid,ar=uidArea(p)local raw=uid and S.R[uid]or nil;if raw and not ar then ar=raw.AreaId end;local ep=raw and rpos(raw)or nil;local ed,eo=nil,nil;if ep then ed,eo=distSafe(ep)end;local c={index=#S.Carries+1,startedClock=os.clock(),startedUnix=os.time(),uid=uid,areaId=ar,payload=ser(p),egg=egg(raw),eggPosition=ep and ser(ep)or nil,eggDistanceToSafe=ed,eggOffset=eo,freeWalkSpeedBefore=S.LastFree,movementAtStart=move(),boostAtStart=boost(),area=S.Areas[ar],route={}};S.Carries[#S.Carries+1]=c;S.Current=c;point(c)
+ elseif p.IsCarrying==false then if S.Current then point(S.Current);S.Current.duration=os.clock()-S.Current.startedClock;S.Current.movementAtEnd=move();S.Current.boostAtEnd=boost();S.Current.endPayload=ser(p)end;S.Current=nil end
 end
+local function hooks()for _,d in ipairs(RS:GetDescendants())do if d:IsA("RemoteEvent")then if d.Name=="RE/EggWorld/FieldEggShifted"then con(d.OnClientEvent,function(r)if typeof(r)=="table"and type(r.Uid)=="string"then S.R[r.Uid]=r end end,S.RC)elseif d.Name=="RE/EggWorld/FieldEggBatchShifted"then con(d.OnClientEvent,function(p)if typeof(p)=="table"and typeof(p.UpdatedRecords)=="table"then for _,r in pairs(p.UpdatedRecords)do if typeof(r)=="table"and type(r.Uid)=="string"then S.R[r.Uid]=r end end end end,S.RC)elseif d.Name=="RE/EggWorld/FieldEggCarry"then con(d.OnClientEvent,carry,S.RC)end end end end
+local function refresh()S.Areas=geometry();S.Safes=safes();S.Corridor=corridor(S.Areas,S.Safes)end
+local function build()local sh=RS:FindFirstChild("Shared")local u=sh and sh:FindFirstChild("Util")EggRecords=req(u and u:FindFirstChild("EggRecords"));TreadmillUtil=req(u and u:FindFirstChild("TreadmillUtil"));local n=snapshots();refresh();S.Report={Meta={Version="CarryGuardDistanceV11",PlaceId=game.PlaceId,GameId=game.GameId,JobId=game.JobId,StartedUnix=os.time()},SnapshotRecordCount=n,Areas=S.Areas,SafeCandidates=S.Safes,Corridor=S.Corridor,PlayerStart={movement=move(),boost=boost()},CarrySamples=S.Carries,Movement=S.Move};return S.Report end
+local function finish()local r=S.Report or build();refresh();r.AreasAtExport=S.Areas;r.SafeCandidatesAtExport=S.Safes;r.CorridorAtExport=S.Corridor;r.CarrySamples=S.Carries;r.Movement=S.Move;r.PlayerEnd={movement=move(),boost=boost()};local rp=0;for _,c in ipairs(S.Carries)do rp=rp+#c.route end;r.Summary={Carries=#S.Carries,RoutePoints=rp,Records=(function()local n=0;for _ in pairs(S.R)do n=n+1 end;return n end)(),CorridorResolved=S.Corridor and S.Corridor.resolved or false};r.Meta.FinishedUnix=os.time();return r end
+local function export()local ok,j=pcall(function()return Http:JSONEncode(finish())end)if not ok then return false,"JSONEncode: "..s(j)end;local f="Psico_RoubeUmOvo_CarryGuardDistance_"..os.time()..".json";if type(writefile)=="function"then local a,e=pcall(writefile,f,j)return a,a and f or s(e)end;if type(setclipboard)=="function"then local a,e=pcall(setclipboard,j)return a,a and"JSON copiado"or s(e)end;return false,"sem writefile/setclipboard" end
 
-local function safeRequire(module)
-    if not (module and module:IsA("ModuleScript")) then return nil,"module ausente" end
-    local ok,v=pcall(require,module)
-    if not ok then return nil,safeString(v) end
-    return v,nil
-end
-
-local function serialize(v,depth,seen)
-    depth=depth or 0
-    seen=seen or {}
-    if depth>5 then return "<depth>" end
-    local tv=typeof(v)
-    if tv=="nil" or tv=="boolean" or tv=="string" then return v end
-    if tv=="number" then return finite(v) and v or safeString(v) end
-    if tv=="Vector3" or tv=="Vector2" then return {x=v.X,y=v.Y,z=v.Z} end
-    if tv=="Color3" then return {r=v.R,g=v.G,b=v.B} end
-    if tv=="CFrame" then
-        local p=v.Position
-        return {position={x=p.X,y=p.Y,z=p.Z}}
-    end
-    if tv=="Instance" then return {class=v.ClassName,name=v.Name,path=v:GetFullName()} end
-    if tv=="function" then return "<function> "..safeString(v) end
-    if tv~="table" then return safeString(v) end
-    if seen[v] then return "<cycle>" end
-    seen[v]=true
-    local out={}
-    local n=0
-    for k,val in pairs(v) do
-        n=n+1
-        if n>250 then out.__truncated=true break end
-        local key=(type(k)=="string" or type(k)=="number") and k or safeString(k)
-        out[key]=serialize(val,depth+1,seen)
-    end
-    seen[v]=nil
-    return out
-end
-
-local function keyword(name)
-    local s=string.lower(safeString(name or ""))
-    return s:find("speed",1,true) or s:find("carry",1,true) or s:find("power",1,true)
-        or s:find("weight",1,true) or s:find("capacity",1,true) or s:find("treadmill",1,true)
-        or s:find("walk",1,true) or s:find("guard",1,true)
-end
-
-local function relevantAttributes(inst)
-    local out={}
-    if not inst then return out end
-    local ok,attrs=pcall(function() return inst:GetAttributes() end)
-    if ok then
-        for k,v in pairs(attrs) do if keyword(k) then out[k]=serialize(v) end end
-    end
-    return out
-end
-
-local function relevantValues(root,limit)
-    local out={}
-    if not root then return out end
-    local n=0
-    for _,d in ipairs(root:GetDescendants()) do
-        if keyword(d.Name) then
-            local value=nil
-            if d:IsA("ValueBase") then value=serialize(d.Value)
-            elseif d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then value=d.Text end
-            if value~=nil then
-                n=n+1
-                out[#out+1]={path=d:GetFullName(),class=d.ClassName,name=d.Name,value=value,attributes=relevantAttributes(d)}
-                if n>=(limit or 80) then break end
-            end
-        end
-    end
-    return out
-end
-
-local function getHumanoid()
-    local ch=LP and LP.Character
-    return ch and ch:FindFirstChildOfClass("Humanoid") or nil
-end
-
-local function movementSnapshot()
-    local hum=getHumanoid()
-    local ch=LP and LP.Character
-    return {
-        unix=os.time(),
-        clock=os.clock(),
-        walkSpeed=hum and hum.WalkSpeed or nil,
-        jumpHeight=hum and hum.JumpHeight or nil,
-        playerAttributes=relevantAttributes(LP),
-        characterAttributes=relevantAttributes(ch),
-        humanoidAttributes=relevantAttributes(hum),
-    }
-end
-
-local function functionInfo(fn)
-    if type(fn)~="function" then return nil end
-    local out={tostring=safeString(fn)}
-    pcall(function()
-        if debug and debug.info then
-            out.name=debug.info(fn,"n")
-            out.source=debug.info(fn,"s")
-            local a,var=debug.info(fn,"a")
-            out.arity=a out.variadic=var
-        elseif debug and debug.getinfo then
-            local i=debug.getinfo(fn)
-            if i then out.name=i.name out.source=i.source out.arity=i.nparams out.variadic=i.isvararg end
-        end
-    end)
-    pcall(function()
-        if type(getconstants)=="function" then
-            local c=getconstants(fn)
-            out.constants=serialize(c,0,{})
-        end
-    end)
-    pcall(function()
-        if type(getupvalues)=="function" then
-            local u=getupvalues(fn)
-            local picked={}
-            for k,v in pairs(u) do
-                if typeof(v)=="table" then
-                    local small={}
-                    local hit=false
-                    for kk,vv in pairs(v) do
-                        if keyword(kk) or kk=="BASE_WALK_SPEED" or kk=="BASE_ASSETS_WALK_SPEED" or kk=="BASE_CARRY_POWER" then
-                            small[kk]=serialize(vv) hit=true
-                        end
-                    end
-                    if hit then picked[k]=small end
-                elseif type(v)=="number" or type(v)=="string" then
-                    if keyword(v) then picked[k]=v end
-                end
-            end
-            if next(picked) then out.relevantUpvalues=picked end
-        end
-    end)
-    return out
-end
-
-local function moduleSummary(tbl)
-    local out={type=typeof(tbl),fields={}}
-    if typeof(tbl)~="table" then return out end
-    local n=0
-    for k,v in pairs(tbl) do
-        n=n+1
-        if n>100 then out.truncated=true break end
-        if type(v)=="function" then out.fields[safeString(k)]={kind="function",info=functionInfo(v)}
-        elseif typeof(v)=="table" then
-            local small={}
-            for kk,vv in pairs(v) do
-                if keyword(kk) or kk=="BASE_WALK_SPEED" or kk=="BASE_ASSETS_WALK_SPEED" or kk=="BASE_CARRY_POWER" then small[kk]=serialize(vv) end
-            end
-            out.fields[safeString(k)]={kind="table",relevant=small}
-        elseif keyword(k) then out.fields[safeString(k)]={kind=typeof(v),value=serialize(v)} end
-    end
-    return out
-end
-
-local function findExact(className,name)
-    for _,d in ipairs(ReplicatedStorage:GetDescendants()) do
-        if d.ClassName==className and d.Name==name then return d end
-    end
-end
-
-local function callEggFn(name,record)
-    if typeof(EggRecords)~="table" then return nil,false end
-    local fn=EggRecords[name]
-    if type(fn)~="function" then return nil,false end
-    local ok,v=pcall(fn,record)
-    if ok then return v,true end
-    local ok2,v2=pcall(fn,EggRecords,record)
-    if ok2 then return v2,true end
-    return nil,false
-end
-
-local function recordSummary(record)
-    if typeof(record)~="table" then return nil end
-    local weight,wok=callEggFn("WeightKg",record)
-    local label,lok=callEggFn("WeightLabel",record)
-    return {
-        Uid=record.Uid,
-        State=record.State,
-        AreaId=record.AreaId,
-        NestId=record.NestId,
-        AssetCategory=record.AssetCategory,
-        AssetScale=record.AssetScale,
-        NestScale=record.NestScale,
-        BaseMutation=record.BaseMutation,
-        Mutations=serialize(record.Mutations),
-        WeightKg=(wok and finite(weight)) and weight or nil,
-        WeightLabel=lok and safeString(label) or nil,
-    }
-end
-
-local function ingestTree(v,seen,depth)
-    if typeof(v)~="table" then return 0 end
-    seen=seen or {} depth=depth or 0
-    if depth>8 or seen[v] then return 0 end
-    seen[v]=true
-    local n=0
-    if type(v.Uid)=="string" and v.State~=nil then
-        State.Records[v.Uid]=v
-        n=1
-    else
-        local c=0
-        for _,child in pairs(v) do
-            c=c+1 if c>2500 then break end
-            if typeof(child)=="table" then n=n+ingestTree(child,seen,depth+1) end
-        end
-    end
-    seen[v]=nil
-    return n
-end
-
-local function requestSnapshots()
-    local total=0
-    for _,name in ipairs({"RF/EggWorld/AskFieldEggSnapshot","RF/EggWorld/AskLiveSnapshot"}) do
-        local rf=findExact("RemoteFunction",name)
-        if rf then
-            local ok,res=pcall(function() return rf:InvokeServer() end)
-            if ok then total=total+ingestTree(res) end
-        end
-    end
-    return total
-end
-
-local function recommendedSpeeds()
-    local out={}
-    local objects=Workspace:FindFirstChild("__OBJECTS")
-    local areas=objects and objects:FindFirstChild("Areas")
-    local guards=areas and areas:FindFirstChild("GuardAreas")
-    if not guards then return out end
-    for _,area in ipairs(guards:GetChildren()) do
-        local sign=area:FindFirstChild("RequiredSpeedSign")
-        local speedText=nil
-        if sign then
-            for _,d in ipairs(sign:GetDescendants()) do
-                if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Name=="Speed" then speedText=d.Text break end
-            end
-        end
-        out[area.Name]={recommendedSpeedText=speedText,attributes=relevantAttributes(area)}
-    end
-    return out
-end
-
-local function capturePlayerEvidence()
-    local out={
-        movement=movementSnapshot(),
-        playerValues=relevantValues(LP,100),
-        characterValues=relevantValues(LP and LP.Character,80),
-        guiValues=relevantValues(LP and LP:FindFirstChildOfClass("PlayerGui"),120),
-    }
-    return out
-end
-
-local function inspectTargetModules()
-    local targets={
-        "Shared.Modules.GuardAreas.GuardEggRetrievalComponent",
-        "Client.EggState",
-        "Shared.Util.EggRecords",
-        "Shared.Types.AreaEggs",
-        "Shared.Modules.ItemDisplay",
-    }
-    local out={}
-    for _,path in ipairs(targets) do
-        local m=resolvePath(ReplicatedStorage,path)
-        local value,err=safeRequire(m)
-        out[path]={path=m and m:GetFullName() or nil,error=err,summary=moduleSummary(value)}
-    end
-    return out
-end
-
-local function scanLoadedRelevantModules()
-    local out={}
-    if type(getloadedmodules)~="function" then return out end
-    local ok,mods=pcall(getloadedmodules)
-    if not ok or type(mods)~="table" then return out end
-    local count=0
-    for _,m in ipairs(mods) do
-        if m and m:IsA("ModuleScript") then
-            local p=m:GetFullName()
-            if keyword(p) or string.find(string.lower(p),"areaegg",1,true) then
-                count=count+1
-                local v,err=safeRequire(m)
-                out[#out+1]={path=p,error=err,summary=moduleSummary(v)}
-                if count>=60 then break end
-            end
-        end
-    end
-    return out
-end
-
-local function captureCarry(payload)
-    if typeof(payload)~="table" then return end
-    local now=movementSnapshot()
-    if payload.IsCarrying==true then
-        local uid=payload.Uid
-        local raw=type(uid)=="string" and State.Records[uid] or nil
-        local sample={
-            index=#State.CarrySamples+1,
-            startedUnix=os.time(),
-            startedClock=os.clock(),
-            payload=serialize(payload),
-            egg=recordSummary(raw),
-            freeWalkSpeedBefore=State.LastFreeWalkSpeed,
-            movementAtEvent=now,
-            recommendedArea=(State.Report and State.Report.GuardRecommended and payload.AreaId) and State.Report.GuardRecommended[payload.AreaId] or nil,
-            delayedMovement={},
-        }
-        State.CarrySamples[#State.CarrySamples+1]=sample
-        State.CurrentCarry=sample
-        task.defer(function()
-            task.wait(.08)
-            if State.Alive and sample then sample.delayedMovement[1]=movementSnapshot() end
-            task.wait(.22)
-            if State.Alive and sample then sample.delayedMovement[2]=movementSnapshot() end
-            task.wait(.50)
-            if State.Alive and sample then sample.delayedMovement[3]=movementSnapshot() end
-        end)
-    elseif payload.IsCarrying==false then
-        if State.CurrentCarry then
-            State.CurrentCarry.endedUnix=os.time()
-            State.CurrentCarry.endPayload=serialize(payload)
-            State.CurrentCarry.movementAtEnd=now
-        end
-        State.CurrentCarry=nil
-    end
-end
-
-local function hookRemotes()
-    for _,d in ipairs(ReplicatedStorage:GetDescendants()) do
-        if d:IsA("RemoteEvent") then
-            if d.Name=="RE/EggWorld/FieldEggShifted" then
-                connect(d.OnClientEvent,function(record)
-                    if typeof(record)=="table" and type(record.Uid)=="string" then State.Records[record.Uid]=record end
-                end,State.RemoteConnections)
-            elseif d.Name=="RE/EggWorld/FieldEggBatchShifted" then
-                connect(d.OnClientEvent,function(payload)
-                    if typeof(payload)=="table" and typeof(payload.UpdatedRecords)=="table" then
-                        for _,r in pairs(payload.UpdatedRecords) do
-                            if typeof(r)=="table" and type(r.Uid)=="string" then State.Records[r.Uid]=r end
-                        end
-                    end
-                end,State.RemoteConnections)
-            elseif d.Name=="RE/EggWorld/FieldEggGone" then
-                connect(d.OnClientEvent,function(uid) if type(uid)=="string" then State.Records[uid]=nil end end,State.RemoteConnections)
-            elseif d.Name=="RE/EggWorld/FieldEggCarry" then
-                connect(d.OnClientEvent,function(payload) captureCarry(payload) end,State.RemoteConnections)
-            end
-        end
-    end
-end
-
-local function buildReport()
-    local shared=ReplicatedStorage:FindFirstChild("Shared")
-    local util=shared and shared:FindFirstChild("Util")
-    local eggModule=util and util:FindFirstChild("EggRecords")
-    EggRecords=safeRequire(eggModule)
-
-    local report={
-        Meta={
-            Version="CarryGuardScannerV10",
-            PlaceId=game.PlaceId,
-            GameId=game.GameId,
-            JobId=game.JobId,
-            StartedUnix=os.time(),
-            Notes="Passive carry/guard scan. Pick several eggs of different weights before exporting.",
-        },
-        GuardRecommended=recommendedSpeeds(),
-        PlayerEvidence=capturePlayerEvidence(),
-        Modules=inspectTargetModules(),
-        LoadedRelevantModules=scanLoadedRelevantModules(),
-        CarrySamples=State.CarrySamples,
-        MovementChanges=State.MovementChanges,
-        SnapshotRecordCount=requestSnapshots(),
-        Summary={},
-    }
-    State.Report=report
-    return report
-end
-
-local function finalizeReport()
-    local report=State.Report or buildReport()
-    report.CarrySamples=State.CarrySamples
-    report.MovementChanges=State.MovementChanges
-    report.PlayerEvidenceAtExport=capturePlayerEvidence()
-    report.Summary={
-        CarrySampleCount=#State.CarrySamples,
-        RecordCount=(function() local n=0 for _ in pairs(State.Records) do n=n+1 end return n end)(),
-        LastFreeWalkSpeed=State.LastFreeWalkSpeed,
-    }
-    report.Meta.FinishedUnix=os.time()
-    return report
-end
-
-local function exportReport()
-    local report=finalizeReport()
-    local ok,json=pcall(function() return HttpService:JSONEncode(report) end)
-    if not ok then return false,"JSONEncode falhou: "..safeString(json) end
-    local filename="Psico_RoubeUmOvo_CarryGuardScan_"..tostring(os.time())..".json"
-    if type(writefile)=="function" then
-        local wok,werr=pcall(writefile,filename,json)
-        if wok then return true,filename end
-        return false,"writefile falhou: "..safeString(werr)
-    end
-    if type(setclipboard)=="function" then
-        local cok,cerr=pcall(setclipboard,json)
-        if cok then return true,"JSON copiado" end
-        return false,"clipboard falhou: "..safeString(cerr)
-    end
-    return false,"executor sem writefile/setclipboard"
-end
-
-local function round(obj,r)
-    local c=Instance.new("UICorner") c.CornerRadius=UDim.new(0,r or 9) c.Parent=obj
-end
-
-local function mkButton(parent,text,pos,size)
-    local b=Instance.new("TextButton")
-    b.BackgroundColor3=Color3.fromRGB(31,43,66) b.BorderSizePixel=0 b.Position=pos b.Size=size
-    b.Font=Enum.Font.GothamMedium b.Text=text b.TextColor3=Color3.fromRGB(240,245,255) b.TextSize=11 b.Parent=parent
-    round(b,9) return b
-end
-
-local function mkLabel(parent,text,pos,size,ts)
-    local l=Instance.new("TextLabel")
-    l.BackgroundTransparency=1 l.Position=pos l.Size=size l.Font=Enum.Font.Gotham l.Text=text
-    l.TextColor3=Color3.fromRGB(176,190,216) l.TextSize=ts or 10 l.TextXAlignment=Enum.TextXAlignment.Left
-    l.TextWrapped=true l.Parent=parent return l
-end
-
-local old=uiParent():FindFirstChild("PsicoCarryGuardScannerV10")
-if old then pcall(function() old:Destroy() end) end
-
-local gui=Instance.new("ScreenGui")
-gui.Name="PsicoCarryGuardScannerV10" gui.ResetOnSpawn=false gui.IgnoreGuiInset=true gui.Parent=uiParent()
-State.Gui=gui
-
-local vp=Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize or Vector2.new(844,390)
-local width=math.floor(math.clamp(vp.X*.38,292,342))
-local height=math.floor(math.min(230,vp.Y*.70))
-
-local frame=Instance.new("Frame")
-frame.AnchorPoint=Vector2.new(.5,.5) frame.Position=UDim2.fromScale(.5,.5) frame.Size=UDim2.fromOffset(width,height)
-frame.BackgroundColor3=Color3.fromRGB(14,20,32) frame.BorderSizePixel=0 frame.Parent=gui round(frame,13)
-local stroke=Instance.new("UIStroke") stroke.Thickness=1.1 stroke.Transparency=.28 stroke.Color=Color3.fromRGB(61,118,230) stroke.Parent=frame
-
-local title=mkLabel(frame,"CARRY / GUARD SCAN V10",UDim2.fromOffset(12,8),UDim2.new(1,-52,0,20),14)
-title.Font=Enum.Font.GothamBold title.TextColor3=Color3.fromRGB(242,246,255)
-local sub=mkLabel(frame,"peso • penalidade de velocidade • guardião",UDim2.fromOffset(12,28),UDim2.new(1,-52,0,16),9)
-sub.TextColor3=Color3.fromRGB(102,148,232)
-local close=mkButton(frame,"×",UDim2.new(1,-38,0,8),UDim2.fromOffset(28,28))
-local status=mkLabel(frame,"Preparando leitura...",UDim2.fromOffset(12,54),UDim2.new(1,-24,0,70),10)
-status.TextColor3=Color3.fromRGB(198,210,232)
-local rescan=mkButton(frame,"ATUALIZAR BASE",UDim2.new(0,12,1,-83),UDim2.new(1,-24,0,31))
-local export=mkButton(frame,"EXPORTAR JSON",UDim2.new(0,12,1,-45),UDim2.new(1,-24,0,31))
-
-local function updateStatus(extra)
-    local last=State.CarrySamples[#State.CarrySamples]
-    local mult=last and last.payload and tonumber(last.payload.SpeedMultiplier)
-    local weight=last and last.egg and tonumber(last.egg.WeightKg)
-    status.Text=string.format(
-        "Amostras: %d%s%s\nPegue e solte/entregue 3-6 ovos de pesos diferentes.%s",
-        #State.CarrySamples,
-        mult and (" • último x"..string.format("%.4f",mult)) or "",
-        weight and (" • "..string.format("%.0fKg",weight)) or "",
-        extra and ("\n"..extra) or ""
-    )
-end
-
-connect(rescan.MouseButton1Click,function()
-    State.Report=buildReport()
-    updateStatus("base atualizada")
-end)
-connect(export.MouseButton1Click,function()
-    export.Text="EXPORTANDO..."
-    task.defer(function()
-        local ok,msg=exportReport()
-        export.Text=ok and "EXPORTADO ✓" or "FALHOU"
-        updateStatus(msg)
-        task.wait(1.8)
-        if State.Alive and export.Parent then export.Text="EXPORTAR JSON" end
-    end)
-end)
-
-local dragging=false
-local dragInput,dragStart,startPos
-connect(frame.InputBegan,function(input)
-    if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then
-        dragging=true dragStart=input.Position startPos=frame.Position
-    end
-end)
-connect(frame.InputChanged,function(input)
-    if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseMovement then dragInput=input end
-end)
-connect(UIS.InputChanged,function(input)
-    if dragging and input==dragInput then
-        local d=input.Position-dragStart
-        frame.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y)
-    end
-end)
-connect(UIS.InputEnded,function(input)
-    if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then dragging=false end
-end)
-
-local function cleanup()
-    if not State.Alive then return end
-    State.Alive=false
-    disconnectAll()
-    _G.PSICO_ROUBE_SCANNER_CLEANUP=nil
-    pcall(function() if State.Gui then State.Gui:Destroy() end end)
-end
-_G.PSICO_ROUBE_SCANNER_CLEANUP=cleanup
-connect(close.MouseButton1Click,cleanup)
-
-hookRemotes()
-
-local lastObserved=nil
-task.defer(function()
-    while State.Alive do
-        task.wait(.15)
-        local hum=getHumanoid()
-        local ws=hum and hum.WalkSpeed or nil
-        if not State.CurrentCarry and finite(ws) then State.LastFreeWalkSpeed=ws end
-        if ws~=lastObserved then
-            State.MovementChanges[#State.MovementChanges+1]={clock=os.clock(),walkSpeed=ws,carrying=State.CurrentCarry~=nil}
-            if #State.MovementChanges>180 then table.remove(State.MovementChanges,1) end
-            lastObserved=ws
-        end
-        updateStatus()
-    end
-end)
-
-task.defer(function()
-    task.wait(.35)
-    if State.Alive then
-        local ok,err=pcall(function() State.Report=buildReport() end)
-        if ok then updateStatus("leitura pronta") else updateStatus("erro: "..safeString(err)) end
-    end
-end)
+local function corner(o)local c=Instance.new("UICorner")c.CornerRadius=UDim.new(0,9)c.Parent=o end
+local function button(p,t,y)local b=Instance.new("TextButton")b.Size=UDim2.new(1,-24,0,31)b.Position=UDim2.new(0,12,1,y)b.BackgroundColor3=Color3.fromRGB(31,43,66)b.BorderSizePixel=0;b.Text=t;b.TextColor3=Color3.fromRGB(240,245,255)b.TextSize=11;b.Font=Enum.Font.GothamMedium;b.Parent=p;corner(b);return b end
+local function label(p,t,y,h,z)local l=Instance.new("TextLabel")l.BackgroundTransparency=1;l.Position=UDim2.fromOffset(12,y);l.Size=UDim2.new(1,-24,0,h);l.Text=t;l.TextColor3=Color3.fromRGB(198,210,232);l.TextSize=z or 10;l.Font=Enum.Font.Gotham;l.TextWrapped=true;l.TextXAlignment=Enum.TextXAlignment.Left;l.Parent=p;return l end
+for _,n in ipairs({"PsicoCarryGuardScannerV10","PsicoCarryGuardScannerV11"})do local x=pg():FindFirstChild(n)if x then x:Destroy()end end
+local gui=Instance.new("ScreenGui")gui.Name="PsicoCarryGuardScannerV11"gui.ResetOnSpawn=false;gui.IgnoreGuiInset=true;gui.Parent=pg();S.Gui=gui
+local vp=Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize or Vector2.new(844,390);local W=math.floor(math.clamp(vp.X*.39,294,350));local H=math.floor(math.min(238,vp.Y*.70))
+local f=Instance.new("Frame")f.AnchorPoint=Vector2.new(.5,.5);f.Position=UDim2.fromScale(.5,.5);f.Size=UDim2.fromOffset(W,H);f.BackgroundColor3=Color3.fromRGB(14,20,32);f.BorderSizePixel=0;f.Parent=gui;corner(f)
+local title=label(f,"CARRY / DISTANCE SCAN V11",8,20,14);title.Font=Enum.Font.GothamBold;local sub=label(f,"peso • boost • distância • perseguição",28,16,9);sub.TextColor3=Color3.fromRGB(102,148,232);local status=label(f,"Preparando...",52,82,10)
+local res=button(f,"ATUALIZAR MAPA / BASE",-81);local ex=button(f,"EXPORTAR JSON",-43);local close=Instance.new("TextButton")close.Size=UDim2.fromOffset(28,28);close.Position=UDim2.new(1,-38,0,8);close.Text="×";close.TextColor3=Color3.new(1,1,1);close.BackgroundColor3=Color3.fromRGB(31,43,66);close.BorderSizePixel=0;close.Parent=f;corner(close)
+local function st(extra)local c=S.Current;status.Text="Amostras: "..#S.Carries.." • corredor: "..((S.Corridor and S.Corridor.resolved)and"OK"or"?")..(c and("\nAgora: "..s(c.areaId or"?")..(finite(c.lastDistanceToSafe)and(" • Safe "..string.format("%.0f",c.lastDistanceToSafe))or"")..(finite(c.minGuardDistance)and(" • Guard "..string.format("%.1f",c.minGuardDistance))or""))or"").."\nPegue e retorne 3-6 ovos de áreas diferentes."..(extra and("\n"..extra)or"")end
+con(res.MouseButton1Click,function()local ok,e=pcall(build);st(ok and"base atualizada"or s(e))end);con(ex.MouseButton1Click,function()ex.Text="EXPORTANDO...";task.defer(function()local ok,m=export();ex.Text=ok and"EXPORTADO ✓"or"FALHOU";st(m);task.wait(1.5);if S.Alive then ex.Text="EXPORTAR JSON"end end)end)
+local dragging,di,ds,fp=false,nil,nil,nil;con(f.InputBegan,function(i)if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseButton1 then dragging=true;ds=i.Position;fp=f.Position end end);con(f.InputChanged,function(i)if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseMovement then di=i end end);con(UIS.InputChanged,function(i)if dragging and i==di then local d=i.Position-ds;f.Position=UDim2.new(fp.X.Scale,fp.X.Offset+d.X,fp.Y.Scale,fp.Y.Offset+d.Y)end end);con(UIS.InputEnded,function(i)if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseButton1 then dragging=false end end)
+local function cleanup()if not S.Alive then return end;S.Alive=false;for _,c in ipairs(S.RC)do pcall(function()c:Disconnect()end)end;for _,c in ipairs(S.C)do pcall(function()c:Disconnect()end)end;_G.PSICO_ROUBE_SCANNER_CLEANUP=nil;pcall(function()gui:Destroy()end)end;_G.PSICO_ROUBE_SCANNER_CLEANUP=cleanup;con(close.MouseButton1Click,cleanup)
+hooks();local lw,lr=nil,0;task.defer(function()while S.Alive do task.wait(.12);local h=hum();local w=h and h.WalkSpeed or nil;if not S.Current and finite(w)then S.LastFree=w end;if w~=lw then S.Move[#S.Move+1]={clock=os.clock(),walkSpeed=w,leaderSpeed=leader(),carrying=S.Current~=nil,boost=boost()};if#S.Move>180 then table.remove(S.Move,1)end;lw=w end;if S.Current and os.clock()-lr>.18 then lr=os.clock();point(S.Current)end;st()end end);task.defer(function()task.wait(.35);if S.Alive then local ok,e=pcall(build);st(ok and"leitura pronta"or s(e))end end)

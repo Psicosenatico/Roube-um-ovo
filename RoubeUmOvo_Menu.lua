@@ -1,792 +1,1052 @@
 --[[
-    PSICOSENATICO | Roube um Ovo
-    Adaptive client-side utility menu.
+PSICOSENATICO | Roube um Ovo - Precision Menu V8.1
+Stable loader path: RoubeUmOvo_Menu.lua
 
-    Features:
-      • Instant Prompt: removes ProximityPrompt hold time as prompts appear.
-      • Dropped Item ESP: highlights dropped/interactable objects using runtime heuristics.
-      • Instant Punch: removes client-visible punch/tool cooldown values when possible.
-      • Adaptive Scanner: watches new instances continuously so no fixed folder names are required.
+Changes in V8.1
+  * Compact, fully transparent ESP text (no pet image / no info background).
+  * ESP keeps metadata for Slot and Dropped eggs.
+  * Responsive menu: reads viewport size and scales itself to <= 70% screen height.
+  * Left vertical navigation + scrollable content.
+  * Smart K/M/B/T number inputs for weight/value filters.
+  * Pet picker with search, full catalog and "available now" mode.
+  * Deterministic cleanup of old/stale ESP artifacts.
 
-    Notes:
-      • Everything here works from client-visible state only.
-      • Server-authoritative cooldowns/validation cannot be bypassed by local property changes.
+Ground truth from Scanner V7
+  * Egg metadata: ReplicatedStorage.Data.Assets
+  * Weight/value/name: ReplicatedStorage.Shared.Util.EggRecords
+  * Current eggs: EggWorld snapshots/events
 ]]
 
-if _G.PSICO_ROUBE_UM_OVO_LOADED then
-    pcall(function()
-        if _G.PSICO_ROUBE_UM_OVO_TOGGLE then
-            _G.PSICO_ROUBE_UM_OVO_TOGGLE()
-        end
-    end)
-    return
-end
-_G.PSICO_ROUBE_UM_OVO_LOADED = true
+if _G.PSICO_ROUBE_SCANNER_CLEANUP then pcall(_G.PSICO_ROUBE_SCANNER_CLEANUP) end
+if _G.PSICO_ROUBE_MENU_CLEANUP then pcall(_G.PSICO_ROUBE_MENU_CLEANUP) end
 
 local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
 local UIS = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local CollectionService = game:GetService("CollectionService")
-local Workspace = game:GetService("Workspace")
 
-local LocalPlayer = Players.LocalPlayer
+local LP = Players.LocalPlayer
 
 local CONFIG = {
+    EggESP = true,
     InstantPrompt = true,
-    ItemESP = true,
-    InstantPunch = true,
-    ScanInterval = 1.25,
-    MaxEspDistance = 1500,
+    InstantHit = true,
+    MinRarity = 0,
+    MinWeightKg = 0,
+    MinSellPrice = 0,
+    SelectedPet = "",
+    MutationMode = "Todas",
+    PetListAvailableOnly = false,
+    MaxEspDistance = 10000,
+}
+
+local RARITY_ORDER = {
+    "Common","Uncommon","Rare","Epic","Legendary",
+    "Mythic","Cosmic","Secret","Eternal","Divine"
 }
 
 local State = {
     Alive = true,
     Connections = {},
-    PromptOriginals = setmetatable({}, {__mode = "k"}),
-    CooldownOriginals = setmetatable({}, {__mode = "k"}),
-    EspObjects = setmetatable({}, {__mode = "k"}),
-    SeenCandidates = setmetatable({}, {__mode = "k"}),
-    Stats = {
-        Prompts = 0,
-        Items = 0,
-        PunchTools = 0,
-    }
+    RemoteConnections = {},
+    RawRecords = {},
+    Eggs = {},
+    CatalogIndex = {},
+    CatalogEntries = {},
+    RarityMeta = {},
+    ESP = {},
+    PromptOriginals = setmetatable({}, {__mode="k"}),
+    BatOriginals = setmetatable({}, {__mode="k"}),
+    WatchedBats = setmetatable({}, {__mode="k"}),
+    Stats = {EspVisible=0,CatalogPets=0,CatalogRarities=0},
+    LastError = nil,
 }
 
-local function connect(signal, callback)
-    local c = signal:Connect(callback)
-    table.insert(State.Connections, c)
-    return c
-end
+local AssetsData
+local EggRecords
+local gui
+local mainFrame
+local uiScale
+local floatButton
+local statusLabel
+local rarityButton
+local mutationButton
+local petButton
+local availabilityButton
+local espToggleButton
+local promptToggleButton
+local hitToggleButton
+local petModal
+local petSearchBox
+local petList
 
-local function safeDisconnect(c)
-    pcall(function()
-        c:Disconnect()
-    end)
+local function safeString(v)
+    local ok,s = pcall(tostring,v)
+    return ok and s or "?"
 end
 
 local function lower(v)
-    return string.lower(tostring(v or ""))
+    return string.lower(safeString(v or ""))
 end
 
-local function containsAny(text, words)
-    text = lower(text)
-    for _, word in ipairs(words) do
-        if string.find(text, word, 1, true) then
-            return true
-        end
-    end
-    return false
+local function normalize(v)
+    return lower(v):gsub("[%s_%-%.:/%[%]%(%)']","")
 end
 
-local ITEM_WORDS = {
-    "ovo", "egg", "item", "drop", "dropped", "loot", "pickup", "pick up",
-    "colet", "collect", "grab", "steal", "roub", "reward", "coin", "cash",
-    "money", "gema", "gem", "crate", "box", "presente", "gift"
-}
-
-local PUNCH_WORDS = {
-    "soco", "punch", "fist", "hit", "attack", "combat", "melee", "tapa",
-    "slap", "murro", "bater"
-}
-
-local COOLDOWN_WORDS = {
-    "cooldown", "cool_down", "cd", "delay", "debounce", "interval", "recovery",
-    "recover", "attackspeed", "attack_speed", "swingdelay", "swing_delay",
-    "hitdelay", "hit_delay", "punchdelay", "punch_delay"
-}
-
-local function isCharacter(inst)
-    if not inst then return false end
-    local model = inst:IsA("Model") and inst or inst:FindFirstAncestorOfClass("Model")
-    if not model then return false end
-    if model:FindFirstChildOfClass("Humanoid") then
-        return true
-    end
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player.Character == model then
-            return true
-        end
-    end
-    return false
+local function finite(v)
+    return type(v)=="number" and v==v and v~=math.huge and v~=-math.huge
 end
 
-local function getAdornee(inst)
-    if not inst or not inst.Parent then return nil end
-    if inst:IsA("BasePart") then
-        return inst
-    end
-    if inst:IsA("Tool") then
-        return inst:FindFirstChild("Handle") or inst:FindFirstChildWhichIsA("BasePart", true)
-    end
-    if inst:IsA("Model") then
-        return inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart", true)
-    end
-    return inst:FindFirstAncestorWhichIsA("BasePart")
+local function connect(signal,fn,bucket)
+    local c = signal:Connect(fn)
+    table.insert(bucket or State.Connections,c)
+    return c
 end
 
-local function nearestVisualRoot(inst)
-    if not inst then return nil end
-    if inst:IsA("Tool") or inst:IsA("Model") or inst:IsA("BasePart") then
-        return inst
-    end
-
-    local tool = inst:FindFirstAncestorOfClass("Tool")
-    if tool and tool:IsDescendantOf(Workspace) then
-        return tool
-    end
-
-    local model = inst:FindFirstAncestorOfClass("Model")
-    if model and model:IsDescendantOf(Workspace) and not isCharacter(model) then
-        return model
-    end
-
-    return inst:FindFirstAncestorWhichIsA("BasePart")
+local function disconnect(c)
+    pcall(function() c:Disconnect() end)
 end
 
-local function hasItemTag(inst)
-    local current = inst
-    for _ = 1, 4 do
-        if not current then break end
-        local ok, tags = pcall(CollectionService.GetTags, CollectionService, current)
-        if ok then
-            for _, tag in ipairs(tags) do
-                if containsAny(tag, ITEM_WORDS) then
-                    return true
-                end
-            end
-        end
-        current = current.Parent
-    end
-    return false
+local function countMap(t)
+    local n=0
+    for _ in pairs(t) do n=n+1 end
+    return n
 end
 
-local function hasItemAttribute(inst)
-    local current = inst
-    for _ = 1, 4 do
-        if not current then break end
-        local ok, attrs = pcall(current.GetAttributes, current)
-        if ok then
-            for key, value in pairs(attrs) do
-                local joined = tostring(key) .. " " .. tostring(value)
-                if containsAny(joined, ITEM_WORDS) then
-                    return true
-                end
-            end
-        end
-        current = current.Parent
-    end
-    return false
+local function uiParent()
+    local ok,h = pcall(function() if gethui then return gethui() end end)
+    return (ok and h) or CoreGui
 end
 
-local function hasPrompt(inst)
-    if not inst then return false end
-    if inst:IsA("ProximityPrompt") then return true end
-    return inst:FindFirstChildWhichIsA("ProximityPrompt", true) ~= nil
-end
-
-local function looksLikeDroppedItem(inst)
-    if not inst or not inst.Parent or not inst:IsDescendantOf(Workspace) then
-        return false
-    end
-    if isCharacter(inst) then
-        return false
-    end
-
-    if inst:IsA("Tool") then
-        return true
-    end
-
-    local root = nearestVisualRoot(inst)
-    if not root or isCharacter(root) then
-        return false
-    end
-
-    local combinedName = root.Name
-    if root.Parent then
-        combinedName = combinedName .. " " .. root.Parent.Name
-    end
-
-    if containsAny(combinedName, ITEM_WORDS) then
-        return true
-    end
-
-    if hasItemTag(root) or hasItemAttribute(root) then
-        return true
-    end
-
-    -- Interactable world objects are strong candidates in this game type.
-    -- Ignore very generic character/NPC-like models above.
-    if hasPrompt(root) and (root:IsA("Model") or root:IsA("Tool") or root:IsA("BasePart")) then
-        return true
-    end
-
-    return false
-end
-
-local function removeESP(root)
-    local record = State.EspObjects[root]
-    if record then
-        for _, obj in pairs(record) do
-            if typeof(obj) == "Instance" then
-                pcall(function() obj:Destroy() end)
-            end
-        end
-        State.EspObjects[root] = nil
+local function findExact(className,name)
+    for _,d in ipairs(ReplicatedStorage:GetDescendants()) do
+        if d.ClassName==className and d.Name==name then return d end
     end
 end
 
-local function createESP(root)
-    if not CONFIG.ItemESP or not root or not root.Parent or State.EspObjects[root] then
-        return
-    end
+local function resolveModules()
+    local data = ReplicatedStorage:FindFirstChild("Data")
+    local assetsModule = data and data:FindFirstChild("Assets")
+    local shared = ReplicatedStorage:FindFirstChild("Shared")
+    local util = shared and shared:FindFirstChild("Util")
+    local recordsModule = util and util:FindFirstChild("EggRecords")
+    if not (assetsModule and assetsModule:IsA("ModuleScript")) then return false,"Data.Assets ausente" end
+    if not (recordsModule and recordsModule:IsA("ModuleScript")) then return false,"EggRecords ausente" end
+    local aok,a = pcall(require,assetsModule)
+    if not aok or typeof(a)~="table" then return false,"Assets require falhou" end
+    local rok,r = pcall(require,recordsModule)
+    if not rok or typeof(r)~="table" then return false,"EggRecords require falhou" end
+    AssetsData = a
+    EggRecords = r
+    return true
+end
 
-    local adornee = getAdornee(root)
-    if not adornee then return end
-
-    local highlight = Instance.new("Highlight")
-    highlight.Name = "PsicoItemHighlight"
-    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    highlight.FillTransparency = 0.55
-    highlight.OutlineTransparency = 0
-    highlight.Adornee = root
-    highlight.Parent = root
-
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = "PsicoItemBillboard"
-    billboard.AlwaysOnTop = true
-    billboard.Size = UDim2.fromOffset(180, 34)
-    billboard.StudsOffset = Vector3.new(0, 2.25, 0)
-    billboard.MaxDistance = CONFIG.MaxEspDistance
-    billboard.Adornee = adornee
-    billboard.Parent = adornee
-
-    local label = Instance.new("TextLabel")
-    label.BackgroundTransparency = 1
-    label.Size = UDim2.fromScale(1, 1)
-    label.Font = Enum.Font.GothamBold
-    label.TextScaled = true
-    label.TextStrokeTransparency = 0.15
-    label.Text = "📦 " .. root.Name
-    label.Parent = billboard
-
-    State.EspObjects[root] = {
-        Highlight = highlight,
-        Billboard = billboard,
+local function indexEntry(key,cfg)
+    if typeof(cfg)~="table" or typeof(cfg.Egg)~="table" or typeof(cfg.Rarity)~="table" then return false end
+    local rarity = cfg.Rarity
+    local egg = cfg.Egg
+    local entry = {
+        Key = safeString(key),
+        PetName = cfg.DisplayName or safeString(key),
+        EggName = egg.DisplayName,
+        BaseWeightKg = egg.WeightKg,
+        Rarity = rarity.DisplayName or rarity._id,
+        RarityId = rarity._id or rarity.DisplayName,
+        RarityNumber = rarity.RarityNumber,
+        RarityOdds = rarity.DefaultRarityValue,
+        RarityColor = rarity.Color,
+        GrowthTime = egg.GrowthTime,
+        EarningRate = cfg.EarningRate,
+        ModelWeight = cfg.ModelWeight,
+        VisualOdds = cfg.VisualOdds,
     }
+    for _,name in ipairs({entry.Key,entry.PetName,entry.EggName}) do
+        if type(name)=="string" and name~="" then
+            State.CatalogIndex[normalize(name)] = entry
+            local noEgg = name:gsub("%s+[Ee][Gg][Gg]$","")
+            local nk = normalize(noEgg)
+            if not State.CatalogIndex[nk] then State.CatalogIndex[nk]=entry end
+        end
+    end
+    State.CatalogEntries[#State.CatalogEntries+1] = entry
+    if entry.RarityId then
+        State.RarityMeta[entry.RarityId] = {
+            Name=entry.Rarity,
+            Number=entry.RarityNumber,
+            Odds=entry.RarityOdds,
+            Color=entry.RarityColor,
+        }
+    end
+    return true
+end
+
+local function buildCatalog()
+    State.CatalogIndex = {}
+    State.CatalogEntries = {}
+    State.RarityMeta = {}
+    local found=0
+    if typeof(AssetsData)~="table" then return false end
+    if typeof(AssetsData.ByRarity)=="table" then
+        for _,group in pairs(AssetsData.ByRarity) do
+            if typeof(group)=="table" then
+                for key,cfg in pairs(group) do
+                    if indexEntry(key,cfg) then found=found+1 end
+                end
+            end
+        end
+    end
+    if found==0 and typeof(AssetsData.Configs)=="table" then
+        for key,cfg in pairs(AssetsData.Configs) do
+            if indexEntry(key,cfg) then found=found+1 end
+        end
+    end
+    table.sort(State.CatalogEntries,function(a,b)
+        local ar,br = tonumber(a.RarityNumber) or 999,tonumber(b.RarityNumber) or 999
+        if ar==br then return safeString(a.PetName)<safeString(b.PetName) end
+        return ar<br
+    end)
+    State.Stats.CatalogPets = found
+    State.Stats.CatalogRarities = countMap(State.RarityMeta)
+    return found>0
+end
+
+local function findCatalog(assetCategory)
+    if type(assetCategory)~="string" then return nil end
+    return State.CatalogIndex[normalize(assetCategory)]
+end
+
+local function callEggFn(name,record)
+    if typeof(EggRecords)~="table" then return nil,false end
+    local fn = EggRecords[name]
+    if type(fn)~="function" then return nil,false end
+    local ok,v = pcall(fn,record)
+    if ok then return v,true end
+    local ok2,v2 = pcall(fn,EggRecords,record)
+    if ok2 then return v2,true end
+    return nil,false
+end
+
+local function copyMutations(v)
+    local out={}
+    if typeof(v)=="table" then
+        for _,m in pairs(v) do out[#out+1]=safeString(m) end
+        table.sort(out)
+    end
+    return out
+end
+
+local function visualForUid(uid)
+    local folder = Workspace:FindFirstChild("AreaEggSlotsClient")
+    if folder then
+        local model = folder:FindFirstChild(uid)
+        if model then return model end
+    end
+    return Workspace:FindFirstChild(uid)
+end
+
+local function getAdornee(root)
+    if not root then return nil end
+    if root:IsA("BasePart") then return root end
+    if root:IsA("Model") then return root.PrimaryPart or root:FindFirstChildWhichIsA("BasePart",true) end
+    return root:FindFirstChildWhichIsA("BasePart",true)
+end
+
+local function validEggState(state)
+    return state=="Slot" or state=="Dropped"
+end
+
+local function enrichRecord(record,source)
+    if typeof(record)~="table" or type(record.Uid)~="string" or not validEggState(record.State) then return false end
+    local cfg = findCatalog(record.AssetCategory)
+    local weight,wok = callEggFn("WeightKg",record)
+    local weightLabel,lok = callEggFn("WeightLabel",record)
+    local sell,sok = callEggFn("SellPrice",record)
+    local gameName,nok = callEggFn("DisplayName",record)
+    local withWeight,dok = callEggFn("DisplayNameWithWeight",record)
+    local uid = record.Uid
+    State.RawRecords[uid] = record
+    State.Eggs[uid] = {
+        Uid=uid,
+        Source=source,
+        State=record.State,
+        AreaId=record.AreaId,
+        NestId=record.NestId,
+        AssetCategory=record.AssetCategory,
+        AssetScale=record.AssetScale,
+        NestScale=record.NestScale,
+        BaseMutation=record.BaseMutation,
+        Mutations=copyMutations(record.Mutations),
+        HasParasite=record.HasParasite==true,
+        PetName=cfg and cfg.PetName or record.AssetCategory,
+        EggName=cfg and cfg.EggName or nil,
+        Rarity=cfg and cfg.Rarity or record.Rarity,
+        RarityId=cfg and cfg.RarityId or nil,
+        RarityNumber=cfg and cfg.RarityNumber or nil,
+        RarityOdds=cfg and cfg.RarityOdds or nil,
+        RarityColor=cfg and cfg.RarityColor or nil,
+        BaseWeightKg=cfg and cfg.BaseWeightKg or nil,
+        GrowthTime=cfg and cfg.GrowthTime or nil,
+        EarningRate=cfg and cfg.EarningRate or nil,
+        ModelWeight=cfg and cfg.ModelWeight or nil,
+        VisualOdds=cfg and cfg.VisualOdds or nil,
+        WeightKg=(wok and finite(weight)) and weight or nil,
+        WeightLabel=lok and safeString(weightLabel) or nil,
+        SellPrice=(sok and finite(sell)) and sell or nil,
+        GameDisplayName=nok and safeString(gameName) or nil,
+        DisplayNameWithWeight=dok and safeString(withWeight) or nil,
+    }
+    return true
+end
+
+local function removeEgg(uid)
+    if type(uid)~="string" then return end
+    State.RawRecords[uid]=nil
+    State.Eggs[uid]=nil
+end
+
+local function ingestTree(value,source,seen,depth)
+    if typeof(value)~="table" then return 0 end
+    seen=seen or {}
+    depth=depth or 0
+    if depth>8 or seen[value] then return 0 end
+    seen[value]=true
+    local found=0
+    if type(value.Uid)=="string" and value.State~=nil then
+        if validEggState(value.State) then
+            if enrichRecord(value,source) then found=found+1 end
+        else
+            removeEgg(value.Uid)
+        end
+    else
+        pcall(function()
+            local n=0
+            for _,child in pairs(value) do
+                n=n+1
+                if n>2200 then break end
+                if typeof(child)=="table" then found=found+ingestTree(child,source,seen,depth+1) end
+            end
+        end)
+    end
+    seen[value]=nil
+    return found
+end
+
+local function requestSnapshots()
+    local total=0
+    for _,name in ipairs({"RF/EggWorld/AskFieldEggSnapshot","RF/EggWorld/AskLiveSnapshot"}) do
+        local rf=findExact("RemoteFunction",name)
+        if rf then
+            local ok,res=pcall(function() return rf:InvokeServer() end)
+            if ok then total=total+ingestTree(res,"snapshot:"..name) end
+        end
+    end
+    return total
+end
+
+local function formatCompact(n)
+    if not finite(n) then return "?" end
+    local a=math.abs(n)
+    if a>=1e12 then return string.format("%.2fT",n/1e12):gsub("%.?0+T$","T") end
+    if a>=1e9 then return string.format("%.2fB",n/1e9):gsub("%.?0+B$","B") end
+    if a>=1e6 then return string.format("%.2fM",n/1e6):gsub("%.?0+M$","M") end
+    if a>=1e3 then return string.format("%.1fK",n/1e3):gsub("%.0K$","K") end
+    if a>=100 then return tostring(math.floor(n+0.5)) end
+    return string.format("%.1f",n):gsub("%.0$","")
+end
+
+local function parseSmartNumber(text)
+    local s=string.upper(safeString(text or ""))
+    s=s:gsub("%s+",""):gsub("%$",""):gsub("KG","")
+    if s=="" then return 0 end
+    local suffix=s:match("([KMBT])$")
+    if suffix then s=s:sub(1,-2) end
+    s=s:gsub(",",".")
+    local n=tonumber(s)
+    if not n then return 0 end
+    local mult={K=1e3,M=1e6,B=1e9,T=1e12}
+    if suffix then n=n*(mult[suffix] or 1) end
+    if not finite(n) or n<0 then return 0 end
+    return n
+end
+
+local function rarityFallbackColor(rarity)
+    local map={
+        Common=Color3.fromRGB(210,210,210),
+        Uncommon=Color3.fromRGB(91,210,116),
+        Rare=Color3.fromRGB(77,151,255),
+        Epic=Color3.fromRGB(181,91,255),
+        Legendary=Color3.fromRGB(255,174,58),
+        Mythic=Color3.fromRGB(255,71,121),
+        Cosmic=Color3.fromRGB(150,67,255),
+        Secret=Color3.fromRGB(245,245,245),
+        Eternal=Color3.fromRGB(245,71,255),
+        Divine=Color3.fromRGB(52,255,238),
+    }
+    return map[rarity] or Color3.fromRGB(230,235,255)
+end
+
+local function eggColor(egg)
+    return typeof(egg.RarityColor)=="Color3" and egg.RarityColor or rarityFallbackColor(egg.Rarity)
+end
+
+local function currentMutationOptions()
+    local out={"Todas","Com mutação","Sem mutação"}
+    local seen={}
+    for _,egg in pairs(State.Eggs) do
+        for _,m in ipairs(egg.Mutations or {}) do
+            if not seen[m] then seen[m]=true out[#out+1]=m end
+        end
+    end
+    table.sort(out,function(a,b)
+        local fixed={ ["Todas"]=1,["Com mutação"]=2,["Sem mutação"]=3 }
+        local aa,bb=fixed[a],fixed[b]
+        if aa or bb then return (aa or 99)<(bb or 99) end
+        return a<b
+    end)
+    return out
+end
+
+local function mutationPass(egg)
+    local mode=CONFIG.MutationMode
+    local muts=egg.Mutations or {}
+    if mode=="Todas" then return true end
+    if mode=="Com mutação" then return #muts>0 end
+    if mode=="Sem mutação" then return #muts==0 end
+    for _,m in ipairs(muts) do if m==mode then return true end end
+    return false
+end
+
+local function eggPasses(egg)
+    if not CONFIG.EggESP then return false end
+    if (tonumber(egg.RarityNumber) or 0)<CONFIG.MinRarity then return false end
+    if (tonumber(egg.WeightKg) or 0)<CONFIG.MinWeightKg then return false end
+    if (tonumber(egg.SellPrice) or 0)<CONFIG.MinSellPrice then return false end
+    if CONFIG.SelectedPet~="" then
+        local selected=normalize(CONFIG.SelectedPet)
+        local pet=normalize(egg.PetName or egg.AssetCategory or "")
+        local cat=normalize(egg.AssetCategory or "")
+        if pet~=selected and cat~=selected then return false end
+    end
+    return mutationPass(egg)
+end
+
+local function destroyEspRecord(uid)
+    local rec=State.ESP[uid]
+    if not rec then return end
+    for _,obj in pairs(rec) do
+        if typeof(obj)=="Instance" then pcall(function() obj:Destroy() end) end
+    end
+    State.ESP[uid]=nil
+end
+
+local function sweepOwnedESP()
+    for uid in pairs(State.ESP) do destroyEspRecord(uid) end
+    local ownedNames={PSICO_EGG_HIGHLIGHT=true,PSICO_EGG_BILLBOARD=true,PsicoItemHighlight=true,PsicoItemBillboard=true,PSICO_DROP_HIGHLIGHT=true,PSICO_DROP_BILLBOARD=true}
+    for _,d in ipairs(Workspace:GetDescendants()) do
+        if ownedNames[d.Name] then pcall(function() d:Destroy() end) end
+    end
+    if gui then
+        for _,d in ipairs(gui:GetDescendants()) do
+            if ownedNames[d.Name] then pcall(function() d:Destroy() end) end
+        end
+    end
+end
+
+local function playerRoot()
+    local char=LP.Character
+    return char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
+end
+
+local function visualPosition(visual)
+    if not visual then return nil end
+    if visual:IsA("BasePart") then return visual.Position end
+    if visual:IsA("Model") then
+        local ok,cf=pcall(visual.GetPivot,visual)
+        if ok then return cf.Position end
+        local p=visual.PrimaryPart or visual:FindFirstChildWhichIsA("BasePart",true)
+        return p and p.Position or nil
+    end
+    local p=visual:FindFirstChildWhichIsA("BasePart",true)
+    return p and p.Position or nil
+end
+
+local function distanceLabel(visual)
+    local root=playerRoot()
+    local pos=visualPosition(visual)
+    if not root or not pos then return "" end
+    return tostring(math.floor((root.Position-pos).Magnitude+0.5)).."m"
+end
+
+local function espText(egg,visual)
+    local line1=(egg.PetName or egg.AssetCategory or "Ovo").." • "..(egg.Rarity or "?")
+    local w=egg.WeightLabel or ((egg.WeightKg and (formatCompact(egg.WeightKg).."Kg")) or "?Kg")
+    local value=egg.SellPrice and ("$"..formatCompact(egg.SellPrice)) or "$?"
+    local line2=w.." • "..value
+    if egg.Mutations and #egg.Mutations>0 then line2=line2.." • "..table.concat(egg.Mutations,"+") end
+    return line1,line2,distanceLabel(visual)
+end
+
+local function createESP(uid,egg,visual)
+    local adornee=getAdornee(visual)
+    if not adornee then return end
+    local color=eggColor(egg)
+    local h=Instance.new("Highlight")
+    h.Name="PSICO_EGG_HIGHLIGHT"
+    h.Adornee=visual
+    h.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+    h.FillColor=color
+    h.OutlineColor=color
+    h.FillTransparency=.84
+    h.OutlineTransparency=.08
+    h.Parent=visual
+
+    local bb=Instance.new("BillboardGui")
+    bb.Name="PSICO_EGG_BILLBOARD"
+    bb.Adornee=adornee
+    bb.AlwaysOnTop=true
+    bb.MaxDistance=CONFIG.MaxEspDistance
+    bb.Size=UDim2.fromOffset(150,44)
+    bb.StudsOffset=Vector3.new(0,1.9,0)
+    bb.Parent=gui
+
+    local l1=Instance.new("TextLabel")
+    l1.BackgroundTransparency=1
+    l1.Position=UDim2.fromOffset(0,0)
+    l1.Size=UDim2.new(1,0,0,15)
+    l1.Font=Enum.Font.GothamBold
+    l1.TextSize=10
+    l1.TextXAlignment=Enum.TextXAlignment.Center
+    l1.TextColor3=color
+    l1.TextStrokeColor3=Color3.new(0,0,0)
+    l1.TextStrokeTransparency=.12
+    l1.Parent=bb
+
+    local l2=Instance.new("TextLabel")
+    l2.BackgroundTransparency=1
+    l2.Position=UDim2.fromOffset(0,14)
+    l2.Size=UDim2.new(1,0,0,14)
+    l2.Font=Enum.Font.GothamSemibold
+    l2.TextSize=9
+    l2.TextXAlignment=Enum.TextXAlignment.Center
+    l2.TextColor3=Color3.fromRGB(245,248,255)
+    l2.TextStrokeColor3=Color3.new(0,0,0)
+    l2.TextStrokeTransparency=.18
+    l2.Parent=bb
+
+    local l3=Instance.new("TextLabel")
+    l3.BackgroundTransparency=1
+    l3.Position=UDim2.fromOffset(0,27)
+    l3.Size=UDim2.new(1,0,0,12)
+    l3.Font=Enum.Font.Gotham
+    l3.TextSize=8
+    l3.TextXAlignment=Enum.TextXAlignment.Center
+    l3.TextColor3=Color3.fromRGB(220,226,239)
+    l3.TextStrokeColor3=Color3.new(0,0,0)
+    l3.TextStrokeTransparency=.25
+    l3.Parent=bb
+
+    local t1,t2,t3=espText(egg,visual)
+    l1.Text=t1 l2.Text=t2 l3.Text=t3
+    State.ESP[uid]={Highlight=h,Billboard=bb,Visual=visual,Line1=l1,Line2=l2,Line3=l3}
 end
 
 local function refreshESP()
-    local count = 0
-    local candidates = {}
-
-    for _, inst in ipairs(Workspace:GetDescendants()) do
-        if inst:IsA("Tool") or inst:IsA("ProximityPrompt") then
-            local root = nearestVisualRoot(inst)
-            if root and not candidates[root] and looksLikeDroppedItem(root) then
-                candidates[root] = true
-                count += 1
-                if CONFIG.ItemESP then
-                    createESP(root)
-                end
-            end
-        elseif (inst:IsA("Model") or inst:IsA("BasePart")) and containsAny(inst.Name, ITEM_WORDS) then
-            local root = nearestVisualRoot(inst)
-            if root and not candidates[root] and looksLikeDroppedItem(root) then
-                candidates[root] = true
-                count += 1
-                if CONFIG.ItemESP then
-                    createESP(root)
+    if not State.Alive then return end
+    local visible=0
+    local keep={}
+    for uid,egg in pairs(State.Eggs) do
+        if eggPasses(egg) then
+            local visual=visualForUid(uid)
+            if visual then
+                keep[uid]=true
+                visible=visible+1
+                local rec=State.ESP[uid]
+                if not rec or rec.Visual~=visual or not rec.Highlight.Parent or not rec.Billboard.Parent then
+                    destroyEspRecord(uid)
+                    createESP(uid,egg,visual)
+                else
+                    local color=eggColor(egg)
+                    rec.Highlight.FillColor=color
+                    rec.Highlight.OutlineColor=color
+                    local t1,t2,t3=espText(egg,visual)
+                    rec.Line1.Text=t1 rec.Line1.TextColor3=color rec.Line2.Text=t2 rec.Line3.Text=t3
                 end
             end
         end
     end
+    for uid in pairs(State.ESP) do if not keep[uid] then destroyEspRecord(uid) end end
+    State.Stats.EspVisible=visible
+end
 
-    for root in pairs(State.EspObjects) do
-        if not CONFIG.ItemESP or not root.Parent or not candidates[root] then
-            removeESP(root)
-        end
+local function stateCounts()
+    local slots,dropped=0,0
+    for _,egg in pairs(State.Eggs) do
+        if egg.State=="Slot" then slots=slots+1 elseif egg.State=="Dropped" then dropped=dropped+1 end
     end
+    return slots,dropped
+end
 
-    State.Stats.Items = count
+local function refreshStatus(extra)
+    if not statusLabel then return end
+    local slots,dropped=stateCounts()
+    local minR=CONFIG.MinRarity==0 and "Todas" or (RARITY_ORDER[CONFIG.MinRarity] or tostring(CONFIG.MinRarity))
+    statusLabel.Text=string.format("N:%d • Chão:%d • ESP:%d • ≥%s%s",slots,dropped,State.Stats.EspVisible,minR,extra and (" • "..extra) or "")
+end
+
+local function updateToggleVisual(btn,on)
+    if not btn then return end
+    btn.TextColor3=Color3.fromRGB(245,248,255)
+    btn.BackgroundColor3=on and Color3.fromRGB(42,91,190) or Color3.fromRGB(35,44,61)
+    local base=btn:GetAttribute("BaseLabel") or btn.Text
+    btn.Text=base..(on and "  ON" or "  OFF")
 end
 
 local function applyPrompt(prompt)
     if not prompt:IsA("ProximityPrompt") then return end
-
-    if State.PromptOriginals[prompt] == nil then
-        State.PromptOriginals[prompt] = {
-            HoldDuration = prompt.HoldDuration,
-        }
-    end
-
+    local original=State.PromptOriginals[prompt]
+    if not original and prompt.HoldDuration>0 then original=prompt.HoldDuration State.PromptOriginals[prompt]=original end
     if CONFIG.InstantPrompt then
-        pcall(function()
-            prompt.HoldDuration = 0
-        end)
-    else
-        local original = State.PromptOriginals[prompt]
-        if original then
-            pcall(function()
-                prompt.HoldDuration = original.HoldDuration
-            end)
-        end
-    end
+        if original and prompt.HoldDuration~=0 then pcall(function() prompt.HoldDuration=0 end) end
+    elseif original then pcall(function() prompt.HoldDuration=original end) end
 end
 
 local function refreshPrompts()
-    local count = 0
-    for _, inst in ipairs(Workspace:GetDescendants()) do
-        if inst:IsA("ProximityPrompt") then
-            count += 1
-            applyPrompt(inst)
-        end
-    end
-    State.Stats.Prompts = count
+    for _,d in ipairs(Workspace:GetDescendants()) do if d:IsA("ProximityPrompt") then applyPrompt(d) end end
 end
 
-local function isPunchTool(tool)
-    if not tool or not tool:IsA("Tool") then return false end
-    if containsAny(tool.Name, PUNCH_WORDS) then return true end
-
-    local ok, attrs = pcall(tool.GetAttributes, tool)
-    if ok then
-        for key, value in pairs(attrs) do
-            if containsAny(tostring(key) .. " " .. tostring(value), PUNCH_WORDS) then
-                return true
-            end
-        end
-    end
-
-    for _, child in ipairs(tool:GetDescendants()) do
-        if containsAny(child.Name, PUNCH_WORDS) then
-            return true
-        end
-    end
-
-    return false
+local BAT_ATTRS={"CooldownActive","CooldownEndTime","CooldownDuration"}
+local function isBat(tool)
+    if not (tool and tool:IsA("Tool")) then return false end
+    if tool:GetAttribute("IsBat")==true then return true end
+    return lower(safeString(tool:GetAttribute("GearName") or "")):find("bat",1,true)~=nil
 end
 
-local function zeroCooldownObject(obj)
-    if not containsAny(obj.Name, COOLDOWN_WORDS) then return end
-
-    if obj:IsA("NumberValue") or obj:IsA("IntValue") then
-        if State.CooldownOriginals[obj] == nil then
-            State.CooldownOriginals[obj] = obj.Value
-        end
-        if CONFIG.InstantPunch then
-            pcall(function() obj.Value = 0 end)
-        else
-            local original = State.CooldownOriginals[obj]
-            if original ~= nil then
-                pcall(function() obj.Value = original end)
-            end
-        end
+local function patchBat(tool)
+    if not isBat(tool) then return false end
+    local original=State.BatOriginals[tool]
+    if not original then
+        original={Enabled=tool.Enabled,Attrs={}}
+        for _,a in ipairs(BAT_ATTRS) do original.Attrs[a]=tool:GetAttribute(a) end
+        State.BatOriginals[tool]=original
     end
-end
-
-local function patchTool(tool)
-    if not isPunchTool(tool) then return false end
-
-    if CONFIG.InstantPunch then
-        pcall(function() tool.Enabled = true end)
+    if CONFIG.InstantHit then
+        pcall(function() tool.Enabled=true end)
+        pcall(function() if tool:GetAttribute("CooldownActive")~=false then tool:SetAttribute("CooldownActive",false) end end)
+        pcall(function() if tool:GetAttribute("CooldownEndTime")~=0 then tool:SetAttribute("CooldownEndTime",0) end end)
+        pcall(function() if tool:GetAttribute("CooldownDuration")~=0 then tool:SetAttribute("CooldownDuration",0) end end)
+    else
+        pcall(function() tool.Enabled=original.Enabled end)
+        for _,a in ipairs(BAT_ATTRS) do pcall(function() tool:SetAttribute(a,original.Attrs[a]) end) end
     end
-
-    for _, child in ipairs(tool:GetDescendants()) do
-        zeroCooldownObject(child)
-    end
-
-    local ok, attrs = pcall(tool.GetAttributes, tool)
-    if ok then
-        for key, value in pairs(attrs) do
-            if containsAny(key, COOLDOWN_WORDS) and typeof(value) == "number" then
-                local cacheKey = tostring(tool:GetDebugId()) .. ":attr:" .. key
-                if State.CooldownOriginals[cacheKey] == nil then
-                    State.CooldownOriginals[cacheKey] = value
-                end
-                if CONFIG.InstantPunch then
-                    pcall(function() tool:SetAttribute(key, 0) end)
-                else
-                    pcall(function() tool:SetAttribute(key, State.CooldownOriginals[cacheKey]) end)
-                end
-            end
+    if not State.WatchedBats[tool] then
+        State.WatchedBats[tool]=true
+        for _,a in ipairs(BAT_ATTRS) do
+            connect(tool:GetAttributeChangedSignal(a),function()
+                if State.Alive and CONFIG.InstantHit then task.defer(function() if tool.Parent then patchBat(tool) end end) end
+            end)
         end
     end
-
     return true
 end
 
-local function getPlayerContainers()
-    local out = {}
-    if LocalPlayer.Character then table.insert(out, LocalPlayer.Character) end
-    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
-    if backpack then table.insert(out, backpack) end
-    return out
+local function refreshBats()
+    local containers={}
+    if LP.Character then containers[#containers+1]=LP.Character end
+    local bp=LP:FindFirstChildOfClass("Backpack")
+    if bp then containers[#containers+1]=bp end
+    for _,container in ipairs(containers) do
+        for _,child in ipairs(container:GetChildren()) do if child:IsA("Tool") then patchBat(child) end end
+    end
 end
 
-local function refreshPunch()
-    local found = 0
-    for _, container in ipairs(getPlayerContainers()) do
-        for _, child in ipairs(container:GetChildren()) do
-            if child:IsA("Tool") and patchTool(child) then
-                found += 1
+local function restoreBats()
+    for tool,original in pairs(State.BatOriginals) do
+        if tool and tool.Parent then
+            pcall(function() tool.Enabled=original.Enabled end)
+            for _,a in ipairs(BAT_ATTRS) do pcall(function() tool:SetAttribute(a,original.Attrs[a]) end) end
+        end
+    end
+end
+
+local refreshQueued=false
+local function queueRefresh()
+    if refreshQueued then return end
+    refreshQueued=true
+    task.defer(function()
+        task.wait(.05)
+        refreshQueued=false
+        refreshESP()
+        refreshStatus()
+    end)
+end
+
+local function hookEggRemotes()
+    for _,d in ipairs(ReplicatedStorage:GetDescendants()) do
+        if d:IsA("RemoteEvent") then
+            if d.Name=="RE/EggWorld/FieldEggShifted" then
+                connect(d.OnClientEvent,function(record)
+                    if not State.Alive or typeof(record)~="table" then return end
+                    if validEggState(record.State) then enrichRecord(record,"shifted") elseif type(record.Uid)=="string" then removeEgg(record.Uid) end
+                    queueRefresh()
+                end,State.RemoteConnections)
+            elseif d.Name=="RE/EggWorld/FieldEggBatchShifted" then
+                connect(d.OnClientEvent,function(payload)
+                    if not State.Alive or typeof(payload)~="table" then return end
+                    if typeof(payload.RemovedUids)=="table" then for _,uid in pairs(payload.RemovedUids) do removeEgg(uid) end end
+                    if typeof(payload.UpdatedRecords)=="table" then
+                        for _,record in pairs(payload.UpdatedRecords) do
+                            if typeof(record)=="table" then
+                                if validEggState(record.State) then enrichRecord(record,"batch") elseif type(record.Uid)=="string" then removeEgg(record.Uid) end
+                            end
+                        end
+                    end
+                    queueRefresh()
+                end,State.RemoteConnections)
+            elseif d.Name=="RE/EggWorld/FieldEggGone" then
+                connect(d.OnClientEvent,function(uid)
+                    if typeof(uid)=="table" then uid=uid.Uid end
+                    removeEgg(uid)
+                    queueRefresh()
+                end,State.RemoteConnections)
+            elseif d.Name=="RE/EggWorld/OwnerDropped" or d.Name=="RE/EggWorld/OwnerShifted" then
+                connect(d.OnClientEvent,function(...)
+                    local args=table.pack(...)
+                    for i=1,args.n do if typeof(args[i])=="table" then ingestTree(args[i],"owner:"..d.Name) end end
+                    queueRefresh()
+                end,State.RemoteConnections)
             end
         end
     end
-    State.Stats.PunchTools = found
 end
 
--- UI -------------------------------------------------------------------------
-local function uiParent()
-    local ok, hui = pcall(function()
-        if gethui then return gethui() end
-    end)
-    if ok and hui then return hui end
-    return CoreGui
+local function round(obj,r)
+    local c=Instance.new("UICorner") c.CornerRadius=UDim.new(0,r or 9) c.Parent=obj
 end
 
-local old = uiParent():FindFirstChild("PsicoRoubeUmOvo")
-if old then old:Destroy() end
-
-local gui = Instance.new("ScreenGui")
-gui.Name = "PsicoRoubeUmOvo"
-gui.ResetOnSpawn = false
-gui.IgnoreGuiInset = true
-gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-gui.Parent = uiParent()
-
-local frame = Instance.new("Frame")
-frame.Name = "Main"
-frame.AnchorPoint = Vector2.new(0.5, 0.5)
-frame.Position = UDim2.fromScale(0.5, 0.5)
-frame.Size = UDim2.new(0, 330, 0, 290)
-frame.BackgroundColor3 = Color3.fromRGB(14, 21, 35)
-frame.BorderSizePixel = 0
-frame.Parent = gui
-
-local corner = Instance.new("UICorner")
-corner.CornerRadius = UDim.new(0, 14)
-corner.Parent = frame
-
-local stroke = Instance.new("UIStroke")
-stroke.Thickness = 1.4
-stroke.Transparency = 0.2
-stroke.Color = Color3.fromRGB(43, 116, 255)
-stroke.Parent = frame
-
-local top = Instance.new("Frame")
-top.BackgroundTransparency = 1
-top.Size = UDim2.new(1, -16, 0, 58)
-top.Position = UDim2.fromOffset(8, 4)
-top.Parent = frame
-
-local title = Instance.new("TextLabel")
-title.BackgroundTransparency = 1
-title.Position = UDim2.fromOffset(8, 4)
-title.Size = UDim2.new(1, -92, 0, 24)
-title.Font = Enum.Font.GothamBold
-title.Text = "PSICOSENATICO PANEL"
-title.TextColor3 = Color3.fromRGB(236, 241, 255)
-title.TextSize = 16
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = top
-
-local subtitle = Instance.new("TextLabel")
-subtitle.BackgroundTransparency = 1
-subtitle.Position = UDim2.fromOffset(8, 28)
-subtitle.Size = UDim2.new(1, -92, 0, 18)
-subtitle.Font = Enum.Font.Gotham
-subtitle.Text = "ROUBE UM OVO • Adaptive Scanner"
-subtitle.TextColor3 = Color3.fromRGB(117, 151, 210)
-subtitle.TextSize = 11
-subtitle.TextXAlignment = Enum.TextXAlignment.Left
-subtitle.Parent = top
-
-local function smallButton(text, x)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.fromOffset(32, 32)
-    b.Position = UDim2.new(1, x, 0, 8)
-    b.BackgroundColor3 = Color3.fromRGB(24, 35, 56)
-    b.BorderSizePixel = 0
-    b.Font = Enum.Font.GothamBold
-    b.Text = text
-    b.TextColor3 = Color3.fromRGB(225, 232, 247)
-    b.TextSize = 16
-    b.AutoButtonColor = true
-    b.Parent = top
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, 9)
-    c.Parent = b
+local function mkButton(parent,text,pos,size)
+    local b=Instance.new("TextButton")
+    b.BackgroundColor3=Color3.fromRGB(35,44,61) b.BorderSizePixel=0 b.Position=pos b.Size=size
+    b.Font=Enum.Font.GothamMedium b.Text=text b.TextColor3=Color3.fromRGB(239,244,255) b.TextSize=10 b.Parent=parent
+    round(b,8)
     return b
 end
 
-local minButton = smallButton("—", -72)
-local closeButton = smallButton("×", -36)
+local function mkLabel(parent,text,pos,size,fontSize)
+    local l=Instance.new("TextLabel")
+    l.BackgroundTransparency=1 l.Position=pos l.Size=size l.Font=Enum.Font.Gotham l.Text=text
+    l.TextColor3=Color3.fromRGB(170,184,210) l.TextSize=fontSize or 9 l.TextXAlignment=Enum.TextXAlignment.Left l.Parent=parent
+    return l
+end
 
-local content = Instance.new("Frame")
-content.BackgroundTransparency = 1
-content.Position = UDim2.fromOffset(14, 66)
-content.Size = UDim2.new(1, -28, 1, -78)
-content.Parent = frame
+local function mkTextBox(parent,placeholder,pos,size)
+    local b=Instance.new("TextBox")
+    b.BackgroundColor3=Color3.fromRGB(31,40,56) b.BorderSizePixel=0 b.Position=pos b.Size=size b.Font=Enum.Font.GothamMedium
+    b.Text="" b.PlaceholderText=placeholder b.TextColor3=Color3.fromRGB(240,244,255) b.PlaceholderColor3=Color3.fromRGB(115,128,151)
+    b.TextSize=10 b.ClearTextOnFocus=false b.Parent=parent round(b,8)
+    return b
+end
 
-local layout = Instance.new("UIListLayout")
-layout.Padding = UDim.new(0, 9)
-layout.SortOrder = Enum.SortOrder.LayoutOrder
-layout.Parent = content
+local function makeToggle(parent,label,y,key)
+    local b=mkButton(parent,label,UDim2.new(0,0,0,y),UDim2.new(1,0,0,32))
+    b:SetAttribute("BaseLabel",label)
+    updateToggleVisual(b,CONFIG[key])
+    connect(b.MouseButton1Click,function()
+        CONFIG[key]=not CONFIG[key]
+        updateToggleVisual(b,CONFIG[key])
+        if key=="EggESP" then if CONFIG.EggESP then refreshESP() else sweepOwnedESP() State.Stats.EspVisible=0 end
+        elseif key=="InstantPrompt" then refreshPrompts()
+        elseif key=="InstantHit" then if CONFIG.InstantHit then refreshBats() else restoreBats() end end
+        refreshStatus()
+    end)
+    return b
+end
 
-local buttonRefs = {}
+for _,oldName in ipairs({"PsicoRoubeUmOvoV81","PsicoRoubeUmOvoV8","PsicoRoubeUmOvo","PsicoPrecisionEggScannerV7","PsicoStaticEggScannerV6"}) do
+    local old=uiParent():FindFirstChild(oldName)
+    if old then pcall(function() old:Destroy() end) end
+end
 
-local function makeToggle(labelText, configKey, order)
-    local row = Instance.new("TextButton")
-    row.LayoutOrder = order
-    row.Size = UDim2.new(1, 0, 0, 46)
-    row.BackgroundColor3 = Color3.fromRGB(20, 30, 48)
-    row.BorderSizePixel = 0
-    row.AutoButtonColor = false
-    row.Text = ""
-    row.Parent = content
+gui=Instance.new("ScreenGui")
+gui.Name="PsicoRoubeUmOvoV81" gui.ResetOnSpawn=false gui.IgnoreGuiInset=true gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling gui.Parent=uiParent()
 
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, 10)
-    c.Parent = row
+mainFrame=Instance.new("Frame")
+mainFrame.Name="Main" mainFrame.AnchorPoint=Vector2.new(.5,.5) mainFrame.Position=UDim2.fromScale(.5,.5)
+mainFrame.Size=UDim2.fromOffset(430,300) mainFrame.BackgroundColor3=Color3.fromRGB(14,20,32) mainFrame.BorderSizePixel=0 mainFrame.Parent=gui
+round(mainFrame,13)
+uiScale=Instance.new("UIScale") uiScale.Scale=1 uiScale.Parent=mainFrame
+local stroke=Instance.new("UIStroke") stroke.Thickness=1.1 stroke.Transparency=.28 stroke.Color=Color3.fromRGB(61,118,230) stroke.Parent=mainFrame
 
-    local label = Instance.new("TextLabel")
-    label.BackgroundTransparency = 1
-    label.Position = UDim2.fromOffset(13, 0)
-    label.Size = UDim2.new(1, -78, 1, 0)
-    label.Font = Enum.Font.GothamMedium
-    label.Text = labelText
-    label.TextColor3 = Color3.fromRGB(229, 235, 247)
-    label.TextSize = 14
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = row
+local title=mkLabel(mainFrame,"PSICOSENATICO PANEL",UDim2.fromOffset(12,6),UDim2.new(1,-84,0,20),13)
+title.Font=Enum.Font.GothamBold title.TextColor3=Color3.fromRGB(242,246,255)
+local version=mkLabel(mainFrame,"V8.1 • EGG PRECISION ESP",UDim2.fromOffset(12,24),UDim2.new(1,-84,0,14),8)
+version.TextColor3=Color3.fromRGB(102,148,232)
+local minimize=mkButton(mainFrame,"—",UDim2.new(1,-62,0,6),UDim2.fromOffset(25,25))
+local close=mkButton(mainFrame,"×",UDim2.new(1,-32,0,6),UDim2.fromOffset(25,25))
 
-    local pill = Instance.new("Frame")
-    pill.AnchorPoint = Vector2.new(1, 0.5)
-    pill.Position = UDim2.new(1, -12, 0.5, 0)
-    pill.Size = UDim2.fromOffset(44, 24)
-    pill.BorderSizePixel = 0
-    pill.Parent = row
+local sidebar=Instance.new("Frame") sidebar.BackgroundTransparency=1 sidebar.Position=UDim2.fromOffset(10,47) sidebar.Size=UDim2.new(0,104,1,-77) sidebar.Parent=mainFrame
+local tabMain=mkButton(sidebar,"FUNÇÕES",UDim2.fromOffset(0,0),UDim2.new(1,0,0,42))
+local tabFilters=mkButton(sidebar,"FILTROS ESP",UDim2.fromOffset(0,50),UDim2.new(1,0,0,42))
 
-    local pc = Instance.new("UICorner")
-    pc.CornerRadius = UDim.new(1, 0)
-    pc.Parent = pill
+local contentHost=Instance.new("Frame")
+contentHost.BackgroundColor3=Color3.fromRGB(20,28,43) contentHost.BackgroundTransparency=.12 contentHost.BorderSizePixel=0
+contentHost.Position=UDim2.fromOffset(122,47) contentHost.Size=UDim2.new(1,-132,1,-77) contentHost.Parent=mainFrame round(contentHost,10)
 
-    local dot = Instance.new("Frame")
-    dot.Size = UDim2.fromOffset(18, 18)
-    dot.BorderSizePixel = 0
-    dot.Parent = pill
-    local dc = Instance.new("UICorner")
-    dc.CornerRadius = UDim.new(1, 0)
-    dc.Parent = dot
+local mainPage=Instance.new("ScrollingFrame")
+mainPage.BackgroundTransparency=1 mainPage.BorderSizePixel=0 mainPage.Position=UDim2.fromOffset(8,8) mainPage.Size=UDim2.new(1,-16,1,-16)
+mainPage.CanvasSize=UDim2.fromOffset(0,166) mainPage.ScrollBarThickness=3 mainPage.ScrollBarImageColor3=Color3.fromRGB(94,139,223) mainPage.Parent=contentHost
 
-    local function paint()
-        local on = CONFIG[configKey]
-        pill.BackgroundColor3 = on and Color3.fromRGB(40, 105, 235) or Color3.fromRGB(60, 67, 82)
-        dot.BackgroundColor3 = Color3.fromRGB(242, 246, 255)
-        dot.Position = on and UDim2.fromOffset(23, 3) or UDim2.fromOffset(3, 3)
+local filterPage=Instance.new("ScrollingFrame")
+filterPage.BackgroundTransparency=1 filterPage.BorderSizePixel=0 filterPage.Position=UDim2.fromOffset(8,8) filterPage.Size=UDim2.new(1,-16,1,-16)
+filterPage.CanvasSize=UDim2.fromOffset(0,286) filterPage.ScrollBarThickness=3 filterPage.ScrollBarImageColor3=Color3.fromRGB(94,139,223) filterPage.Visible=false filterPage.Parent=contentHost
+
+espToggleButton=makeToggle(mainPage,"ESP • Ovos",0,"EggESP")
+promptToggleButton=makeToggle(mainPage,"Instant Prompt",38,"InstantPrompt")
+hitToggleButton=makeToggle(mainPage,"Instant Hit • Bat",76,"InstantHit")
+local refreshButton=mkButton(mainPage,"Atualizar ovos",UDim2.fromOffset(0,114),UDim2.new(1,0,0,32))
+
+local filterY=0
+mkLabel(filterPage,"Raridade mínima",UDim2.fromOffset(0,filterY),UDim2.new(.43,0,0,28),9)
+rarityButton=mkButton(filterPage,"Todas",UDim2.new(.45,0,0,filterY),UDim2.new(.55,-4,0,28)) filterY=filterY+34
+mkLabel(filterPage,"Peso mínimo (kg)",UDim2.fromOffset(0,filterY),UDim2.new(.43,0,0,28),9)
+local weightBox=mkTextBox(filterPage,"Ex: 100K",UDim2.new(.45,0,0,filterY),UDim2.new(.55,-4,0,28)) filterY=filterY+34
+mkLabel(filterPage,"Valor mínimo ($)",UDim2.fromOffset(0,filterY),UDim2.new(.43,0,0,28),9)
+local valueBox=mkTextBox(filterPage,"Ex: 2M",UDim2.new(.45,0,0,filterY),UDim2.new(.55,-4,0,28)) filterY=filterY+34
+mkLabel(filterPage,"Pet",UDim2.fromOffset(0,filterY),UDim2.new(.43,0,0,28),9)
+petButton=mkButton(filterPage,"Selecionar pet...",UDim2.new(.45,0,0,filterY),UDim2.new(.55,-4,0,28)) filterY=filterY+34
+mkLabel(filterPage,"Lista de pets",UDim2.fromOffset(0,filterY),UDim2.new(.43,0,0,28),9)
+availabilityButton=mkButton(filterPage,"Todos do jogo",UDim2.new(.45,0,0,filterY),UDim2.new(.55,-4,0,28)) filterY=filterY+34
+mkLabel(filterPage,"Mutação",UDim2.fromOffset(0,filterY),UDim2.new(.43,0,0,28),9)
+mutationButton=mkButton(filterPage,"Todas",UDim2.new(.45,0,0,filterY),UDim2.new(.55,-4,0,28)) filterY=filterY+36
+local resetFilters=mkButton(filterPage,"Limpar filtros",UDim2.fromOffset(0,filterY),UDim2.new(1,-4,0,30))
+
+statusLabel=mkLabel(mainFrame,"Carregando dados...",UDim2.new(0,12,1,-24),UDim2.new(1,-24,0,16),8)
+statusLabel.TextXAlignment=Enum.TextXAlignment.Center statusLabel.TextColor3=Color3.fromRGB(139,164,207)
+
+local function showPage(which)
+    local filters=(which=="filters")
+    mainPage.Visible=not filters filterPage.Visible=filters
+    tabMain.BackgroundColor3=not filters and Color3.fromRGB(42,91,190) or Color3.fromRGB(35,44,61)
+    tabFilters.BackgroundColor3=filters and Color3.fromRGB(42,91,190) or Color3.fromRGB(35,44,61)
+end
+connect(tabMain.MouseButton1Click,function() showPage("main") end)
+connect(tabFilters.MouseButton1Click,function() showPage("filters") end)
+showPage("main")
+
+local function applyResponsive()
+    local camera=Workspace.CurrentCamera
+    local vp=(camera and camera.ViewportSize) or Vector2.new(844,390)
+    local widthLimit=math.max(280,vp.X-24)
+    local heightLimit=math.max(210,vp.Y*.70)
+    uiScale.Scale=math.min(widthLimit/430,heightLimit/300,1)
+end
+applyResponsive()
+local function attachCameraResize(camera)
+    if camera then connect(camera:GetPropertyChangedSignal("ViewportSize"),applyResponsive) end
+end
+attachCameraResize(Workspace.CurrentCamera)
+connect(Workspace:GetPropertyChangedSignal("CurrentCamera"),function() task.defer(function() attachCameraResize(Workspace.CurrentCamera) applyResponsive() end) end)
+
+connect(rarityButton.MouseButton1Click,function()
+    CONFIG.MinRarity=CONFIG.MinRarity+1
+    if CONFIG.MinRarity>#RARITY_ORDER then CONFIG.MinRarity=0 end
+    rarityButton.Text=CONFIG.MinRarity==0 and "Todas" or RARITY_ORDER[CONFIG.MinRarity]
+    refreshESP() refreshStatus()
+end)
+connect(weightBox.FocusLost,function()
+    CONFIG.MinWeightKg=parseSmartNumber(weightBox.Text)
+    weightBox.Text=CONFIG.MinWeightKg==0 and "" or formatCompact(CONFIG.MinWeightKg)
+    refreshESP() refreshStatus()
+end)
+connect(valueBox.FocusLost,function()
+    CONFIG.MinSellPrice=parseSmartNumber(valueBox.Text)
+    valueBox.Text=CONFIG.MinSellPrice==0 and "" or formatCompact(CONFIG.MinSellPrice)
+    refreshESP() refreshStatus()
+end)
+connect(mutationButton.MouseButton1Click,function()
+    local opts=currentMutationOptions()
+    local idx=1
+    for i,v in ipairs(opts) do if v==CONFIG.MutationMode then idx=i break end end
+    idx=idx+1 if idx>#opts then idx=1 end
+    CONFIG.MutationMode=opts[idx] mutationButton.Text=CONFIG.MutationMode
+    refreshESP() refreshStatus()
+end)
+
+local function availablePetNames()
+    local map={}
+    for _,egg in pairs(State.Eggs) do
+        local name=egg.PetName or egg.AssetCategory
+        if type(name)=="string" and name~="" then map[normalize(name)]=name end
     end
-
-    row.MouseButton1Click:Connect(function()
-        CONFIG[configKey] = not CONFIG[configKey]
-        paint()
-        if configKey == "InstantPrompt" then refreshPrompts() end
-        if configKey == "ItemESP" then refreshESP() end
-        if configKey == "InstantPunch" then refreshPunch() end
-    end)
-
-    paint()
-    buttonRefs[configKey] = paint
+    return map
+end
+local function catalogForPicker()
+    local out={} local available=availablePetNames() local seen={}
+    for _,entry in ipairs(State.CatalogEntries) do
+        local name=entry.PetName local key=normalize(name)
+        if name and name~="" and not seen[key] and (not CONFIG.PetListAvailableOnly or available[key]) then
+            seen[key]=true out[#out+1]=entry
+        end
+    end
+    table.sort(out,function(a,b) return lower(a.PetName)<lower(b.PetName) end)
+    return out
 end
 
-makeToggle("Instant Prompt", "InstantPrompt", 1)
-makeToggle("ESP • Itens dropados", "ItemESP", 2)
-makeToggle("Instant Soco", "InstantPunch", 3)
-
-local status = Instance.new("TextLabel")
-status.LayoutOrder = 4
-status.Size = UDim2.new(1, 0, 0, 46)
-status.BackgroundColor3 = Color3.fromRGB(17, 26, 42)
-status.BorderSizePixel = 0
-status.Font = Enum.Font.Code
-status.TextColor3 = Color3.fromRGB(139, 172, 226)
-status.TextSize = 11
-status.TextWrapped = true
-status.Parent = content
-local sc = Instance.new("UICorner")
-sc.CornerRadius = UDim.new(0, 10)
-sc.Parent = status
-
-local floating = Instance.new("TextButton")
-floating.Name = "Floating"
-floating.Visible = false
-floating.AnchorPoint = Vector2.new(1, 0.5)
-floating.Position = UDim2.new(1, -22, 0.55, 0)
-floating.Size = UDim2.fromOffset(54, 54)
-floating.BackgroundColor3 = Color3.fromRGB(14, 35, 72)
-floating.BorderSizePixel = 0
-floating.Font = Enum.Font.GothamBlack
-floating.Text = "PS"
-floating.TextColor3 = Color3.fromRGB(233, 240, 255)
-floating.TextSize = 17
-floating.Parent = gui
-local fc = Instance.new("UICorner")
-fc.CornerRadius = UDim.new(1, 0)
-fc.Parent = floating
-local fs = Instance.new("UIStroke")
-fs.Thickness = 1.5
-fs.Color = Color3.fromRGB(55, 119, 255)
-fs.Parent = floating
-
-local function makeDraggable(handle, target)
-    local dragging = false
-    local dragStart
-    local startPos
-    local activeInput
-
-    handle.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            activeInput = input
-            dragStart = input.Position
-            startPos = target.Position
-        end
-    end)
-
-    handle.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-            activeInput = input
-        end
-    end)
-
-    UIS.InputChanged:Connect(function(input)
-        if dragging and input == activeInput then
-            local delta = input.Position - dragStart
-            target.Position = UDim2.new(
-                startPos.X.Scale, startPos.X.Offset + delta.X,
-                startPos.Y.Scale, startPos.Y.Offset + delta.Y
-            )
-        end
-    end)
-
-    UIS.InputEnded:Connect(function(input)
-        if input == activeInput then
-            dragging = false
-        end
-    end)
+local function closePetModal()
+    if petModal then pcall(function() petModal:Destroy() end) petModal=nil petSearchBox=nil petList=nil end
 end
 
-makeDraggable(top, frame)
-makeDraggable(floating, floating)
-
-local function setMinimized(v)
-    frame.Visible = not v
-    floating.Visible = v
+local function buildPetRows(query)
+    if not petList then return end
+    for _,child in ipairs(petList:GetChildren()) do if child:IsA("GuiObject") then child:Destroy() end end
+    local y=0 local q=lower(query or "")
+    local all=mkButton(petList,"Todos os pets",UDim2.fromOffset(0,y),UDim2.new(1,-4,0,28))
+    all.TextXAlignment=Enum.TextXAlignment.Left all.ZIndex=32
+    connect(all.MouseButton1Click,function()
+        CONFIG.SelectedPet="" petButton.Text="Selecionar pet..." closePetModal() refreshESP() refreshStatus()
+    end)
+    y=y+32
+    for _,entry in ipairs(catalogForPicker()) do
+        local name=safeString(entry.PetName) local rarity=safeString(entry.Rarity or "?")
+        if q=="" or lower(name):find(q,1,true) or lower(rarity):find(q,1,true) then
+            local row=mkButton(petList,name.."  •  "..rarity,UDim2.fromOffset(0,y),UDim2.new(1,-4,0,28))
+            row.TextXAlignment=Enum.TextXAlignment.Left row.ZIndex=32 row.TextColor3=rarityFallbackColor(rarity)
+            connect(row.MouseButton1Click,function()
+                CONFIG.SelectedPet=name petButton.Text=name closePetModal() refreshESP() refreshStatus()
+            end)
+            y=y+32
+        end
+    end
+    petList.CanvasSize=UDim2.fromOffset(0,math.max(y,1))
 end
 
-minButton.MouseButton1Click:Connect(function() setMinimized(true) end)
-floating.MouseButton1Click:Connect(function() setMinimized(false) end)
+local function openPetModal()
+    closePetModal()
+    petModal=Instance.new("Frame")
+    petModal.Name="PetPicker" petModal.AnchorPoint=Vector2.new(.5,.5) petModal.Position=UDim2.fromScale(.5,.5) petModal.Size=UDim2.fromOffset(300,224)
+    petModal.BackgroundColor3=Color3.fromRGB(15,22,35) petModal.BorderSizePixel=0 petModal.ZIndex=30 petModal.Parent=gui round(petModal,11)
+    local ps=Instance.new("UIStroke") ps.Color=Color3.fromRGB(61,118,230) ps.Transparency=.2 ps.Parent=petModal
+    local modalScale=Instance.new("UIScale") modalScale.Scale=uiScale.Scale modalScale.Parent=petModal
+    local pt=mkLabel(petModal,"Selecionar Pet",UDim2.fromOffset(12,7),UDim2.new(1,-50,0,20),12)
+    pt.Font=Enum.Font.GothamBold pt.TextColor3=Color3.fromRGB(242,246,255)
+    local px=mkButton(petModal,"×",UDim2.new(1,-34,0,6),UDim2.fromOffset(26,26)) px.ZIndex=31 connect(px.MouseButton1Click,closePetModal)
+    petSearchBox=mkTextBox(petModal,"Buscar pet...",UDim2.fromOffset(12,37),UDim2.new(1,-24,0,30)) petSearchBox.ZIndex=31
+    local mode=mkButton(petModal,CONFIG.PetListAvailableOnly and "Só disponíveis agora" or "Todos os pets do jogo",UDim2.fromOffset(12,73),UDim2.new(1,-24,0,28))
+    mode.ZIndex=31
+    connect(mode.MouseButton1Click,function()
+        CONFIG.PetListAvailableOnly=not CONFIG.PetListAvailableOnly
+        availabilityButton.Text=CONFIG.PetListAvailableOnly and "Só disponíveis" or "Todos do jogo"
+        mode.Text=CONFIG.PetListAvailableOnly and "Só disponíveis agora" or "Todos os pets do jogo"
+        buildPetRows(petSearchBox.Text)
+    end)
+    petList=Instance.new("ScrollingFrame")
+    petList.BackgroundTransparency=1 petList.BorderSizePixel=0 petList.Position=UDim2.fromOffset(12,107) petList.Size=UDim2.new(1,-24,1,-119)
+    petList.CanvasSize=UDim2.fromOffset(0,0) petList.ScrollBarThickness=3 petList.ScrollBarImageColor3=Color3.fromRGB(94,139,223) petList.ZIndex=31 petList.Parent=petModal
+    connect(petSearchBox:GetPropertyChangedSignal("Text"),function() buildPetRows(petSearchBox.Text) end)
+    buildPetRows("")
+end
+
+connect(petButton.MouseButton1Click,openPetModal)
+connect(availabilityButton.MouseButton1Click,function()
+    CONFIG.PetListAvailableOnly=not CONFIG.PetListAvailableOnly
+    availabilityButton.Text=CONFIG.PetListAvailableOnly and "Só disponíveis" or "Todos do jogo"
+end)
+connect(resetFilters.MouseButton1Click,function()
+    CONFIG.MinRarity=0 CONFIG.MinWeightKg=0 CONFIG.MinSellPrice=0 CONFIG.SelectedPet="" CONFIG.MutationMode="Todas" CONFIG.PetListAvailableOnly=false
+    rarityButton.Text="Todas" mutationButton.Text="Todas" availabilityButton.Text="Todos do jogo" petButton.Text="Selecionar pet..." weightBox.Text="" valueBox.Text=""
+    refreshESP() refreshStatus()
+end)
+connect(refreshButton.MouseButton1Click,function()
+    State.RawRecords={} State.Eggs={}
+    local n=requestSnapshots()
+    refreshESP() refreshStatus("snapshot:"..tostring(n))
+end)
+
+local dragging=false local dragInput,dragStart,startPos
+connect(mainFrame.InputBegan,function(input)
+    if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then dragging=true dragStart=input.Position startPos=mainFrame.Position end
+end)
+connect(mainFrame.InputChanged,function(input)
+    if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseMovement then dragInput=input end
+end)
+connect(UIS.InputChanged,function(input)
+    if dragging and input==dragInput then local d=input.Position-dragStart mainFrame.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y) end
+end)
+connect(UIS.InputEnded,function(input)
+    if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then dragging=false end
+end)
+
+floatButton=Instance.new("TextButton")
+floatButton.Name="PSICO_FLOAT" floatButton.Size=UDim2.fromOffset(46,46) floatButton.Position=UDim2.new(0,18,.5,-23)
+floatButton.BackgroundColor3=Color3.fromRGB(18,42,84) floatButton.BorderSizePixel=0 floatButton.Font=Enum.Font.GothamBold floatButton.Text="PS"
+floatButton.TextColor3=Color3.fromRGB(240,245,255) floatButton.TextSize=12 floatButton.Visible=false floatButton.Parent=gui round(floatButton,23)
+local fdrag=false local fstart,fpos
+connect(floatButton.InputBegan,function(input)
+    if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then fdrag=true fstart=input.Position fpos=floatButton.Position end
+end)
+connect(UIS.InputChanged,function(input)
+    if fdrag and (input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseMovement) then
+        local d=input.Position-fstart floatButton.Position=UDim2.new(fpos.X.Scale,fpos.X.Offset+d.X,fpos.Y.Scale,fpos.Y.Offset+d.Y)
+    end
+end)
+connect(UIS.InputEnded,function(input)
+    if input.UserInputType==Enum.UserInputType.Touch or input.UserInputType==Enum.UserInputType.MouseButton1 then fdrag=false end
+end)
+connect(floatButton.MouseButton1Click,function() mainFrame.Visible=true floatButton.Visible=false end)
+connect(minimize.MouseButton1Click,function() closePetModal() mainFrame.Visible=false floatButton.Visible=true end)
+
+local function initializeData()
+    local ok,err=resolveModules()
+    if not ok then State.LastError=err refreshStatus("ERRO:"..err) return false end
+    if not buildCatalog() then State.LastError="catálogo vazio" refreshStatus("ERRO:catálogo") return false end
+    requestSnapshots() refreshESP() refreshStatus()
+    return true
+end
+
+hookEggRemotes()
+connect(Workspace.DescendantAdded,function(inst)
+    if inst:IsA("ProximityPrompt") then task.defer(function() if State.Alive then applyPrompt(inst) end end) end
+    if inst.Name=="AreaEggSlotsClient" or (inst.Parent and inst.Parent.Name=="AreaEggSlotsClient") then queueRefresh() end
+    if type(inst.Name)=="string" and State.Eggs[inst.Name] then queueRefresh() end
+end)
+connect(Workspace.DescendantRemoving,function(inst) if type(inst.Name)=="string" and State.Eggs[inst.Name] then queueRefresh() end end)
+connect(LP.ChildAdded,function(child)
+    if child:IsA("Backpack") then connect(child.ChildAdded,function(tool) if tool:IsA("Tool") then task.defer(function() patchBat(tool) end) end end) end
+end)
+connect(LP.CharacterAdded,function(char)
+    connect(char.ChildAdded,function(tool) if tool:IsA("Tool") then task.defer(function() patchBat(tool) end) end end)
+    task.defer(refreshBats)
+end)
+local backpack=LP:FindFirstChildOfClass("Backpack")
+if backpack then connect(backpack.ChildAdded,function(tool) if tool:IsA("Tool") then task.defer(function() patchBat(tool) end) end end) end
+if LP.Character then connect(LP.Character.ChildAdded,function(tool) if tool:IsA("Tool") then task.defer(function() patchBat(tool) end) end end) end
 
 local function cleanup()
     if not State.Alive then return end
-    State.Alive = false
-
-    CONFIG.InstantPrompt = false
-    CONFIG.ItemESP = false
-    CONFIG.InstantPunch = false
-
-    for prompt, original in pairs(State.PromptOriginals) do
-        if prompt and prompt.Parent and original then
-            pcall(function() prompt.HoldDuration = original.HoldDuration end)
-        end
-    end
-
-    for root in pairs(State.EspObjects) do
-        removeESP(root)
-    end
-
-    for _, c in ipairs(State.Connections) do
-        safeDisconnect(c)
-    end
-
-    pcall(function() gui:Destroy() end)
-    _G.PSICO_ROUBE_UM_OVO_LOADED = nil
-    _G.PSICO_ROUBE_UM_OVO_TOGGLE = nil
+    State.Alive=false closePetModal() sweepOwnedESP()
+    for prompt,original in pairs(State.PromptOriginals) do if prompt and prompt.Parent then pcall(function() prompt.HoldDuration=original end) end end
+    restoreBats()
+    for _,c in ipairs(State.RemoteConnections) do disconnect(c) end
+    for _,c in ipairs(State.Connections) do disconnect(c) end
+    _G.PSICO_ROUBE_MENU_CLEANUP=nil
+    pcall(function() if gui then gui:Destroy() end end)
 end
+_G.PSICO_ROUBE_MENU_CLEANUP=cleanup
+connect(close.MouseButton1Click,cleanup)
 
-closeButton.MouseButton1Click:Connect(cleanup)
-_G.PSICO_ROUBE_UM_OVO_TOGGLE = function()
-    if State.Alive then
-        setMinimized(frame.Visible)
+sweepOwnedESP()
+refreshPrompts()
+refreshBats()
+updateToggleVisual(espToggleButton,CONFIG.EggESP)
+updateToggleVisual(promptToggleButton,CONFIG.InstantPrompt)
+updateToggleVisual(hitToggleButton,CONFIG.InstantHit)
+
+task.defer(function() task.wait(.4) if State.Alive then initializeData() end end)
+task.defer(function()
+    while State.Alive do
+        task.wait(.55)
+        if CONFIG.EggESP then refreshESP() end
+        if CONFIG.InstantHit then refreshBats() end
+        refreshStatus()
     end
-end
-
--- Runtime scanner -------------------------------------------------------------
-connect(Workspace.DescendantAdded, function(inst)
-    if inst:IsA("ProximityPrompt") then
-        task.defer(function()
-            if State.Alive and inst.Parent then
-                applyPrompt(inst)
-                if CONFIG.ItemESP then
-                    local root = nearestVisualRoot(inst)
-                    if root and looksLikeDroppedItem(root) then
-                        createESP(root)
-                    end
-                end
-            end
-        end)
-    elseif inst:IsA("Tool") then
-        task.defer(function()
-            if State.Alive and inst.Parent and inst:IsDescendantOf(Workspace) and CONFIG.ItemESP then
-                createESP(inst)
-            end
-        end)
-    end
-end)
-
-connect(LocalPlayer.CharacterAdded, function()
-    task.wait(0.8)
-    if State.Alive then refreshPunch() end
-end)
-
-local heartbeatAccumulator = 0
-connect(RunService.Heartbeat, function(dt)
-    heartbeatAccumulator += dt
-
-    if CONFIG.InstantPunch then
-        for _, container in ipairs(getPlayerContainers()) do
-            for _, child in ipairs(container:GetChildren()) do
-                if child:IsA("Tool") and isPunchTool(child) then
-                    pcall(function() child.Enabled = true end)
-                end
-            end
-        end
-    end
-
-    if heartbeatAccumulator >= CONFIG.ScanInterval then
-        heartbeatAccumulator = 0
-        refreshPrompts()
-        refreshESP()
-        refreshPunch()
-        status.Text = string.format(
-            "Scanner: %d prompts  •  %d itens  •  %d ferramenta(s) de soco",
-            State.Stats.Prompts,
-            State.Stats.Items,
-            State.Stats.PunchTools
-        )
-    end
-end)
-
--- Initial pass.
-task.spawn(function()
-    refreshPrompts()
-    refreshESP()
-    refreshPunch()
-    status.Text = string.format(
-        "Scanner: %d prompts  •  %d itens  •  %d ferramenta(s) de soco",
-        State.Stats.Prompts,
-        State.Stats.Items,
-        State.Stats.PunchTools
-    )
 end)

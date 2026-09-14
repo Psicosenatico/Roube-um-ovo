@@ -130,21 +130,22 @@ local function uiRoots()
 end
 
 local function captureUI()
-    local map={},0
+    local map={}
+    local count=0
     for _,root in ipairs(uiRoots()) do
         local ok,list=pcall(function() return root:GetDescendants() end)
         if ok then
             for _,x in ipairs(list) do
-                if map["__COUNT"] and map["__COUNT"]>=CFG.MaxUI then break end
+                if count>=CFG.MaxUI then break end
                 if x:IsA("GuiObject") or x:IsA("ScreenGui") or x:IsA("UIListLayout") or x:IsA("UIGridLayout") or x:IsA("UICorner") then
                     local p=pathOf(x)
                     map[p]=describeUI(x)
-                    map["__COUNT"]=(map["__COUNT"] or 0)+1
+                    count+=1
                 end
             end
         end
+        if count>=CFG.MaxUI then break end
     end
-    map["__COUNT"]=nil
     return map
 end
 
@@ -155,9 +156,11 @@ local function compact(v,depth)
     if tv=="number" or tv=="boolean" or tv=="nil" then return {type=tv,value=v} end
     if tv=="Instance" then return {type=tv,path=pathOf(v),class=v.ClassName} end
     if tv=="table" then
-        local out={type="table",keys={}};local n=0
+        local out={type="table",keys={}}
+        local n=0
         for k,x in pairs(v) do
-            n+=1;if n>CFG.MaxTableKeys then out.truncated=true;break end
+            n+=1
+            if n>CFG.MaxTableKeys then out.truncated=true;break end
             local ks=cut(k,120)
             if not sensitive(ks) then
                 local xt=typeof(x)
@@ -172,11 +175,13 @@ local function compact(v,depth)
 end
 
 local function captureGlobals()
-    local out={};local count=0
+    local out={}
+    local count=0
     local function add(tbl,prefix)
         if type(tbl)~="table" then return end
         for k,v in pairs(tbl) do
-            count+=1;if count>CFG.MaxGlobals then return end
+            count+=1
+            if count>CFG.MaxGlobals then return end
             local ks=prefix..safe(k)
             if not sensitive(ks) then out[ks]=compact(v,0) end
         end
@@ -195,9 +200,11 @@ local function describeRelevant(x)
 end
 
 local function captureRelevant()
-    local out={};local count=0
+    local out={}
+    local count=0
     local roots={ReplicatedStorage}
-    local pg=LP and LP:FindFirstChildOfClass("PlayerGui");if pg then roots[#roots+1]=pg end
+    local pg=LP and LP:FindFirstChildOfClass("PlayerGui")
+    if pg then roots[#roots+1]=pg end
     for _,root in ipairs(roots) do
         local ok,list=pcall(function()return root:GetDescendants() end)
         if ok then
@@ -205,9 +212,13 @@ local function captureRelevant()
                 if count>=CFG.MaxRelevant then break end
                 local p=pathOf(x)
                 local useful=x:IsA("RemoteEvent") or x:IsA("RemoteFunction") or x:IsA("BindableEvent") or x:IsA("BindableFunction") or x:IsA("ModuleScript") or x:IsA("ValueBase")
-                if useful and (interesting(p) or interesting(x.Name)) then count+=1;out[p]=describeRelevant(x) end
+                if useful and (interesting(p) or interesting(x.Name)) then
+                    count+=1
+                    out[p]=describeRelevant(x)
+                end
             end
         end
+        if count>=CFG.MaxRelevant then break end
     end
     return out
 end
@@ -215,16 +226,16 @@ end
 local function cycleHints()
     local out={PlaceId=game.PlaceId,GameId=game.GameId,JobId=game.JobId,unix=os.time()}
     local candidates={"PeriodIndex","DayStartsAt","RareSpawns","FieldEggRaritiesShown"}
+    local ok,list=pcall(function()return ReplicatedStorage:GetDescendants() end)
+    if not ok then return out end
     for _,name in ipairs(candidates) do
         local found={}
-        local ok,list=pcall(function()return ReplicatedStorage:GetDescendants() end)
-        if ok then
-            for _,x in ipairs(list) do
-                if x.Name==name then
-                    local row={path=pathOf(x),class=x.ClassName,attrs=attrsOf(x)}
-                    if x:IsA("ValueBase") then pcall(function()row.value=x.Value end) end
-                    found[#found+1]=row;if #found>=10 then break end
-                end
+        for _,x in ipairs(list) do
+            if x.Name==name then
+                local row={path=pathOf(x),class=x.ClassName,attrs=attrsOf(x)}
+                if x:IsA("ValueBase") then pcall(function()row.value=x.Value end) end
+                found[#found+1]=row
+                if #found>=10 then break end
             end
         end
         if #found>0 then out[name]=found end
@@ -254,11 +265,14 @@ end
 
 local function diffSnap(a,b)
     return {
-        from=a and a.label or nil,to=b and b.label or nil,t=b and b.t or now(),
+        from=a and a.label or nil,
+        to=b and b.label or nil,
+        t=b and b.t or now(),
         ui=diffMap(a and a.ui,b and b.ui),
         globals=diffMap(a and a.globals,b and b.globals),
         relevant=diffMap(a and a.relevant,b and b.relevant),
-        cycleBefore=a and a.cycle or nil,cycleAfter=b and b.cycle or nil,
+        cycleBefore=a and a.cycle or nil,
+        cycleAfter=b and b.cycle or nil,
     }
 end
 
@@ -277,7 +291,9 @@ local function captureBefore()
     setStatus("Capturando ANTES...")
     task.defer(function()
         State.before=snapshot("before")
-        State.after=nil;State.compare=nil;State.autoRuns={}
+        State.after=nil
+        State.compare=nil
+        State.autoRuns={}
         setStatus("ANTES capturado.\nAgora selecione Steal An Egg no Nasi e espere carregar.\nDepois toque CAPTURAR DEPOIS.")
     end)
 end
@@ -310,7 +326,9 @@ local function autoAnalysis()
             prev=cur
             setStatus("ANALISE AUTOMATICA "..tostring(i*CFG.AutoInterval).."/"..CFG.AutoSeconds.."s\n"..counts(d).."\nNao abra varias opcoes ao mesmo tempo.")
         end
-        run.finished=os.time();State.autoRuns[#State.autoRuns+1]=run;State.autoRunning=false
+        run.finished=os.time()
+        State.autoRuns[#State.autoRuns+1]=run
+        State.autoRunning=false
         setStatus("Analise automatica concluida.\nRuns salvos: "..#State.autoRuns.."\nVoce pode EXPORTAR ou iniciar outra analise de UMA opcao.")
     end)
 end
@@ -318,7 +336,10 @@ end
 local function report()
     return {
         Meta={Version="NasiDifferentialSnapshotV1",StartedUnix=START_UNIX,FinishedUnix=os.time(),PlaceId=game.PlaceId,GameId=game.GameId,JobId=game.JobId,ZeroHook=true,AutoSeconds=CFG.AutoSeconds,AutoInterval=CFG.AutoInterval},
-        Before=State.before,After=State.after,Comparison=State.compare,AutoRuns=State.autoRuns
+        Before=State.before,
+        After=State.after,
+        Comparison=State.compare,
+        AutoRuns=State.autoRuns,
     }
 end
 
@@ -337,30 +358,107 @@ local function parentGui()
     local ok,h=pcall(function()return gethui and gethui() end)
     return (ok and h) or CoreGui
 end
+
 local function mkButton(p,text,pos,size)
-    local b=Instance.new("TextButton");b.Position=pos;b.Size=size;b.BackgroundColor3=Color3.fromRGB(31,78,132);b.BorderSizePixel=0;b.Text=text;b.TextColor3=Color3.fromRGB(244,248,255);b.Font=Enum.Font.GothamBold;b.TextSize=11;b.Parent=p;Instance.new("UICorner",b).CornerRadius=UDim.new(0,9);return b
+    local b=Instance.new("TextButton")
+    b.Position=pos
+    b.Size=size
+    b.BackgroundColor3=Color3.fromRGB(31,78,132)
+    b.BorderSizePixel=0
+    b.Text=text
+    b.TextColor3=Color3.fromRGB(244,248,255)
+    b.Font=Enum.Font.GothamBold
+    b.TextSize=11
+    b.Parent=p
+    Instance.new("UICorner",b).CornerRadius=UDim.new(0,9)
+    return b
 end
 
 local function makeGui()
-    local p=parentGui();local old=p:FindFirstChild("PSICO_NASI_DIFF_V1");if old then old:Destroy() end
-    local gui=Instance.new("ScreenGui");gui.Name="PSICO_NASI_DIFF_V1";gui.ResetOnSpawn=false;gui.DisplayOrder=1200;gui.Parent=p;State.gui=gui
-    local f=Instance.new("Frame");f.AnchorPoint=Vector2.new(.5,.5);f.Position=UDim2.fromScale(.5,.5);f.Size=UDim2.fromOffset(455,300);f.BackgroundColor3=Color3.fromRGB(9,18,34);f.BorderSizePixel=0;f.Parent=gui;Instance.new("UICorner",f).CornerRadius=UDim.new(0,14)
-    local t=Instance.new("TextLabel");t.BackgroundTransparency=1;t.Position=UDim2.fromOffset(14,10);t.Size=UDim2.new(1,-28,0,28);t.Text="NASI DIFFERENTIAL SNAPSHOT • V1";t.Font=Enum.Font.GothamBold;t.TextSize=14;t.TextColor3=Color3.fromRGB(238,245,255);t.TextXAlignment=Enum.TextXAlignment.Left;t.Parent=f
-    local s=Instance.new("TextLabel");s.Position=UDim2.fromOffset(14,48);s.Size=UDim2.new(1,-28,0,90);s.BackgroundColor3=Color3.fromRGB(15,29,52);s.BorderSizePixel=0;s.Text="Pronto. Comece com CAPTURAR ANTES.";s.Font=Enum.Font.Code;s.TextSize=11;s.TextColor3=Color3.fromRGB(215,229,247);s.TextWrapped=true;s.TextXAlignment=Enum.TextXAlignment.Left;s.TextYAlignment=Enum.TextYAlignment.Top;s.Parent=f;Instance.new("UICorner",s).CornerRadius=UDim.new(0,9);local pad=Instance.new("UIPadding",s);pad.PaddingLeft=UDim.new(0,8);pad.PaddingRight=UDim.new(0,8);pad.PaddingTop=UDim.new(0,7);State.status=s
+    local p=parentGui()
+    local old=p:FindFirstChild("PSICO_NASI_DIFF_V1")
+    if old then old:Destroy() end
+
+    local gui=Instance.new("ScreenGui")
+    gui.Name="PSICO_NASI_DIFF_V1"
+    gui.ResetOnSpawn=false
+    gui.DisplayOrder=1200
+    gui.Parent=p
+    State.gui=gui
+
+    local f=Instance.new("Frame")
+    f.AnchorPoint=Vector2.new(.5,.5)
+    f.Position=UDim2.fromScale(.5,.5)
+    f.Size=UDim2.fromOffset(455,300)
+    f.BackgroundColor3=Color3.fromRGB(9,18,34)
+    f.BorderSizePixel=0
+    f.Parent=gui
+    Instance.new("UICorner",f).CornerRadius=UDim.new(0,14)
+
+    local t=Instance.new("TextLabel")
+    t.BackgroundTransparency=1
+    t.Position=UDim2.fromOffset(14,10)
+    t.Size=UDim2.new(1,-28,0,28)
+    t.Text="NASI DIFFERENTIAL SNAPSHOT • V1"
+    t.Font=Enum.Font.GothamBold
+    t.TextSize=14
+    t.TextColor3=Color3.fromRGB(238,245,255)
+    t.TextXAlignment=Enum.TextXAlignment.Left
+    t.Parent=f
+
+    local s=Instance.new("TextLabel")
+    s.Position=UDim2.fromOffset(14,48)
+    s.Size=UDim2.new(1,-28,0,90)
+    s.BackgroundColor3=Color3.fromRGB(15,29,52)
+    s.BorderSizePixel=0
+    s.Text="Pronto. Comece com CAPTURAR ANTES."
+    s.Font=Enum.Font.Code
+    s.TextSize=11
+    s.TextColor3=Color3.fromRGB(215,229,247)
+    s.TextWrapped=true
+    s.TextXAlignment=Enum.TextXAlignment.Left
+    s.TextYAlignment=Enum.TextYAlignment.Top
+    s.Parent=f
+    Instance.new("UICorner",s).CornerRadius=UDim.new(0,9)
+    local pad=Instance.new("UIPadding",s)
+    pad.PaddingLeft=UDim.new(0,8)
+    pad.PaddingRight=UDim.new(0,8)
+    pad.PaddingTop=UDim.new(0,7)
+    State.status=s
 
     local b1=mkButton(f,"CAPTURAR ANTES",UDim2.fromOffset(14,150),UDim2.new(.5,-20,0,38))
     local b2=mkButton(f,"CAPTURAR DEPOIS",UDim2.new(.5,6,0,150),UDim2.new(.5,-20,0,38))
     local b3=mkButton(f,"INICIAR ANALISE COMPLETA",UDim2.fromOffset(14,198),UDim2.new(1,-28,0,38))
     local b4=mkButton(f,"EXPORTAR",UDim2.fromOffset(14,246),UDim2.new(.7,-20,0,36))
     local close=mkButton(f,"FECHAR",UDim2.new(.7,6,0,246),UDim2.new(.3,-20,0,36))
-    b1.MouseButton1Click:Connect(captureBefore);b2.MouseButton1Click:Connect(captureAfter);b3.MouseButton1Click:Connect(autoAnalysis);b4.MouseButton1Click:Connect(export)
+
+    b1.MouseButton1Click:Connect(captureBefore)
+    b2.MouseButton1Click:Connect(captureAfter)
+    b3.MouseButton1Click:Connect(autoAnalysis)
+    b4.MouseButton1Click:Connect(export)
     close.MouseButton1Click:Connect(function()State.alive=false;if State.gui then State.gui:Destroy() end end)
 
-    local dragging=false;local dragStart,startPos
-    f.InputBegan:Connect(function(i)if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then dragging=true;dragStart=i.Position;startPos=f.Position end end)
-    f.InputChanged:Connect(function(i)if dragging and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then local d=i.Position-dragStart;f.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y) end end)
-    UIS.InputEnded:Connect(function(i)if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then dragging=false end end)
+    local dragging=false
+    local dragStart,startPos
+    f.InputBegan:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+            dragging=true;dragStart=i.Position;startPos=f.Position
+        end
+    end)
+    f.InputChanged:Connect(function(i)
+        if dragging and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
+            local d=i.Position-dragStart
+            f.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y)
+        end
+    end)
+    UIS.InputEnded:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then dragging=false end
+    end)
 end
 
-_G.PSICO_NASI_DIFF_CLEANUP=function()State.alive=false;if State.gui then pcall(function()State.gui:Destroy() end) end end
+_G.PSICO_NASI_DIFF_CLEANUP=function()
+    State.alive=false
+    if State.gui then pcall(function()State.gui:Destroy() end) end
+end
+
 makeGui()

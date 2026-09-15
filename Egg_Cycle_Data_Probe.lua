@@ -73,7 +73,7 @@ local function signatureProbe()
  out[#out+1]=repeated("first=Random.new(seed)",function()return Random.new(SEED)end,1,8)
  out[#out+1]=repeated("first=empty-table",function()return{}end,1,8)
  out[#out+1]=repeated("first=string",function()return"x"end,1,4)
- out[#out+1]=repeated("first=number",function()return123end,1,4)
+ out[#out+1]=repeated("first=number",function()return 123 end,1,4)
  out[#out+1]=repeated("first=nil",function()return nil end,1,4)
  local ok2,r2=pcall(Lottery.DrawCategoryFromTable,TAB,1)
  out.twoArgDot={ok=ok2,result=ok2 and r2 or nil,error=ok2 and nil or tostring(r2)}

@@ -1,0 +1,15 @@
+-- PSICOSENATICO V8.7.3 - verified inventory layout rebuild
+local cb=tostring(os.time())..'_'..tostring(math.random(100000,999999))
+local function run(path)
+ local src=game:HttpGet('https://raw.githubusercontent.com/Psicosenatico/Roube-um-ovo/main/'..path..'?cb='..cb)
+ local fn,err=loadstring(src);if not fn then error(path..' compile: '..tostring(err))end
+ local ok,e=pcall(fn);if not ok then error(path..' runtime: '..tostring(e))end
+end
+run('RoubeUmOvo_Menu.lua')
+run('InventoryEggPanel_V4.lua')
+run('InventoryEggPanel_V4_Data.lua')
+task.defer(function()
+ task.wait(.2)
+ local root=(function()local ok,h=pcall(function()return gethui and gethui()end);return(ok and h)or game:GetService('CoreGui')end)()
+ for _,g in ipairs(root:GetChildren())do if g:IsA('ScreenGui')and g.Name:find('PsicoRoubeUmOvo',1,true)==1 then local m=g:FindFirstChild('Main');if m then for _,d in ipairs(m:GetDescendants())do if d:IsA('TextLabel')and d.Text:find('V8.',1,true)==1 then d.Text='V8.7.3 • INVENTORY LAYOUT FIX';return end end end end end
+end)

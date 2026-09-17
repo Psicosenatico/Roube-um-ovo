@@ -1,5 +1,5 @@
 -- PSICOSENATICO Inventory V5
--- Compact list, sidebar alignment, 3-mode sort, images and conservative egg Tool matching.
+-- V8.7.4 baseline: compact list + safe bridge from EggInventory record to the game's own inventory slot.
 if _G.PSICO_INVENTORY_PANEL_CLEANUP then pcall(_G.PSICO_INVENTORY_PANEL_CLEANUP) end
 local Players=game:GetService('Players');local RS=game:GetService('ReplicatedStorage');local CoreGui=game:GetService('CoreGui');local LP=Players.LocalPlayer
 local conns={};local function conn(s,f)local c=s:Connect(f);conns[#conns+1]=c;return c end
@@ -15,16 +15,16 @@ local root=(function()local ok,h=pcall(function()return gethui and gethui()end);
 for _,g in ipairs(root:GetChildren())do if g:IsA('ScreenGui')and g.Name:find('PsicoRoubeUmOvo',1,true)==1 then gui=g;main=g:FindFirstChild('Main');if main then break end end end
 if not main then error('main panel not found')end
 local function text(s)for _,d in ipairs(main:GetDescendants())do if(d:IsA('TextButton')or d:IsA('TextLabel'))and d.Text==s then return d end end end
-local fun=text('FUNÇÕES');local filters=text('FILTROS ESP');local normal=text('ESP • Ovos  ON')or text('ESP • Ovos  OFF')or text('ESP • Ovos');local rarity=text('Raridade mínima')
+local fun=text('FUNÇÕES');local filters=text('FILTROS ESP');local normal=text('ESP • Ovos  ON')or text('ESP • Ovos ON')or text('ESP • Ovos  OFF')or text('ESP • Ovos OFF')or text('ESP • Ovos');local rarity=text('Raridade mínima')
 if not(fun and filters and normal and rarity)then error('base anchors not found')end
 local sidebar=filters.Parent;local mainPage=normal.Parent;local filterPage=rarity.Parent;local host=mainPage.Parent
--- Place third tab directly below filters using the same dimensions/gap.
 local gap=filters.Position.Y.Offset-fun.Position.Y.Offset-fun.Size.Y.Offset;if gap<0 or gap>80 then gap=12 end
 local tab=button(sidebar,'OVOS INVENTÁRIO',UDim2.new(filters.Position.X.Scale,filters.Position.X.Offset,filters.Position.Y.Scale,filters.Position.Y.Offset+filters.Size.Y.Offset+gap),filters.Size)
 local page=Instance.new('Frame');page.Name='InventoryEggPageV5';page.BackgroundTransparency=1;page.Position=mainPage.Position;page.Size=mainPage.Size;page.AnchorPoint=mainPage.AnchorPoint;page.Visible=false;page.Parent=host
-local refresh=button(page,'Atualizar inventário',UDim2.new(0,10,0,10),UDim2.new(1,-20,0,38));local sort=button(page,'Ordenar: $/s',UDim2.new(0,10,0,54),UDim2.new(1,-20,0,34));local status=label(page,'',UDim2.new(0,10,0,91),UDim2.new(1,-20,0,18),8);status.TextXAlignment=Enum.TextXAlignment.Center
-local list=Instance.new('ScrollingFrame');list.BackgroundTransparency=1;list.BorderSizePixel=0;list.Position=UDim2.new(0,10,0,112);list.Size=UDim2.new(1,-20,1,-122);list.ScrollBarThickness=4;list.ScrollingDirection=Enum.ScrollingDirection.Y;list.AutomaticCanvasSize=Enum.AutomaticSize.Y;list.CanvasSize=UDim2.new();list.Parent=page
-local lay=Instance.new('UIListLayout');lay.Padding=UDim.new(0,5);lay.Parent=list;local pad=Instance.new('UIPadding');pad.PaddingBottom=UDim.new(0,30);pad.Parent=list
+-- Compact controls: both actions share one row; list gains ~70 px of vertical space.
+local refresh=button(page,'Atualizar',UDim2.new(0,10,0,8),UDim2.new(.5,-13,0,30));local sort=button(page,'Ordenar: $/s',UDim2.new(.5,3,0,8),UDim2.new(.5,-13,0,30));local status=label(page,'',UDim2.new(0,10,0,40),UDim2.new(1,-20,0,14),7);status.TextXAlignment=Enum.TextXAlignment.Center
+local list=Instance.new('ScrollingFrame');list.BackgroundTransparency=1;list.BorderSizePixel=0;list.Position=UDim2.new(0,10,0,56);list.Size=UDim2.new(1,-20,1,-60);list.ScrollBarThickness=4;list.ScrollingDirection=Enum.ScrollingDirection.Y;list.AutomaticCanvasSize=Enum.AutomaticSize.Y;list.CanvasSize=UDim2.new();list.Parent=page
+local lay=Instance.new('UIListLayout');lay.Padding=UDim.new(0,5);lay.Parent=list;local pad=Instance.new('UIPadding');pad.PaddingBottom=UDim.new(0,6);pad.Parent=list
 local modes={'$/s','Raridade','Valor do ovo'};local mode=1
 local rarityNum={Common=1,Uncommon=2,Rare=3,Epic=4,Legendary=5,Mythic=6,Cosmic=7,Secret=8,Eternal=9,Divine=10}
 local colors={Legendary=Color3.fromRGB(255,174,58),Mythic=Color3.fromRGB(255,71,121),Cosmic=Color3.fromRGB(150,67,255),Secret=Color3.fromRGB(245,245,245),Eternal=Color3.fromRGB(245,71,255),Divine=Color3.fromRGB(52,255,238)}
@@ -36,14 +36,42 @@ local function tableImage(t,depth,seen)if type(t)~='table'or depth>4 then return
 local UID={'UID','Uid','uid','EggUID','EggUid','ItemUID','ItemUid','ID','Id','id'}
 local function oval(o,k)local ok,v=pcall(function()return o:GetAttribute(k)end);if ok and v~=nil then return v end;local c=o:FindFirstChild(k);return c and c:IsA('ValueBase')and c.Value or nil end
 local function tools()local a={};for _,r in ipairs({LP:FindFirstChildOfClass('Backpack'),LP.Character})do if r then for _,t in ipairs(r:GetChildren())do if t:IsA('Tool')then a[#a+1]=t end end end end;return a end
+local function parseWeight(s)local raw=tostring(s or''):match('([%d%.,]+)%s*[Kk][Gg]');if not raw then return nil end;if raw:find(',',1,true)then raw=raw:gsub('%.',''):gsub(',','.')end;return tonumber(raw)end
 local function toolFor(key,rec)
  local ids={};ids[norm(key)]=true;for _,k in ipairs(UID)do local v=rv(rec,k);if v~=nil then ids[norm(v)]=true end end
  for _,t in ipairs(tools())do for _,k in ipairs(UID)do local v=oval(t,k);if v~=nil and ids[norm(v)]then return t,'UID' end end end
- -- Safe fallback only for Tools explicitly marked/named as egg; never arbitrary pets.
- local w=tonumber(call(ER,'WeightKg',rec));for _,t in ipairs(tools())do local tn=norm(t.Name);if tn:find('ovo',1,true)or tn:find('egg',1,true)then if w then local raw=t.Name:match('([%d%.,]+)%s*[Kk][Gg]');if raw then local n=tonumber(raw:gsub('%.',''):gsub(',','.'));if n and math.abs(n-w)<.02 then return t,'peso' end end end end end
+ local w=tonumber(call(ER,'WeightKg',rec));for _,t in ipairs(tools())do local tn=norm(t.Name);if tn:find('ovo',1,true)or tn:find('egg',1,true)then local n=parseWeight(t.Name);if w and n and math.abs(n-w)<.02 then return t,'peso' end end end
  return nil,nil
 end
 local function toolImage(t)if not t then return nil end;if t.TextureId and t.TextureId~=''then return t.TextureId end;for _,d in ipairs(t:GetDescendants())do if(d:IsA('ImageLabel')or d:IsA('ImageButton'))and d.Image~=''then return d.Image end end end
+-- Find the game's own inventory card for this exact egg. We only accept cards that say Ovo/Egg and carry the same weight.
+local function gameInventoryButton(weight)
+ local pg=LP:FindFirstChildOfClass('PlayerGui');if not(pg and weight)then return nil end
+ local best
+ for _,b in ipairs(pg:GetDescendants())do if b:IsA('GuiButton')and b.Visible then
+  local hasEgg=false;local bw
+  local function inspect(x)local s=x:IsA('TextLabel')or x:IsA('TextButton')and x.Text or nil;if type(s)=='string'then local ns=norm(s);if ns:find('ovo',1,true)or ns:find('egg',1,true)then hasEgg=true end;local pw=parseWeight(s);if pw then bw=pw end end end
+  inspect(b);for _,d in ipairs(b:GetDescendants())do if d:IsA('TextLabel')or d:IsA('TextButton')then inspect(d)end end
+  if hasEgg and bw and math.abs(bw-weight)<.02 then best=b;break end
+ end end
+ return best
+end
+local function fireButton(b)
+ if not b then return false end
+ if type(firesignal)=='function'then local ok=pcall(function()firesignal(b.Activated)end);if ok then return true end;ok=pcall(function()firesignal(b.MouseButton1Click)end);if ok then return true end end
+ if type(getconnections)=='function'then for _,sig in ipairs({b.Activated,b.MouseButton1Click})do local ok,cs=pcall(getconnections,sig);if ok and type(cs)=='table'and #cs>0 then for _,c in ipairs(cs)do pcall(function()if c.Fire then c:Fire()elseif c.Function then c.Function()end end)end;return true end end end
+ return false
+end
+local function equipRecord(key,rec)
+ local tool,why=toolFor(key,rec);local hum=LP.Character and LP.Character:FindFirstChildOfClass('Humanoid');if tool and hum then pcall(function()hum:EquipTool(tool)end);return true,'Tool '..tostring(why)end
+ local w=tonumber(call(ER,'WeightKg',rec));local slot=gameInventoryButton(w);if not slot then return false,'Registro encontrado, mas o slot original deste ovo não está aberto/carregado' end
+ local before={};for _,t in ipairs(tools())do before[t]=true end
+ if not fireButton(slot)then return false,'Slot original localizado, mas o executor não permite acioná-lo' end
+ task.wait(.12)
+ tool,why=toolFor(key,rec);if not tool then for _,t in ipairs(tools())do if not before[t]then tool=t;why='novo após slot';break end end end
+ if tool and hum then pcall(function()hum:EquipTool(tool)end);return true,'slot original → '..tostring(why)end
+ return true,'slot original selecionado; aguardando Tool do jogo'
+end
 local rows={}
 local function clear()for _,x in ipairs(list:GetChildren())do if x:IsA('GuiObject')then x:Destroy()end end end
 local function read()
@@ -51,16 +79,15 @@ local function read()
  for key,r in pairs(inv)do if type(r)=='table'then local c=tostring(cat(r)or'?');local cfg=catalog(c);local rar=cfg and(cfg.Rarity.DisplayName or cfg.Rarity._id)or tostring(r.Rarity or'?');local earn=cfg and tonumber(cfg.EarningRate);local sell=tonumber(call(ER,'SellPrice',r));local w=tonumber(call(ER,'WeightKg',r));local wl=call(ER,'WeightLabel',r);local tool,why=toolFor(key,r);local img=toolImage(tool)or tableImage(r,0,{})or tableImage(cfg,0,{});rows[#rows+1]={key=key,r=r,c=c,rar=rar,earn=earn,sell=sell,w=w,wl=wl,tool=tool,why=why,img=img}end end
 end
 local function render()
- clear();read();table.sort(rows,function(a,b)if mode==1 then return(a.earn or 0)>(b.earn or 0)elseif mode==2 then return(rarityNum[a.rar]or 0)>(rarityNum[b.rar]or 0)else return(a.sell or 0)>(b.sell or 0)end end);status.Text=('Ovos:%d • Ordenação: %s'):format(#rows,modes[mode])
- for i,e in ipairs(rows)do local card=Instance.new('TextButton');card.Text='';card.BackgroundColor3=Color3.fromRGB(25,34,50);card.BorderSizePixel=0;card.Size=UDim2.new(1,-4,0,64);card.LayoutOrder=i;card.Parent=list;round(card,9);local st=Instance.new('UIStroke');st.Thickness=1.5;st.Color=colors[e.rar]or Color3.fromRGB(74,112,190);st.Parent=card
-  local im=Instance.new('ImageLabel');im.BackgroundColor3=Color3.fromRGB(17,24,37);im.BorderSizePixel=0;im.Position=UDim2.new(0,6,0,6);im.Size=UDim2.new(0,52,0,52);im.ScaleType=Enum.ScaleType.Fit;im.Image=e.img or'';im.Parent=card;round(im,7)
-  local title='Ovo '..tostring(e.wl or(e.w and(compact(e.w)..'Kg')or'?'));local t=label(card,title,UDim2.new(0,66,0,7),UDim2.new(1,-72,0,19),10);t.Font=Enum.Font.GothamBold;t.TextColor3=colors[e.rar]or Color3.fromRGB(235,240,250)
-  label(card,e.rar..' • Conteúdo: '..e.c,UDim2.new(0,66,0,27),UDim2.new(1,-72,0,16),8);label(card,'$'..compact(e.earn)..'/s • Valor $'..compact(e.sell)..(e.tool and(' • Tool '..e.why)or''),UDim2.new(0,66,0,44),UDim2.new(1,-72,0,15),7)
-  conn(card.Activated,function()local tool,why=toolFor(e.key,e.r);if not tool then status.Text='Este ovo não possui Tool correspondente carregada';return end;local hum=LP.Character and LP.Character:FindFirstChildOfClass('Humanoid');if hum then pcall(function()hum:EquipTool(tool)end);status.Text='Equipado: '..title..' ('..why..')'end end)
+ clear();read();table.sort(rows,function(a,b)if mode==1 then return(a.earn or 0)>(b.earn or 0)elseif mode==2 then return(rarityNum[a.rar]or 0)>(rarityNum[b.rar]or 0)else return(a.sell or 0)>(b.sell or 0)end end);status.Text=('Ovos:%d • %s'):format(#rows,modes[mode])
+ for i,e in ipairs(rows)do local card=Instance.new('TextButton');card.Text='';card.BackgroundColor3=Color3.fromRGB(25,34,50);card.BorderSizePixel=0;card.Size=UDim2.new(1,-4,0,60);card.LayoutOrder=i;card.Parent=list;round(card,9);local st=Instance.new('UIStroke');st.Thickness=1.5;st.Color=colors[e.rar]or Color3.fromRGB(74,112,190);st.Parent=card
+  local im=Instance.new('ImageLabel');im.BackgroundColor3=Color3.fromRGB(17,24,37);im.BorderSizePixel=0;im.Position=UDim2.new(0,5,0,5);im.Size=UDim2.new(0,50,0,50);im.ScaleType=Enum.ScaleType.Fit;im.Image=e.img or'';im.Parent=card;round(im,7)
+  local title='Ovo '..tostring(e.wl or(e.w and(compact(e.w)..'Kg')or'?'));local t=label(card,title,UDim2.new(0,62,0,5),UDim2.new(1,-68,0,18),10);t.Font=Enum.Font.GothamBold;t.TextColor3=colors[e.rar]or Color3.fromRGB(235,240,250)
+  label(card,e.rar..' • Conteúdo: '..e.c,UDim2.new(0,62,0,24),UDim2.new(1,-68,0,15),8);label(card,'$'..compact(e.earn)..'/s • Valor $'..compact(e.sell),UDim2.new(0,62,0,41),UDim2.new(1,-68,0,14),7)
+  conn(card.Activated,function()status.Text='Selecionando '..title..'...';local ok,msg=equipRecord(e.key,e.r);status.Text=(ok and'✓ 'or'! ')..msg end)
  end
 end
 local function show()for _,x in ipairs(host:GetChildren())do if x:IsA('GuiObject')then x.Visible=(x==page)end end;page.Visible=true;render()end
 conn(tab.Activated,show);conn(refresh.Activated,render);conn(sort.Activated,function()mode=mode%3+1;sort.Text='Ordenar: '..modes[mode];render()end)
--- Preserve base navigation and restore their pages.
 conn(fun.Activated,function()page.Visible=false;mainPage.Visible=true;filterPage.Visible=false end);conn(filters.Activated,function()page.Visible=false;mainPage.Visible=false;filterPage.Visible=true end)
 _G.PSICO_INVENTORY_PANEL_CLEANUP=function()for _,c in ipairs(conns)do pcall(function()c:Disconnect()end)end;pcall(function()page:Destroy()end);pcall(function()tab:Destroy()end)end

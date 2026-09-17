@@ -1,18 +1,20 @@
 -- PSICOSENATICO V8.7.4
 local cb=tostring(os.time())..'_'..tostring(math.random(100000,999999))
 
+local function replacePlainOnce(src,old,new,label)
+    local a,b=src:find(old,1,true)
+    if not a then error(label..' patch failed') end
+    return src:sub(1,a-1)..new..src:sub(b+1)
+end
+
 local function patchInventory(src)
     local oldRead="for key, r in pairs(inv) do\n        if type(r) == 'table' then\n            local c = tostring(cat(r) or '?')"
     local newRead="for key, r in pairs(inv) do\n        if type(r) == 'table' and not (rv(r, 'Placement') ~= nil and rv(r, 'Placement') ~= false) then\n            local c = tostring(cat(r) or '?')"
-    local nRead
-    src,nRead=src:gsub(oldRead,newRead,1)
-    if nRead~=1 then error('Inventory placement filter patch failed') end
+    src=replacePlainOnce(src,oldRead,newRead,'Inventory placement filter')
 
     local oldEquip="local function equipRecord(key, rec)\n    local uid = tostring(key or rv(rec, 'UID') or '')"
     local newEquip="local function equipRecord(key, rec)\n    local liveData = Save and call(Save, 'Get')\n    local liveInv = type(liveData) == 'table' and liveData.EggInventory\n    local liveRec = type(liveInv) == 'table' and (liveInv[key] or liveInv[tostring(key)]) or rec\n    if type(liveRec) == 'table' and rv(liveRec, 'Placement') ~= nil and rv(liveRec, 'Placement') ~= false then\n        return false, 'Este ovo já está colocado na base'\n    end\n    rec = liveRec or rec\n    local uid = tostring(key or rv(rec, 'UID') or '')"
-    local nEquip
-    src,nEquip=src:gsub(oldEquip,newEquip,1)
-    if nEquip~=1 then error('Inventory placed-equip guard patch failed') end
+    src=replacePlainOnce(src,oldEquip,newEquip,'Inventory placed-equip guard')
     return src
 end
 

@@ -15,6 +15,10 @@ local function patchInventory(src)
     local oldEquip="local function equipRecord(key, rec)\n    local uid = tostring(key or rv(rec, 'UID') or '')"
     local newEquip="local function equipRecord(key, rec)\n    local liveData = Save and call(Save, 'Get')\n    local liveInv = type(liveData) == 'table' and liveData.EggInventory\n    local liveRec = type(liveInv) == 'table' and (liveInv[key] or liveInv[tostring(key)]) or rec\n    if type(liveRec) == 'table' and rv(liveRec, 'Placement') ~= nil and rv(liveRec, 'Placement') ~= false then\n        return false, 'Este ovo já está colocado na base'\n    end\n    rec = liveRec or rec\n    local uid = tostring(key or rv(rec, 'UID') or '')"
     src=replacePlainOnce(src,oldEquip,newEquip,'Inventory placed-equip guard')
+
+    local oldSync="conn(tab.Activated, show)\nconn(refresh.Activated, render)\nconn(sort.Activated, function()"
+    local newSync="conn(tab.Activated, show)\nconn(refresh.Activated, render)\n\nlocal _psicoPlacementSig = ''\nlocal function _psicoInventorySignature()\n    local sd = Save and call(Save, 'Get')\n    local inv = type(sd) == 'table' and sd.EggInventory\n    if type(inv) ~= 'table' then return '' end\n    local keys = {}\n    for key, rec in pairs(inv) do\n        if type(rec) == 'table' and not (rv(rec, 'Placement') ~= nil and rv(rec, 'Placement') ~= false) then\n            keys[#keys + 1] = tostring(key)\n        end\n    end\n    table.sort(keys)\n    return table.concat(keys, '|')\nend\n\ntask.spawn(function()\n    while page.Parent do\n        task.wait(.75)\n        if page.Visible then\n            local sig = _psicoInventorySignature()\n            if _psicoPlacementSig ~= '' and sig ~= _psicoPlacementSig then\n                render()\n            end\n            _psicoPlacementSig = sig\n        end\n    end\nend)\n\nconn(sort.Activated, function()"
+    src=replacePlainOnce(src,oldSync,newSync,'Inventory placement autosync')
     return src
 end
 

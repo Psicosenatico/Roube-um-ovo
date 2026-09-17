@@ -1,93 +1,166 @@
--- PSICOSENATICO | Egg Equip Scanner V1.1 UI FIX
--- Mantém a lógica do scanner V1 e corrige apenas a interface/mobile/drag.
+-- PSICOSENATICO | Egg Equip Scanner V1.2
+-- Scanner leve para comparar ANTES/DEPOIS ao equipar manualmente UM ovo.
+-- Sem __namecall, hookfunction, getgc ou decompile.
 
-loadstring(game:HttpGet('https://raw.githubusercontent.com/Psicosenatico/Roube-um-ovo/d0630034da8d8a29f87bce51b5fb743b49e8acad/EggEquip_Scanner.lua'))()
+if _G.PSICO_EGG_EQUIP_SCAN_CLEANUP then pcall(_G.PSICO_EGG_EQUIP_SCAN_CLEANUP) end
 
-task.wait()
-local UIS=game:GetService('UserInputService')
+local Players=game:GetService('Players')
+local RS=game:GetService('ReplicatedStorage')
 local CoreGui=game:GetService('CoreGui')
+local Http=game:GetService('HttpService')
+local UIS=game:GetService('UserInputService')
+local Camera=workspace.CurrentCamera
+local LP=Players.LocalPlayer
+local C={}
+local S={before=nil,after=nil,events={},started=os.time()}
+
 local function uiParent()
  local ok,h=pcall(function() return gethui and gethui() end)
  return (ok and h) or CoreGui
 end
-local gui=uiParent():FindFirstChild('PsicoEggEquipScanner')
-if not gui then return end
-local main=gui:FindFirstChildWhichIsA('Frame')
-if not main then return end
-
-main.AnchorPoint=Vector2.new(.5,.5)
-main.Position=UDim2.fromScale(.5,.5)
-main.Size=UDim2.fromScale(.78,.72)
-main.ClipsDescendants=true
-local lim=Instance.new('UISizeConstraint')
-lim.MinSize=Vector2.new(560,320)
-lim.MaxSize=Vector2.new(900,450)
-lim.Parent=main
-
-local title,status,buttons=nil,nil,{}
-for _,d in ipairs(main:GetChildren()) do
- if d:IsA('TextLabel') then
-  if d.Text:find('EGG EQUIP SCANNER',1,true) then title=d else status=status or d end
- elseif d:IsA('TextButton') then
-  buttons[d.Text]=d
+local function val(v)
+ local t=typeof(v)
+ if t=='nil' or t=='boolean' or t=='string' or t=='number' then return v end
+ if t=='Instance' then return {class=v.ClassName,name=v.Name,path=v:GetFullName()} end
+ if t=='Vector3' then return {x=v.X,y=v.Y,z=v.Z} end
+ return tostring(v)
+end
+local function attrs(x)
+ local out={};local ok,a=pcall(function() return x:GetAttributes() end)
+ if ok then for k,v in pairs(a) do out[k]=val(v) end end
+ return out
+end
+local function children(x,depth)
+ local out={};if not x or depth>2 then return out end
+ for _,d in ipairs(x:GetChildren()) do
+  local r={name=d.Name,class=d.ClassName,attrs=attrs(d)}
+  if d:IsA('ValueBase') then pcall(function() r.value=val(d.Value) end) end
+  if depth<2 and #d:GetChildren()>0 then r.children=children(d,depth+1) end
+  out[#out+1]=r
  end
+ return out
 end
+local function toolRow(t,where)
+ local r={where=where,name=t.Name,class=t.ClassName,attrs=attrs(t),children=children(t,0)}
+ pcall(function() r.tooltip=t.ToolTip end)
+ pcall(function() r.textureId=t.TextureId end)
+ pcall(function() r.canBeDropped=t.CanBeDropped end)
+ return r
+end
+local function tools()
+ local out={}
+ for _,box in ipairs({{LP:FindFirstChildOfClass('Backpack'),'Backpack'},{LP.Character,'Character'}}) do
+  if box[1] then
+   for _,x in ipairs(box[1]:GetChildren()) do if x:IsA('Tool') then out[#out+1]=toolRow(x,box[2]) end end
+  end
+ end
+ return out
+end
+local function remotes()
+ local out={}
+ for _,d in ipairs(RS:GetDescendants()) do
+  if d:IsA('RemoteEvent') or d:IsA('RemoteFunction') then
+   local q=string.lower(d:GetFullName())
+   if q:find('egg',1,true) or q:find('equip',1,true) or q:find('inventory',1,true) or q:find('carry',1,true) or q:find('tool',1,true) then
+    out[#out+1]={name=d.Name,class=d.ClassName,path=d:GetFullName(),attrs=attrs(d)}
+   end
+  end
+ end
+ return out
+end
+local function eggInventory()
+ local out={ok=false,count=0,records={}}
+ local shared=RS:FindFirstChild('Shared');local m=shared and shared:FindFirstChild('Save')
+ if not(m and m:IsA('ModuleScript')) then return out end
+ local ok,sv=pcall(require,m);if not(ok and type(sv)=='table' and type(sv.Get)=='function') then return out end
+ local ok2,data=pcall(sv.Get);if not(ok2 and type(data)=='table') then return out end
+ local inv=data.EggInventory;out.ok=true
+ if type(inv)=='table' then
+  for k,r in pairs(inv) do
+   out.count+=1
+   if type(r)=='table' then
+    local z={key=tostring(k)}
+    for _,n in ipairs({'Uid','UID','Id','ID','AssetCategory','Rarity','Weight','WeightKg','AssetScale','State','AreaId','NestId','Pet','PetName','DisplayName'}) do
+     if r[n]~=nil then z[n]=val(r[n]) end
+    end
+    out.records[#out.records+1]=z
+   end
+  end
+ end
+ return out
+end
+local function snap(label)
+ return {label=label,unix=os.time(),tools=tools(),eggInventory=eggInventory(),relevantRemotes=remotes()}
+end
+local function event(kind,x)
+ S.events[#S.events+1]={t=os.clock(),unix=os.time(),kind=kind,item=x and toolRow(x,x.Parent==LP.Character and 'Character' or 'Backpack') or nil}
+end
+local function watch(container)
+ if not container then return end
+ C[#C+1]=container.ChildAdded:Connect(function(x) if x:IsA('Tool') then event('ToolAdded',x) end end)
+ C[#C+1]=container.ChildRemoved:Connect(function(x) if x:IsA('Tool') then event('ToolRemoved',x) end end)
+end
+watch(LP:FindFirstChildOfClass('Backpack'));if LP.Character then watch(LP.Character) end
+C[#C+1]=LP.CharacterAdded:Connect(function(ch) watch(ch) end)
 
-if title then
- title.Text='EGG EQUIP SCANNER • V1.1'
- title.TextScaled=false
- title.TextSize=24
- title.Position=UDim2.fromOffset(20,10)
- title.Size=UDim2.new(1,-40,0,34)
-end
-if status then
- status.Position=UDim2.fromOffset(20,58)
- status.Size=UDim2.new(1,-40,0,118)
- status.TextSize=15
- status.TextWrapped=true
- status.TextXAlignment=Enum.TextXAlignment.Left
- status.TextYAlignment=Enum.TextYAlignment.Top
- local pad=Instance.new('UIPadding')
- pad.PaddingTop=UDim.new(0,12);pad.PaddingLeft=UDim.new(0,14);pad.PaddingRight=UDim.new(0,14);pad.Parent=status
-end
+local function corner(o,r)local c=Instance.new('UICorner');c.CornerRadius=UDim.new(0,r or 12);c.Parent=o end
+local gui=Instance.new('ScreenGui');gui.Name='PsicoEggEquipScanner';gui.ResetOnSpawn=false;gui.IgnoreGuiInset=false;gui.Parent=uiParent()
 
-local function place(name,x,y,w,h)
- local b=buttons[name]
- if not b then return end
- b.Position=UDim2.new(x,0,y,0)
- b.Size=UDim2.new(w,-6,h,-6)
- b.TextSize=16
-end
-place('CAPTURAR ANTES',.03,.49,.47,.20)
-place('CAPTURAR DEPOIS',.50,.49,.47,.20)
-place('EXPORTAR JSON',.03,.70,.65,.20)
-place('FECHAR',.69,.70,.28,.20)
+local vp=Camera and Camera.ViewportSize or Vector2.new(1280,720)
+local W=math.floor(math.clamp(vp.X*0.58,520,820))
+local H=math.floor(math.clamp(vp.Y*0.62,320,470))
+local main=Instance.new('Frame');main.Name='Main';main.AnchorPoint=Vector2.new(.5,.5);main.Position=UDim2.fromScale(.5,.5);main.Size=UDim2.fromOffset(W,H);main.BackgroundColor3=Color3.fromRGB(9,19,36);main.BorderSizePixel=0;main.Parent=gui;corner(main,18)
 
--- Arraste pelo cabeçalho/título (mouse e touch).
-local dragArea=title or main
-local dragging=false
-local dragInput,dragStart,startPos
-local extra={}
-extra[#extra+1]=dragArea.InputBegan:Connect(function(input)
+local header=Instance.new('Frame');header.Name='Header';header.BackgroundTransparency=1;header.Position=UDim2.fromOffset(16,8);header.Size=UDim2.new(1,-32,0,42);header.Active=true;header.Parent=main
+local title=Instance.new('TextLabel');title.BackgroundTransparency=1;title.Size=UDim2.new(1,-56,1,0);title.Font=Enum.Font.GothamBold;title.Text='EGG EQUIP SCANNER • V1.2';title.TextSize=22;title.TextColor3=Color3.new(1,1,1);title.TextXAlignment=Enum.TextXAlignment.Left;title.Parent=header
+local close=Instance.new('TextButton');close.AnchorPoint=Vector2.new(1,0);close.Position=UDim2.new(1,0,0,0);close.Size=UDim2.fromOffset(42,38);close.BackgroundColor3=Color3.fromRGB(31,43,62);close.BorderSizePixel=0;close.Text='×';close.TextSize=24;close.Font=Enum.Font.GothamBold;close.TextColor3=Color3.new(1,1,1);close.Parent=header;corner(close,11)
+
+local status=Instance.new('TextLabel');status.Position=UDim2.fromOffset(18,58);status.Size=UDim2.new(1,-36,0,96);status.BackgroundColor3=Color3.fromRGB(16,34,58);status.BorderSizePixel=0;status.TextColor3=Color3.fromRGB(220,230,245);status.Font=Enum.Font.Code;status.TextSize=15;status.TextWrapped=true;status.TextXAlignment=Enum.TextXAlignment.Left;status.TextYAlignment=Enum.TextYAlignment.Top;status.Text='1) CAPTURAR ANTES\n2) Equipe manualmente UM ovo\n3) CAPTURAR DEPOIS → EXPORTAR JSON';status.Parent=main;corner(status,12)
+local sp=Instance.new('UIPadding');sp.PaddingTop=UDim.new(0,12);sp.PaddingLeft=UDim.new(0,14);sp.PaddingRight=UDim.new(0,14);sp.Parent=status
+
+local btnArea=Instance.new('Frame');btnArea.BackgroundTransparency=1;btnArea.Position=UDim2.fromOffset(18,166);btnArea.Size=UDim2.new(1,-36,1,-182);btnArea.Parent=main
+local function mkButton(txt,x,y,w,h,fn)
+ local b=Instance.new('TextButton');b.Position=UDim2.new(x,0,y,0);b.Size=UDim2.new(w,-5,h,-5);b.BackgroundColor3=Color3.fromRGB(42,91,151);b.BorderSizePixel=0;b.Text=txt;b.TextColor3=Color3.new(1,1,1);b.Font=Enum.Font.GothamBold;b.TextSize=16;b.Parent=btnArea;corner(b,12);C[#C+1]=b.Activated:Connect(fn);return b
+end
+mkButton('CAPTURAR ANTES',0,0,.5,.5,function()
+ S.before=snap('before');S.events={};status.Text='ANTES capturado. Agora equipe manualmente UM ovo e depois toque CAPTURAR DEPOIS.'
+end)
+mkButton('CAPTURAR DEPOIS',.5,0,.5,.5,function()
+ S.after=snap('after');status.Text='DEPOIS capturado. Eventos de Tool: '..#S.events..'. Agora EXPORTAR JSON.'
+end)
+mkButton('EXPORTAR JSON',0,.5,.72,.5,function()
+ local payload={scanner='Psico Egg Equip Scanner V1.2',placeId=game.PlaceId,gameId=game.GameId,started=S.started,before=S.before,after=S.after,events=S.events}
+ local ok,json=pcall(function() return Http:JSONEncode(payload) end)
+ if not ok then status.Text='Erro JSON: '..tostring(json);return end
+ local name='Psico_EggEquip_'..os.time()..'.json'
+ if writefile then
+  local ok2,e=pcall(writefile,name,json);status.Text=ok2 and('Exportado: '..name)or('writefile falhou: '..tostring(e))
+ elseif setclipboard then pcall(setclipboard,json);status.Text='JSON copiado para clipboard.'
+ else status.Text='Executor sem writefile/setclipboard.' end
+end)
+mkButton('FECHAR',.72,.5,.28,.5,function() if _G.PSICO_EGG_EQUIP_SCAN_CLEANUP then _G.PSICO_EGG_EQUIP_SCAN_CLEANUP() end end)
+
+-- Drag pelo cabeçalho, com mouse ou touch.
+local dragging=false;local dragStart,startPos,dragInput
+C[#C+1]=header.InputBegan:Connect(function(input)
  if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
-  dragging=true;dragStart=input.Position;startPos=main.Position
+  dragging=true;dragStart=input.Position;startPos=main.Position;dragInput=input
  end
 end)
-extra[#extra+1]=dragArea.InputChanged:Connect(function(input)
- if input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch then dragInput=input end
-end)
-extra[#extra+1]=UIS.InputChanged:Connect(function(input)
- if dragging and input==dragInput then
-  local delta=input.Position-dragStart
-  main.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+delta.X,startPos.Y.Scale,startPos.Y.Offset+delta.Y)
+C[#C+1]=UIS.InputChanged:Connect(function(input)
+ if not dragging then return end
+ if input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch then
+  local d=input.Position-dragStart
+  main.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y)
  end
 end)
-extra[#extra+1]=UIS.InputEnded:Connect(function(input)
- if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then dragging=false end
+C[#C+1]=UIS.InputEnded:Connect(function(input)
+ if input==dragInput or input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then dragging=false end
 end)
+C[#C+1]=close.Activated:Connect(function() if _G.PSICO_EGG_EQUIP_SCAN_CLEANUP then _G.PSICO_EGG_EQUIP_SCAN_CLEANUP() end end)
 
-local oldCleanup=_G.PSICO_EGG_EQUIP_SCAN_CLEANUP
 _G.PSICO_EGG_EQUIP_SCAN_CLEANUP=function()
- for _,c in ipairs(extra) do pcall(function() c:Disconnect() end) end
- if oldCleanup then pcall(oldCleanup) end
+ for _,c in ipairs(C) do pcall(function() c:Disconnect() end) end
+ pcall(function() gui:Destroy() end)
+ _G.PSICO_EGG_EQUIP_SCAN_CLEANUP=nil
 end

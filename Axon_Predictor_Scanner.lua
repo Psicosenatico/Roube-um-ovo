@@ -1,4 +1,4 @@
--- PSICOSENATICO | AXON PREDICTOR TRACE V2
+-- PSICOSENATICO | AXON PREDICTOR TRACE V2.1
 -- Zero-hook / passive observation.
 -- Reads Axon predictor UI and listens to replicated RemoteEvents with OnClientEvent only.
 -- Does NOT invoke remotes, hook functions, use debug/getgc, intercept HTTP, or mutate game state.
@@ -649,7 +649,7 @@ local function report()
 
     return {
         meta={
-            version="AxonPredictorTraceV2",
+            version="AxonPredictorTraceV2.1",
             zeroHook=true,
             passive=true,
             created=nowUnix(),
@@ -731,7 +731,7 @@ local function startTrace()
 end
 
 local sg = Instance.new("ScreenGui")
-sg.Name = "PSICO_AXON_PREDICTOR_TRACE_V2"
+sg.Name = "PSICO_AXON_PREDICTOR_TRACE_V2_1"
 sg.ResetOnSpawn = false
 sg.DisplayOrder = 1405
 sg.Parent = CoreGui
@@ -749,13 +749,50 @@ Instance.new("UICorner", frame).CornerRadius = UDim.new(0,14)
 local title = Instance.new("TextLabel")
 title.BackgroundTransparency = 1
 title.Position = UDim2.fromOffset(14,10)
-title.Size = UDim2.new(1,-28,0,28)
-title.Text = "AXON PREDICTOR TRACE V2 - ZERO-HOOK"
+title.Size = UDim2.new(1,-76,0,28)
+title.Text = "AXON PREDICTOR TRACE V2.1 - ZERO-HOOK"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 13
 title.TextColor3 = Color3.fromRGB(238,245,255)
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = frame
+
+local minimize = Instance.new("TextButton")
+minimize.AnchorPoint = Vector2.new(1,0)
+minimize.Position = UDim2.new(1,-14,0,10)
+minimize.Size = UDim2.fromOffset(34,28)
+minimize.BackgroundColor3 = Color3.fromRGB(23,50,86)
+minimize.BorderSizePixel = 0
+minimize.Text = "—"
+minimize.TextColor3 = Color3.fromRGB(244,248,255)
+minimize.Font = Enum.Font.GothamBold
+minimize.TextSize = 16
+minimize.Parent = frame
+Instance.new("UICorner", minimize).CornerRadius = UDim.new(0,8)
+
+local restore = Instance.new("TextButton")
+restore.AnchorPoint = Vector2.new(1,0)
+restore.Position = UDim2.new(1,-16,0,90)
+restore.Size = UDim2.fromOffset(48,48)
+restore.BackgroundColor3 = Color3.fromRGB(9,18,34)
+restore.BorderSizePixel = 0
+restore.Text = "AX"
+restore.TextColor3 = Color3.fromRGB(244,248,255)
+restore.Font = Enum.Font.GothamBold
+restore.TextSize = 12
+restore.Visible = false
+restore.Parent = sg
+Instance.new("UICorner", restore).CornerRadius = UDim.new(1,0)
+
+minimize.MouseButton1Click:Connect(function()
+    frame.Visible = false
+    restore.Visible = true
+end)
+
+restore.MouseButton1Click:Connect(function()
+    restore.Visible = false
+    frame.Visible = true
+end)
 
 local status = Instance.new("TextLabel")
 status.Position = UDim2.fromOffset(14,48)

@@ -1,4 +1,4 @@
--- PSICOSENATICO | AXON PREDICTOR TRACE V2.4
+-- PSICOSENATICO | AXON PREDICTOR SOURCE CAPTURE V2.5
 -- Zero-hook / passive observation.
 -- Reads Axon predictor UI and listens to replicated RemoteEvents with OnClientEvent only.
 -- Does NOT invoke remotes, hook functions, use debug/getgc, intercept HTTP, or mutate game state.
@@ -10,6 +10,7 @@ local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
+local CollectionService = game:GetService("CollectionService")
 
 local player = Players.LocalPlayer
 local PERIOD_SECONDS = 300
@@ -40,6 +41,16 @@ local state = {
     hiddenCardClock = {},
     hiddenObservations = {},
     hiddenFingerprint = nil,
+    sourceSnapshots = {},
+    sourceEvents = {},
+    sourceCandidates = {},
+    sourceCandidateSeen = {},
+    sourceConnections = {},
+    attachedSourceObjects = setmetatable({}, {__mode = "k"}),
+    attachedSourceRoots = setmetatable({}, {__mode = "k"}),
+    sourceLastFingerprint = nil,
+    sourceScanCount = 0,
+    lastSourceScan = 0,
     refreshClicks = 0,
     scans = 0,
     remoteConnections = {},
@@ -731,7 +742,7 @@ local function scanPredictor(reason)
     local hiddenFpParts = {}
     for _, card in ipairs(hiddenCards) do
         hiddenFpParts[#hiddenFpParts+1] = table.concat({
-            cardIdentity(card), tostring(card.etaLive), tostring(card.etaText)
+            cardIdentity(card), tostring(card.etaLive)
         }, "|")
     end
     table.sort(hiddenFpParts)
@@ -1115,6 +1126,327 @@ local function attachRefreshButtons()
     end
 end
 
+
+local SOURCE_KEYWORDS = {
+    "predict", "forecast", "upcoming", "sighting", "rarity", "spawn", "egg",
+    "area", "mutation", "search", "chance"
+}
+
+local function hasSourceKeyword(v)
+    local s = lower(v)
+    for _, k in ipairs(SOURCE_KEYWORDS) do
+        if string.find(s, k, 1, true) then return true end
+    end
+    return false
+end
+
+local function safeTags(x)
+    local ok, tags = pcall(function() return CollectionService:GetTags(x) end)
+    if not ok or type(tags) ~= "table" then return {} end
+    local out = {}
+    for _, tag in ipairs(tags) do out[#out+1] = tostring(tag) end
+    return out
+end
+
+local function simpleInstanceValue(x)
+    if x:IsA("ValueBase") then
+        local ok, value = pcall(function() return x.Value end)
+        if ok then return sanitize(value) end
+    end
+    return nil
+end
+
+local function compactInstance(x)
+    local item = {
+        name=x.Name,
+        class=x.ClassName,
+        path=pathOf(x),
+        attributes=safeAttributes(x),
+        tags=safeTags(x),
+    }
+    local value = simpleInstanceValue(x)
+    if value ~= nil then item.value = value end
+    local tx = textOf(x)
+    if tx then
+        item.text = tx
+        item.actuallyVisible = actuallyVisible(x)
+    end
+    if x:IsA("GuiObject") then
+        local ok, lo = pcall(function() return x.LayoutOrder end)
+        if ok then item.layoutOrder = lo end
+    end
+    return item
+end
+
+local function recordSourceCandidate(candidate)
+    local key = table.concat({
+        tostring(candidate.path or ""),
+        tostring(candidate.field or ""),
+        tostring(candidate.token or ""),
+        tostring(candidate.value or "")
+    }, "|")
+    if state.sourceCandidateSeen[key] then return end
+    state.sourceCandidateSeen[key] = true
+    addBounded(state.sourceCandidates, candidate, 600)
+end
+
+local function sourceTokens(cards)
+    local tokens, seen = {}, {}
+    for _, card in ipairs(cards or {}) do
+        local vals = {card.pet, card.area, tostring(card.targetPeriod or "")}
+        for _, v in ipairs(vals) do
+            local s = lower(trim(v))
+            if #s >= 4 and not seen[s] then
+                seen[s] = true
+                tokens[#tokens+1] = s
+            end
+        end
+    end
+    return tokens
+end
+
+local function tokenInValue(v, tokens)
+    local s = lower(tostring(v or ""))
+    if s == "" then return nil end
+    for _, token in ipairs(tokens) do
+        if string.find(s, token, 1, true) then return token end
+    end
+    return nil
+end
+
+local function searchSourceMirrors(cards, roots)
+    local tokens = sourceTokens(cards)
+    local found = {}
+    if #tokens == 0 then return found end
+
+    local function inspect(x, scope)
+        if isPredictorCardDescendant(x) then return end
+
+        local token = tokenInValue(x.Name, tokens)
+        if token then
+            local hit = {unix=nowUnix(), scope=scope, path=pathOf(x), class=x.ClassName, field="Name", value=x.Name, token=token}
+            found[#found+1] = hit
+            recordSourceCandidate(hit)
+        end
+
+        if x:IsA("ValueBase") then
+            local ok, value = pcall(function() return x.Value end)
+            if ok then
+                token = tokenInValue(value, tokens)
+                if token then
+                    local hit = {unix=nowUnix(), scope=scope, path=pathOf(x), class=x.ClassName, field="Value", value=sanitize(value), token=token}
+                    found[#found+1] = hit
+                    recordSourceCandidate(hit)
+                end
+            end
+        end
+
+        local tx = textOf(x)
+        if tx then
+            token = tokenInValue(tx, tokens)
+            if token then
+                local hit = {unix=nowUnix(), scope=scope, path=pathOf(x), class=x.ClassName, field="Text", value=tx, token=token}
+                found[#found+1] = hit
+                recordSourceCandidate(hit)
+            end
+        end
+
+        local attrs = safeAttributes(x)
+        for k, v in pairs(attrs) do
+            token = tokenInValue(v, tokens)
+            if token then
+                local hit = {unix=nowUnix(), scope=scope, path=pathOf(x), class=x.ClassName, field="Attribute:"..tostring(k), value=v, token=token}
+                found[#found+1] = hit
+                recordSourceCandidate(hit)
+            end
+        end
+    end
+
+    for _, root in ipairs(roots or {}) do
+        local count = 0
+        local ok, desc = pcall(function() return root:GetDescendants() end)
+        if ok then
+            for _, x in ipairs(desc) do
+                inspect(x, "AxonUI")
+                count += 1
+                if count >= 6500 or #found >= 220 then break end
+            end
+        end
+        if #found >= 220 then break end
+    end
+
+    if #found < 220 then
+        local count = 0
+        local ok, desc = pcall(function() return ReplicatedStorage:GetDescendants() end)
+        if ok then
+            for _, x in ipairs(desc) do
+                if x:IsA("ValueBase") or hasSourceKeyword(x.Name) or next(safeAttributes(x)) ~= nil then
+                    inspect(x, "ReplicatedStorage")
+                end
+                count += 1
+                if count >= 9000 or #found >= 220 then break end
+            end
+        end
+    end
+    return found
+end
+
+local function captureCardObjects(roots)
+    local out = {}
+    for _, root in ipairs(roots or {}) do
+        local ok, desc = pcall(function() return root:GetDescendants() end)
+        if ok then
+            for _, x in ipairs(desc) do
+                if string.find(lower(x.Name), "predictorpetcard", 1, true) then
+                    local item = compactInstance(x)
+                    item.children = {}
+                    local ok2, sub = pcall(function() return x:GetDescendants() end)
+                    if ok2 then
+                        for i, d in ipairs(sub) do
+                            if i > 60 then break end
+                            item.children[#item.children+1] = compactInstance(d)
+                        end
+                    end
+                    out[#out+1] = item
+                    if #out >= 40 then return out end
+                end
+            end
+        end
+    end
+    return out
+end
+
+local function capturePredictorControls(roots)
+    local out, seen = {}, {}
+    for _, root in ipairs(roots or {}) do
+        local ok, desc = pcall(function() return root:GetDescendants() end)
+        if ok then
+            for _, x in ipairs(desc) do
+                if not isPredictorCardDescendant(x) then
+                    local tx = textOf(x)
+                    local relevant = hasSourceKeyword(x.Name) or (tx and hasSourceKeyword(tx))
+                    if relevant and (
+                        x:IsA("TextButton") or x:IsA("TextBox") or x:IsA("TextLabel")
+                        or x:IsA("ValueBase") or x:IsA("Frame") or x:IsA("ScrollingFrame")
+                    ) then
+                        local p = pathOf(x)
+                        if not seen[p] then
+                            seen[p] = true
+                            out[#out+1] = compactInstance(x)
+                            if #out >= 260 then return out end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return out
+end
+
+local function recordSourceEvent(kind, x, extra)
+    local rec = {
+        unix=nowUnix(),
+        currentPeriod=periodAt(nowUnix()),
+        kind=kind,
+        path=x and pathOf(x) or nil,
+        class=x and x.ClassName or nil,
+        name=x and x.Name or nil,
+        data=sanitize(extra),
+    }
+    addBounded(state.sourceEvents, rec, 700)
+end
+
+local function attachSourceObject(x)
+    if state.attachedSourceObjects[x] then return end
+    state.attachedSourceObjects[x] = true
+
+    if x:IsA("ValueBase") and (hasSourceKeyword(x.Name) or hasSourceKeyword(pathOf(x))) then
+        local last = simpleInstanceValue(x)
+        local conn = x.Changed:Connect(function()
+            local value = simpleInstanceValue(x)
+            if tostring(value) ~= tostring(last) then
+                recordSourceEvent("value-changed", x, {before=last, after=value})
+                last = value
+            end
+        end)
+        state.sourceConnections[#state.sourceConnections+1] = conn
+    elseif x:IsA("BindableEvent") and (hasSourceKeyword(x.Name) or hasSourceKeyword(pathOf(x))) then
+        local conn = x.Event:Connect(function(...)
+            local packed = table.pack(...)
+            local args = {}
+            for i=1, packed.n do args[i] = sanitize(packed[i]) end
+            recordSourceEvent("bindable-event", x, {args=args})
+        end)
+        state.sourceConnections[#state.sourceConnections+1] = conn
+    elseif (x:IsA("TextLabel") or x:IsA("TextButton") or x:IsA("TextBox"))
+        and isPredictorCardDescendant(x)
+        and not string.find(lower(x.Name), "eta", 1, true) then
+        local last = textOf(x)
+        local conn = x:GetPropertyChangedSignal("Text"):Connect(function()
+            local now = textOf(x)
+            if now ~= last then
+                recordSourceEvent("card-text-changed", x, {before=last, after=now})
+                last = now
+            end
+        end)
+        state.sourceConnections[#state.sourceConnections+1] = conn
+    end
+end
+
+local function attachSourceRoot(root)
+    if state.attachedSourceRoots[root] then return end
+    state.attachedSourceRoots[root] = true
+
+    local ok, desc = pcall(function() return root:GetDescendants() end)
+    if ok then
+        for _, x in ipairs(desc) do attachSourceObject(x) end
+    end
+
+    local c1 = root.DescendantAdded:Connect(function(x)
+        attachSourceObject(x)
+        if isPredictorCardDescendant(x) or hasSourceKeyword(x.Name) then
+            recordSourceEvent("descendant-added", x, compactInstance(x))
+        end
+    end)
+    local c2 = root.DescendantRemoving:Connect(function(x)
+        if isPredictorCardDescendant(x) or hasSourceKeyword(x.Name) then
+            recordSourceEvent("descendant-removing", x, compactInstance(x))
+        end
+    end)
+    state.sourceConnections[#state.sourceConnections+1] = c1
+    state.sourceConnections[#state.sourceConnections+1] = c2
+end
+
+local function attachSourceObservers()
+    for _, root in ipairs(rootCandidates()) do attachSourceRoot(root) end
+end
+
+local function captureSourceSnapshot(reason, force)
+    local roots = rootCandidates()
+    local cards = state.lastCards or {}
+    local fp = sortedCardFingerprint(cards)
+    if not force and fp ~= "" and fp == state.sourceLastFingerprint then
+        return false
+    end
+
+    state.sourceLastFingerprint = fp
+    state.sourceScanCount += 1
+    attachSourceObservers()
+
+    local snapshot = {
+        unix=nowUnix(),
+        currentPeriod=periodAt(nowUnix()),
+        reason=reason or "source-scan",
+        predictions=sanitize(cards),
+        predictorRootCount=#roots,
+        cardObjects=captureCardObjects(roots),
+        controls=capturePredictorControls(roots),
+        mirrors=searchSourceMirrors(cards, roots),
+    }
+    addBounded(state.sourceSnapshots, snapshot, 80)
+    return true
+end
+
 local function report()
     local history = {}
     for _, rec in pairs(state.history) do history[#history+1] = rec end
@@ -1126,7 +1458,7 @@ local function report()
 
     return {
         meta={
-            version="AxonPredictorTraceV2.4",
+            version="AxonPredictorSourceV2.5",
             zeroHook=true,
             passive=true,
             created=nowUnix(),
@@ -1148,6 +1480,10 @@ local function report()
             refreshLog=#state.refreshLog,
             panelVisibilityTransitions=#state.panelVisibilityLog,
             hiddenObservations=#state.hiddenObservations,
+            sourceScans=state.sourceScanCount,
+            sourceSnapshots=#state.sourceSnapshots,
+            sourceEvents=#state.sourceEvents,
+            sourceCandidates=#state.sourceCandidates,
             history=#history,
         },
         currentPredictions=state.lastCards,
@@ -1164,6 +1500,11 @@ local function report()
         lastPanelVisibleAt=state.lastPanelVisibleAt,
         lastPredictorEvidenceAt=state.lastPredictorEvidenceAt,
         hiddenObservations=state.hiddenObservations,
+        sourceDiscovery={
+            snapshots=state.sourceSnapshots,
+            events=state.sourceEvents,
+            candidates=state.sourceCandidates,
+        },
     }
 end
 
@@ -1204,12 +1545,19 @@ local function startTrace()
     attachExistingRemotes()
     scanPredictor("start")
     attachRefreshButtons()
+    attachSourceObservers()
+    captureSourceSnapshot("start", true)
 
     task.spawn(function()
         while state.running and not state.closed and state.gui and state.gui.Parent do
             attachRefreshButtons()
             scanPredictor("poll")
+            attachSourceObservers()
             local t = nowUnix()
+            if t - state.lastSourceScan >= 5 then
+                state.lastSourceScan = t
+                captureSourceSnapshot("auto", false)
+            end
             if t - state.lastCheckpoint >= 30 then
                 state.lastCheckpoint = t
                 checkpoint()
@@ -1220,7 +1568,7 @@ local function startTrace()
 end
 
 local sg = Instance.new("ScreenGui")
-sg.Name = "PSICO_AXON_PREDICTOR_TRACE_V2_4"
+sg.Name = "PSICO_AXON_PREDICTOR_SOURCE_V2_5"
 sg.ResetOnSpawn = false
 sg.DisplayOrder = 1405
 sg.Parent = CoreGui
@@ -1239,7 +1587,7 @@ local title = Instance.new("TextLabel")
 title.BackgroundTransparency = 1
 title.Position = UDim2.fromOffset(14,10)
 title.Size = UDim2.new(1,-76,0,28)
-title.Text = "AXON PREDICTOR TRACE V2.4 - ZERO-HOOK"
+title.Text = "AXON PREDICTOR SOURCE V2.5 - ZERO-HOOK"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 13
 title.TextColor3 = Color3.fromRGB(238,245,255)
@@ -1288,7 +1636,7 @@ status.Position = UDim2.fromOffset(14,48)
 status.Size = UDim2.new(1,-28,0,90)
 status.BackgroundColor3 = Color3.fromRGB(15,29,52)
 status.BorderSizePixel = 0
-status.Text = "Pronto. Abra o Egg Predictor do Axon e pressione INICIAR TRACE."
+status.Text = "Abra o Egg Predictor do Axon e pressione INICIAR CAPTURA."
 status.Font = Enum.Font.Code
 status.TextSize = 11
 status.TextColor3 = Color3.fromRGB(215,229,247)
@@ -1312,14 +1660,15 @@ local function button(text,x,y,w)
     return b
 end
 
-local bStart = button("INICIAR TRACE",14,154,218)
-local bSnap = button("SNAPSHOT AGORA",253,154,218)
+local bStart = button("INICIAR CAPTURA",14,154,218)
+local bSnap = button("CAPTURAR FONTE",253,154,218)
 local bExport = button("EXPORTAR",14,202,218)
 local bClose = button("FECHAR",253,202,218)
 
 bStart.MouseButton1Click:Connect(startTrace)
 bSnap.MouseButton1Click:Connect(function()
-    scanPredictor("manual-snapshot")
+    scanPredictor("manual-source-capture")
+    captureSourceSnapshot("manual", true)
     checkpoint()
 end)
 bExport.MouseButton1Click:Connect(exportData)
@@ -1328,6 +1677,9 @@ bClose.MouseButton1Click:Connect(function()
     state.running = false
     state.closed = true
     for _, conn in ipairs(state.remoteConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    for _, conn in ipairs(state.sourceConnections) do
         pcall(function() conn:Disconnect() end)
     end
     sg:Destroy()

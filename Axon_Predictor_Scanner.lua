@@ -1,4 +1,4 @@
--- PSICOSENATICO | AXON PREDICTOR TRACE V2.3
+-- PSICOSENATICO | AXON PREDICTOR TRACE V2.4
 -- Zero-hook / passive observation.
 -- Reads Axon predictor UI and listens to replicated RemoteEvents with OnClientEvent only.
 -- Does NOT invoke remotes, hook functions, use debug/getgc, intercept HTTP, or mutate game state.
@@ -36,6 +36,10 @@ local state = {
     panelVisibilityLog = {},
     panelVisibleNow = nil,
     lastPanelVisibleAt = nil,
+    lastPredictorEvidenceAt = nil,
+    hiddenCardClock = {},
+    hiddenObservations = {},
+    hiddenFingerprint = nil,
     refreshClicks = 0,
     scans = 0,
     remoteConnections = {},
@@ -268,6 +272,31 @@ local function collectTexts(node, maxCount)
     return out
 end
 
+local function collectTextsAny(node, maxCount)
+    local out = {}
+    local seenText = {}
+    maxCount = maxCount or 40
+    local ntx = textOf(node)
+    if ntx and visibleOf(node) then
+        seenText[ntx] = true
+        out[#out+1] = {text=ntx, path=pathOf(node), class=node.ClassName}
+    end
+    local ok, desc = pcall(function() return node:GetDescendants() end)
+    if ok then
+        for _, d in ipairs(desc) do
+            if #out >= maxCount then break end
+            if (d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox")) and visibleOf(d) then
+                local tx = textOf(d)
+                if tx and not seenText[tx] then
+                    seenText[tx] = true
+                    out[#out+1] = {text=tx, path=pathOf(d), class=d.ClassName}
+                end
+            end
+        end
+    end
+    return out
+end
+
 local function cardScore(texts)
     local score = 0
     local hasEta, hasChance, hasRA = false, false, false
@@ -364,6 +393,66 @@ local function parseCard(label, root, capturedAt)
     }
 end
 
+local function chooseCardAncestorAny(label, root)
+    local best, bestTexts, bestScore = nil, nil, -1
+    local node = label.Parent
+    local depth = 0
+    while node and node ~= root.Parent and depth < 7 do
+        local texts = collectTextsAny(node, 24)
+        local score = cardScore(texts)
+        if score > bestScore then
+            best, bestTexts, bestScore = node, texts, score
+        end
+        if score >= 10 and #texts <= 12 then
+            return node, texts
+        end
+        if node == root then break end
+        node = node.Parent
+        depth += 1
+    end
+    if bestScore >= 8 then return best, bestTexts end
+    return nil, nil
+end
+
+local function parseCardAny(label, root, capturedAt)
+    local eta = parseEtaSeconds(textOf(label))
+    if eta == nil then return nil end
+    local ancestor, texts = chooseCardAncestorAny(label, root)
+    if not ancestor or not texts then return nil end
+    local rarity, area, chance
+    for _, item in ipairs(texts) do
+        if not rarity then
+            local r, a = parseRarityArea(item.text)
+            if r then rarity, area = r, a end
+        end
+        if not chance then chance = parseChance(item.text) end
+    end
+    if not rarity or not area then return nil end
+    local pet, candidates = derivePet(texts)
+    if not pet then pet = "<unparsed>" end
+    local targetUnix = capturedAt + eta
+    local rawTexts = {}
+    for _, item in ipairs(texts) do rawTexts[#rawTexts+1] = item.text end
+    return {
+        pet=pet, petCandidates=candidates, rarity=rarity, area=area, chance=chance,
+        etaSeconds=eta, etaText=textOf(label), capturedAt=capturedAt,
+        targetUnix=targetUnix, targetPeriod=periodAt(targetUnix),
+        cardPath=pathOf(ancestor), etaPath=pathOf(label), texts=rawTexts,
+        sourceVisible=actuallyVisible(label),
+    }
+end
+
+local function isPredictorCardDescendant(x)
+    local cur = x
+    for _=1,8 do
+        if not cur then break end
+        local n = lower(cur.Name)
+        if string.find(n, "predictorpetcard", 1, true) then return true end
+        cur = cur.Parent
+    end
+    return false
+end
+
 local function collectStatusTexts(root)
     local out = {}
     local ok, desc = pcall(function() return root:GetDescendants() end)
@@ -436,13 +525,48 @@ local function updateHistory(cards, capturedAt)
                 lastSeen=capturedAt, seenCount=0,
                 firstEta=card.etaSeconds, lastEta=card.etaSeconds,
                 rawTexts=card.texts,
+                lastEvidenceMode=card.evidenceMode or "visible",
             }
             state.history[id] = rec
         end
         rec.lastSeen = capturedAt
         rec.seenCount += 1
         rec.lastEta = card.etaSeconds
+        rec.lastEvidenceMode = card.evidenceMode or rec.lastEvidenceMode or "visible"
+        if card.evidenceMode == "visible" then rec.lastVisibleSeen = capturedAt end
+        if card.evidenceMode == "hidden-live" then rec.lastHiddenLiveSeen = capturedAt end
     end
+end
+
+local function hiddenClockSignature(card)
+    return table.concat({
+        lower(card.pet), lower(card.area), lower(card.rarity), tostring(card.chance or "?")
+    }, "|")
+end
+
+local function assessHiddenClock(card, capturedAt)
+    local key = card.cardPath
+    local sig = hiddenClockSignature(card)
+    local prev = state.hiddenCardClock[key]
+    local live = false
+    local etaDrop, elapsed = nil, nil
+    if prev and prev.signature == sig then
+        elapsed = capturedAt - prev.unix
+        etaDrop = (prev.eta or card.etaSeconds) - card.etaSeconds
+        if elapsed >= 0.7 and etaDrop and etaDrop > 0 then
+            local tolerance = math.max(3.5, elapsed * 0.45)
+            if math.abs(etaDrop - elapsed) <= tolerance then
+                live = true
+            end
+        elseif prev.live and elapsed and elapsed <= 3.2 and etaDrop == 0 then
+            live = true
+        end
+    end
+    state.hiddenCardClock[key] = {
+        signature=sig, eta=card.etaSeconds, unix=capturedAt, live=live,
+        targetPeriod=card.targetPeriod,
+    }
+    return live, etaDrop, elapsed
 end
 
 local function compareCards(before, after, capturedAt, reason)
@@ -516,8 +640,8 @@ end
 local function scanPredictor(reason)
     local capturedAt = nowUnix()
     local roots = rootCandidates()
-    local cards, statuses = {}, {}
-    local seenCardPath = {}
+    local cards, hiddenCards, statuses = {}, {}, {}
+    local seenVisiblePath, seenHiddenPath = {}, {}
 
     for _, root in ipairs(roots) do
         local rootStatuses = collectStatusTexts(root)
@@ -526,13 +650,31 @@ local function scanPredictor(reason)
         local ok, desc = pcall(function() return root:GetDescendants() end)
         if ok then
             for _, d in ipairs(desc) do
-                if (d:IsA("TextLabel") or d:IsA("TextButton")) and actuallyVisible(d) then
+                if d:IsA("TextLabel") or d:IsA("TextButton") then
                     local tx = textOf(d)
-                    if tx and parseEtaSeconds(tx) ~= nil then
-                        local card = parseCard(d, root, capturedAt)
-                        if card and not seenCardPath[card.cardPath] then
-                            seenCardPath[card.cardPath] = true
-                            cards[#cards+1] = card
+                    if tx and parseEtaSeconds(tx) ~= nil and isPredictorCardDescendant(d) then
+                        if actuallyVisible(d) then
+                            local card = parseCard(d, root, capturedAt)
+                            if card and not seenVisiblePath[card.cardPath] then
+                                seenVisiblePath[card.cardPath] = true
+                                card.evidenceMode = "visible"
+                                cards[#cards+1] = card
+                                state.hiddenCardClock[card.cardPath] = {
+                                    signature=hiddenClockSignature(card), eta=card.etaSeconds,
+                                    unix=capturedAt, live=true, targetPeriod=card.targetPeriod,
+                                }
+                            end
+                        else
+                            local card = parseCardAny(d, root, capturedAt)
+                            if card and not seenHiddenPath[card.cardPath] then
+                                seenHiddenPath[card.cardPath] = true
+                                local live, etaDrop, elapsed = assessHiddenClock(card, capturedAt)
+                                card.etaLive = live
+                                card.etaDrop = etaDrop
+                                card.elapsedSincePrior = elapsed
+                                card.evidenceMode = live and "hidden-live" or "hidden-stale"
+                                hiddenCards[#hiddenCards+1] = card
+                            end
                         end
                     end
                 end
@@ -540,61 +682,85 @@ local function scanPredictor(reason)
         end
     end
 
-    table.sort(cards, function(a,b)
-        if a.targetPeriod ~= b.targetPeriod then return a.targetPeriod < b.targetPeriod end
-        if a.area ~= b.area then return a.area < b.area end
-        return a.pet < b.pet
-    end)
+    local function sortCards(list)
+        table.sort(list, function(a,b)
+            if a.targetPeriod ~= b.targetPeriod then return a.targetPeriod < b.targetPeriod end
+            if a.area ~= b.area then return a.area < b.area end
+            return a.pet < b.pet
+        end)
+    end
+    sortCards(cards)
+    sortCards(hiddenCards)
 
     state.scans += 1
     local panelVisible = predictorPanelVisible(statuses, cards)
     notePanelVisibility(panelVisible, capturedAt)
 
+    local evidenceCards = {}
+    if #cards > 0 then
+        for _, card in ipairs(cards) do evidenceCards[#evidenceCards+1] = card end
+        state.lastPredictorEvidenceAt = capturedAt
+    else
+        local hiddenLiveCount = 0
+        for _, card in ipairs(hiddenCards) do
+            if card.etaLive then
+                hiddenLiveCount += 1
+                evidenceCards[#evidenceCards+1] = card
+            end
+        end
+        if hiddenLiveCount > 0 then state.lastPredictorEvidenceAt = capturedAt end
+    end
+
+    if #evidenceCards > 0 then
+        updateHistory(evidenceCards, capturedAt)
+        local fingerprint = sortedCardFingerprint(evidenceCards)
+        if fingerprint ~= state.lastFingerprint then
+            compareCards(state.lastCards, evidenceCards, capturedAt, reason or "scan")
+            addBounded(state.observations, {
+                unix=capturedAt, currentPeriod=periodAt(capturedAt),
+                reason=reason or "scan", cards=evidenceCards,
+                statusTexts=statuses, rootCount=#roots,
+                predictorPanelVisible=panelVisible,
+                evidenceMode=(#cards > 0) and "visible" or "hidden-live",
+            }, MAX_OBSERVATIONS)
+            state.lastFingerprint = fingerprint
+            state.lastCards = evidenceCards
+        end
+    end
+
+    local hiddenFpParts = {}
+    for _, card in ipairs(hiddenCards) do
+        hiddenFpParts[#hiddenFpParts+1] = table.concat({
+            cardIdentity(card), tostring(card.etaLive), tostring(card.etaText)
+        }, "|")
+    end
+    table.sort(hiddenFpParts)
+    local hiddenFp = table.concat(hiddenFpParts, "\n")
+    if hiddenFp ~= state.hiddenFingerprint and #hiddenCards > 0 then
+        state.hiddenFingerprint = hiddenFp
+        addBounded(state.hiddenObservations, {
+            unix=capturedAt, currentPeriod=periodAt(capturedAt),
+            cards=hiddenCards,
+        }, 120)
+    end
+
     if reason == "manual-snapshot" then
         addBounded(state.uiSnapshots, {
-            unix=capturedAt,
-            currentPeriod=periodAt(capturedAt),
-            predictorPanelVisible=panelVisible,
-            rootCount=#roots,
+            unix=capturedAt, currentPeriod=periodAt(capturedAt),
+            predictorPanelVisible=panelVisible, rootCount=#roots,
             texts=visibleTextsForRoots(roots, 220),
+            hiddenPredictorCards=hiddenCards,
         }, 40)
     end
 
-    if not panelVisible then
-        if state.status and state.status.Parent then
-            state.status.Text = string.format(
-                "TRACE ATIVO | Predictor não visível | período %d | %d eventos | scans %d",
-                periodAt(capturedAt), #state.events, state.scans
-            )
-        end
-        return state.lastCards, false
-    end
-
-    updateHistory(cards, capturedAt)
-
-    local fingerprint = sortedCardFingerprint(cards)
-    if fingerprint ~= state.lastFingerprint then
-        compareCards(state.lastCards, cards, capturedAt, reason or "scan")
-        addBounded(state.observations, {
-            unix=capturedAt,
-            currentPeriod=periodAt(capturedAt),
-            reason=reason or "scan",
-            cards=cards,
-            statusTexts=statuses,
-            rootCount=#roots,
-            predictorPanelVisible=true,
-        }, MAX_OBSERVATIONS)
-        state.lastFingerprint = fingerprint
-        state.lastCards = cards
-    end
-
     if state.status and state.status.Parent then
+        local mode = #cards > 0 and "VISÍVEL" or (#evidenceCards > 0 and "OCULTO+ATIVO" or "SEM EVIDÊNCIA")
         state.status.Text = string.format(
-            "TRACE ATIVO | período %d | %d previsões | %d mudanças | %d reveals | scans %d",
-            periodAt(capturedAt), #cards, #state.changes, #state.reveals, state.scans
+            "TRACE %s | período %d | %d previsões | %d mudanças | %d reveals | scans %d",
+            mode, periodAt(capturedAt), #state.lastCards, #state.changes, #state.reveals, state.scans
         )
     end
-    return cards, true
+    return state.lastCards, panelVisible
 end
 
 local function findField(value, wanted, depth, seen)
@@ -726,26 +892,26 @@ local function validatePeriod(period, rawRareSpawns, revealUnix)
     end
 
     local boundary = period * PERIOD_SECONDS
+    local evidenceGap = nil
+    if type(state.lastPredictorEvidenceAt) == "number" then
+        evidenceGap = math.max(0, boundary - state.lastPredictorEvidenceAt)
+    end
+    local coverageAtTarget = evidenceGap ~= nil and evidenceGap <= 20
+
     local confirmed, unverified = {}, {}
     for _, pred in ipairs(predictions) do
-        if type(pred.lastSeen) == "number" and pred.lastSeen >= boundary - 20 then
+        if type(pred.lastSeen) == "number" and pred.lastSeen >= boundary - 20
+            and (pred.lastEvidenceMode == "visible" or pred.lastEvidenceMode == "hidden-live") then
             confirmed[#confirmed+1] = pred
         else
             unverified[#unverified+1] = pred
         end
     end
 
-    local coverageGap = nil
-    if type(state.lastPanelVisibleAt) == "number" then
-        coverageGap = math.max(0, boundary - state.lastPanelVisibleAt)
-    end
-    local coverageAtTarget = coverageGap ~= nil and coverageGap <= 20
-
-    local confirmedMisses = {}
-    local confirmedHits = {}
+    local confirmedIds = {}
+    for _, pred in ipairs(confirmed) do confirmedIds[pred.id] = true end
+    local confirmedMisses, confirmedHits = {}, {}
     if coverageAtTarget then
-        local confirmedIds = {}
-        for _, pred in ipairs(confirmed) do confirmedIds[pred.id] = true end
         for _, hit in ipairs(hits) do
             if hit.prediction and confirmedIds[hit.prediction.id] then
                 confirmedHits[#confirmedHits+1] = hit
@@ -754,6 +920,27 @@ local function validatePeriod(period, rawRareSpawns, revealUnix)
         for _, miss in ipairs(misses) do
             if confirmedIds[miss.id] then confirmedMisses[#confirmedMisses+1] = miss end
         end
+    end
+
+    local nearbyMatches = {}
+    for _, act in ipairs(actual) do
+        local matches = {}
+        for _, rec in pairs(state.history) do
+            local offset = period - rec.targetPeriod
+            if math.abs(offset) <= 12
+                and canonPet(rec.pet) == canonPet(act.pet)
+                and canonArea(rec.area) == canonArea(act.area) then
+                matches[#matches+1] = {
+                    prediction=rec,
+                    periodOffset=offset,
+                    minutesOffset=offset * 5,
+                }
+            end
+        end
+        table.sort(matches, function(a,b)
+            return math.abs(a.periodOffset) < math.abs(b.periodOffset)
+        end)
+        nearbyMatches[#nearbyMatches+1] = {actual=act, matches=matches}
     end
 
     return {
@@ -768,15 +955,16 @@ local function validatePeriod(period, rawRareSpawns, revealUnix)
         misses=misses,
         unpredictedActual=unpredicted,
         coverageAtTarget=coverageAtTarget,
-        coverageGapSeconds=coverageGap,
-        lastPanelVisibleAt=state.lastPanelVisibleAt,
+        coverageGapSeconds=evidenceGap,
+        lastPredictorEvidenceAt=state.lastPredictorEvidenceAt,
         confirmedAtTarget=confirmed,
         confirmedAtTargetCount=#confirmed,
-        unverifiedBecauseHidden=unverified,
+        unverifiedBecauseNoLiveEvidence=unverified,
         confirmedExactHits=confirmedHits,
         confirmedExactHitCount=#confirmedHits,
         confirmedMisses=confirmedMisses,
-        validationStatus=coverageAtTarget and "covered" or "insufficient-ui-coverage",
+        nearbyPeriodMatches=nearbyMatches,
+        validationStatus=coverageAtTarget and "covered" or "insufficient-predictor-evidence",
     }
 end
 
@@ -938,7 +1126,7 @@ local function report()
 
     return {
         meta={
-            version="AxonPredictorTraceV2.3",
+            version="AxonPredictorTraceV2.4",
             zeroHook=true,
             passive=true,
             created=nowUnix(),
@@ -959,6 +1147,7 @@ local function report()
             validations=#state.validations,
             refreshLog=#state.refreshLog,
             panelVisibilityTransitions=#state.panelVisibilityLog,
+            hiddenObservations=#state.hiddenObservations,
             history=#history,
         },
         currentPredictions=state.lastCards,
@@ -973,6 +1162,8 @@ local function report()
         shiftedByPeriod=state.shiftedByPeriod,
         panelVisibilityLog=state.panelVisibilityLog,
         lastPanelVisibleAt=state.lastPanelVisibleAt,
+        lastPredictorEvidenceAt=state.lastPredictorEvidenceAt,
+        hiddenObservations=state.hiddenObservations,
     }
 end
 
@@ -1029,7 +1220,7 @@ local function startTrace()
 end
 
 local sg = Instance.new("ScreenGui")
-sg.Name = "PSICO_AXON_PREDICTOR_TRACE_V2_3"
+sg.Name = "PSICO_AXON_PREDICTOR_TRACE_V2_4"
 sg.ResetOnSpawn = false
 sg.DisplayOrder = 1405
 sg.Parent = CoreGui
@@ -1048,7 +1239,7 @@ local title = Instance.new("TextLabel")
 title.BackgroundTransparency = 1
 title.Position = UDim2.fromOffset(14,10)
 title.Size = UDim2.new(1,-76,0,28)
-title.Text = "AXON PREDICTOR TRACE V2.3 - ZERO-HOOK"
+title.Text = "AXON PREDICTOR TRACE V2.4 - ZERO-HOOK"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 13
 title.TextColor3 = Color3.fromRGB(238,245,255)

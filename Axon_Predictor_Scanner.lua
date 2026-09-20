@@ -1,4 +1,4 @@
--- PSICOSENATICO | AXON PREDICTOR TRACE V2.1
+-- PSICOSENATICO | AXON PREDICTOR TRACE V2.2
 -- Zero-hook / passive observation.
 -- Reads Axon predictor UI and listens to replicated RemoteEvents with OnClientEvent only.
 -- Does NOT invoke remotes, hook functions, use debug/getgc, intercept HTTP, or mutate game state.
@@ -29,6 +29,10 @@ local state = {
     history = {},
     events = {},
     reveals = {},
+    validations = {},
+    refreshLog = {},
+    uiSnapshots = {},
+    shiftedByPeriod = {},
     refreshClicks = 0,
     scans = 0,
     remoteConnections = {},
@@ -442,6 +446,41 @@ local function compareCards(before, after, capturedAt, reason)
     end
 end
 
+local function predictorPanelVisible(statuses, cards)
+    if #cards > 0 then return true end
+    for _, tx in ipairs(statuses or {}) do
+        local s = lower(tx)
+        if string.find(s, "upcoming spawns", 1, true)
+            or string.find(s, "next egg change", 1, true)
+            or string.find(s, "shared estimates", 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function visibleTextsForRoots(roots, limit)
+    local out, seen = {}, {}
+    limit = limit or 220
+    for _, root in ipairs(roots or {}) do
+        local ok, desc = pcall(function() return root:GetDescendants() end)
+        if ok then
+            for _, d in ipairs(desc) do
+                if #out >= limit then break end
+                if (d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox")) and visibleOf(d) then
+                    local tx = textOf(d)
+                    if tx and not seen[tx] then
+                        seen[tx] = true
+                        out[#out+1] = tx
+                    end
+                end
+            end
+        end
+        if #out >= limit then break end
+    end
+    return out
+end
+
 local function scanPredictor(reason)
     local capturedAt = nowUnix()
     local roots = rootCandidates()
@@ -476,6 +515,28 @@ local function scanPredictor(reason)
     end)
 
     state.scans += 1
+    local panelVisible = predictorPanelVisible(statuses, cards)
+
+    if reason == "manual-snapshot" then
+        addBounded(state.uiSnapshots, {
+            unix=capturedAt,
+            currentPeriod=periodAt(capturedAt),
+            predictorPanelVisible=panelVisible,
+            rootCount=#roots,
+            texts=visibleTextsForRoots(roots, 220),
+        }, 40)
+    end
+
+    if not panelVisible then
+        if state.status and state.status.Parent then
+            state.status.Text = string.format(
+                "TRACE ATIVO | Predictor não visível | período %d | %d eventos | scans %d",
+                periodAt(capturedAt), #state.events, state.scans
+            )
+        end
+        return state.lastCards, false
+    end
+
     updateHistory(cards, capturedAt)
 
     local fingerprint = sortedCardFingerprint(cards)
@@ -488,6 +549,7 @@ local function scanPredictor(reason)
             cards=cards,
             statusTexts=statuses,
             rootCount=#roots,
+            predictorPanelVisible=true,
         }, MAX_OBSERVATIONS)
         state.lastFingerprint = fingerprint
         state.lastCards = cards
@@ -495,11 +557,11 @@ local function scanPredictor(reason)
 
     if state.status and state.status.Parent then
         state.status.Text = string.format(
-            "TRACE ATIVO | período %d | %d previsões | %d mudanças | %d eventos | scans %d",
-            periodAt(capturedAt), #cards, #state.changes, #state.events, state.scans
+            "TRACE ATIVO | período %d | %d previsões | %d mudanças | %d reveals | scans %d",
+            periodAt(capturedAt), #cards, #state.changes, #state.reveals, state.scans
         )
     end
-    return cards
+    return cards, true
 end
 
 local function findField(value, wanted, depth, seen)
@@ -538,6 +600,134 @@ local function forecastsForPeriod(period)
     return out
 end
 
+local function normName(v)
+    return lower(v):gsub("[^%w]", "")
+end
+
+local petAliases = {
+    trex="tyrannosaurusrex",
+    tyrannosaurusrex="tyrannosaurusrex",
+    gargoyle="darkgargoyle",
+    darkgargoyle="darkgargoyle",
+    cosmicskeletonboss="alienskeletonboss",
+    alienskeletonboss="alienskeletonboss",
+    gorillaking="kingkong",
+    kingkong="kingkong",
+    purejellyfish="jellyfish",
+    jellyfish="jellyfish",
+    lavadragon="dragon",
+    dragon="dragon",
+}
+
+local function canonPet(v)
+    local n = normName(v)
+    return petAliases[n] or n
+end
+
+local function canonArea(v)
+    local n = normName(v)
+    if n == "angels" or n == "demons" or n == "lightdark" or n == "angelsdemons" then
+        return "lightdark"
+    end
+    return n
+end
+
+local function parseRareSpawn(spawn)
+    if type(spawn) ~= "table" then return nil end
+    local msg = tostring(spawn.Message or "")
+    local rarity = tostring(spawn.RarityId or "")
+    local inside = msg:match("<font[^>]*>(.-)</font>") or ""
+    inside = inside:gsub("^%s+", ""):gsub("%s+$", "")
+    inside = inside:gsub("%s+Egg$", "")
+    if rarity ~= "" then
+        local prefix = "^"..rarity:gsub("(%W)","%%%1").."%s+"
+        inside = inside:gsub(prefix, "")
+    end
+    local area = msg:match("spawned in%s+<font[^>]*>(.-)</font>") or ""
+    return {
+        pet=inside,
+        rarity=rarity,
+        area=area,
+        uid=spawn.EggUid,
+        message=msg,
+    }
+end
+
+local function actualRareList(rawRareSpawns)
+    local out = {}
+    if type(rawRareSpawns) ~= "table" then return out end
+    for _, spawn in pairs(rawRareSpawns) do
+        local parsed = parseRareSpawn(spawn)
+        if parsed and parsed.pet ~= "" then out[#out+1] = parsed end
+    end
+    return out
+end
+
+local function validatePeriod(period, rawRareSpawns, revealUnix)
+    local predictions = forecastsForPeriod(period)
+    local actual = actualRareList(rawRareSpawns)
+    local matchedActual = {}
+    local hits, misses = {}, {}
+
+    for _, pred in ipairs(predictions) do
+        local matchIndex = nil
+        for i, act in ipairs(actual) do
+            if not matchedActual[i]
+                and canonPet(pred.pet) == canonPet(act.pet)
+                and canonArea(pred.area) == canonArea(act.area) then
+                matchIndex = i
+                break
+            end
+        end
+        if matchIndex then
+            matchedActual[matchIndex] = true
+            hits[#hits+1] = {prediction=pred, actual=actual[matchIndex]}
+        else
+            misses[#misses+1] = pred
+        end
+    end
+
+    local unpredicted = {}
+    for i, act in ipairs(actual) do
+        if not matchedActual[i] then unpredicted[#unpredicted+1] = act end
+    end
+
+    local nearTarget = {}
+    local boundary = period * PERIOD_SECONDS
+    for _, pred in ipairs(predictions) do
+        if type(pred.lastSeen) == "number" and pred.lastSeen >= boundary - 20 then
+            nearTarget[#nearTarget+1] = pred
+        end
+    end
+
+    return {
+        unix=revealUnix,
+        periodIndex=period,
+        predictedCount=#predictions,
+        nearTargetPredictedCount=#nearTarget,
+        actualRareCount=#actual,
+        exactHitCount=#hits,
+        predictions=predictions,
+        nearTargetPredictions=nearTarget,
+        actual=actual,
+        exactHits=hits,
+        misses=misses,
+        unpredictedActual=unpredicted,
+    }
+end
+
+local function compactShift(raw)
+    if type(raw) ~= "table" then return nil end
+    return {
+        uid=raw.Uid,
+        area=raw.AreaId,
+        asset=raw.AssetCategory,
+        nest=raw.NestId,
+        version=raw.Version,
+        mutations=sanitize(raw.Mutations),
+    }
+end
+
 local function captureRemoteEvent(remote, ...)
     local capturedAt = nowUnix()
     local rawArgs = table.pack(...)
@@ -551,6 +741,23 @@ local function captureRemoteEvent(remote, ...)
     local p = findField(argsForSearch, "PeriodIndex")
     if type(p) ~= "number" then p = periodAt(capturedAt) end
 
+    local eventLower = lower(remote.Name)
+    if string.find(eventLower, "fieldeggshifted", 1, true)
+        and not string.find(eventLower, "batch", 1, true) then
+        local first = rawArgs[1]
+        local compact = compactShift(first)
+        if compact and compact.uid then
+            local bucket = state.shiftedByPeriod[tostring(p)]
+            if not bucket then
+                bucket = {periodIndex=p, firstSeen=capturedAt, lastSeen=capturedAt, byUid={}}
+                state.shiftedByPeriod[tostring(p)] = bucket
+            end
+            bucket.lastSeen = capturedAt
+            bucket.byUid[tostring(compact.uid)] = compact
+        end
+        return
+    end
+
     local record = {
         unix=capturedAt,
         currentPeriod=periodAt(capturedAt),
@@ -562,18 +769,21 @@ local function captureRemoteEvent(remote, ...)
     }
     addBounded(state.events, record, MAX_EVENTS)
 
-    if string.find(lower(remote.Name), "raritiesshown", 1, true) then
+    if string.find(eventLower, "raritiesshown", 1, true) then
         local rareSpawns = findField(argsForSearch, "RareSpawns")
         local dayStartsAt = findField(argsForSearch, "DayStartsAt")
+        local validation = validatePeriod(p, rareSpawns, capturedAt)
         local reveal = {
             unix=capturedAt,
             periodIndex=p,
             dayStartsAt=type(dayStartsAt)=="number" and dayStartsAt or nil,
             rareSpawns=sanitize(rareSpawns),
             forecastCandidates=forecastsForPeriod(p),
+            validation=validation,
             rawArgs=safeArgs,
         }
-        addBounded(state.reveals, reveal, MAX_EVENTS)
+        addBounded(state.reveals, reveal, 120)
+        addBounded(state.validations, validation, 120)
     end
 end
 
@@ -624,11 +834,26 @@ local function attachRefreshButtons()
                         state.attachedRefreshButtons[d] = true
                         d.MouseButton1Click:Connect(function()
                             state.refreshClicks += 1
+                            local entry = {
+                                unix=nowUnix(),
+                                currentPeriod=periodAt(nowUnix()),
+                                index=state.refreshClicks,
+                                before=sanitize(state.lastCards),
+                            }
+                            addBounded(state.refreshLog, entry, 80)
                             task.delay(0.35, function()
-                                if state.running and not state.closed then scanPredictor("refresh+0.35s") end
+                                if state.running and not state.closed then
+                                    local cards, visible = scanPredictor("refresh+0.35s")
+                                    entry.after035=sanitize(cards)
+                                    entry.visible035=visible
+                                end
                             end)
                             task.delay(1.25, function()
-                                if state.running and not state.closed then scanPredictor("refresh+1.25s") end
+                                if state.running and not state.closed then
+                                    local cards, visible = scanPredictor("refresh+1.25s")
+                                    entry.after125=sanitize(cards)
+                                    entry.visible125=visible
+                                end
                             end)
                         end)
                     end
@@ -649,7 +874,7 @@ local function report()
 
     return {
         meta={
-            version="AxonPredictorTraceV2.1",
+            version="AxonPredictorTraceV2.2",
             zeroHook=true,
             passive=true,
             created=nowUnix(),
@@ -667,6 +892,8 @@ local function report()
             changes=#state.changes,
             events=#state.events,
             reveals=#state.reveals,
+            validations=#state.validations,
+            refreshLog=#state.refreshLog,
             history=#history,
         },
         currentPredictions=state.lastCards,
@@ -675,6 +902,10 @@ local function report()
         predictionHistory=history,
         events=state.events,
         reveals=state.reveals,
+        validations=state.validations,
+        refreshLog=state.refreshLog,
+        uiSnapshots=state.uiSnapshots,
+        shiftedByPeriod=state.shiftedByPeriod,
     }
 end
 
@@ -731,7 +962,7 @@ local function startTrace()
 end
 
 local sg = Instance.new("ScreenGui")
-sg.Name = "PSICO_AXON_PREDICTOR_TRACE_V2_1"
+sg.Name = "PSICO_AXON_PREDICTOR_TRACE_V2_2"
 sg.ResetOnSpawn = false
 sg.DisplayOrder = 1405
 sg.Parent = CoreGui
@@ -750,7 +981,7 @@ local title = Instance.new("TextLabel")
 title.BackgroundTransparency = 1
 title.Position = UDim2.fromOffset(14,10)
 title.Size = UDim2.new(1,-76,0,28)
-title.Text = "AXON PREDICTOR TRACE V2.1 - ZERO-HOOK"
+title.Text = "AXON PREDICTOR TRACE V2.2 - ZERO-HOOK"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 13
 title.TextColor3 = Color3.fromRGB(238,245,255)

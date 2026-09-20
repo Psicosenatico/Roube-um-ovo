@@ -1,4 +1,4 @@
--- PSICOSENATICO | AXON PREDICTOR SOURCE CAPTURE V2.5
+-- PSICOSENATICO | AXON PREDICTOR SOURCE CAPTURE V2.5.1
 -- Zero-hook / passive observation.
 -- Reads Axon predictor UI and listens to replicated RemoteEvents with OnClientEvent only.
 -- Does NOT invoke remotes, hook functions, use debug/getgc, intercept HTTP, or mutate game state.
@@ -1458,7 +1458,7 @@ local function report()
 
     return {
         meta={
-            version="AxonPredictorSourceV2.5",
+            version="AxonPredictorSourceV2.5.1",
             zeroHook=true,
             passive=true,
             created=nowUnix(),
@@ -1508,8 +1508,56 @@ local function report()
     }
 end
 
+local function jsonSafe(v, depth, seen)
+    depth = depth or 0
+    seen = seen or {}
+    if depth > 18 then return "<json-depth-limit>" end
+
+    local t = typeof(v)
+    if t == "nil" then return nil end
+    if t == "boolean" or t == "string" then return v end
+    if t == "number" then
+        if v ~= v or v == math.huge or v == -math.huge then
+            return tostring(v)
+        end
+        return v
+    end
+    if t ~= "table" then
+        return sanitize(v)
+    end
+    if seen[v] then return "<json-cycle>" end
+    seen[v] = true
+
+    local numericCount, maxNumeric, otherCount = 0, 0, 0
+    for k in pairs(v) do
+        if type(k) == "number" and k >= 1 and k % 1 == 0 then
+            numericCount += 1
+            if k > maxNumeric then maxNumeric = k end
+        else
+            otherCount += 1
+        end
+    end
+
+    local out
+    if otherCount == 0 and (numericCount == 0 or numericCount == maxNumeric) then
+        out = {}
+        for i = 1, maxNumeric do
+            out[i] = jsonSafe(v[i], depth + 1, seen)
+        end
+    else
+        out = {}
+        for k, value in pairs(v) do
+            out[tostring(k)] = jsonSafe(value, depth + 1, seen)
+        end
+    end
+
+    seen[v] = nil
+    return out
+end
+
 local function encodeReport()
-    return HttpService:JSONEncode(report())
+    local safe = jsonSafe(report())
+    return HttpService:JSONEncode(safe)
 end
 
 local function checkpoint()
@@ -1523,8 +1571,34 @@ local function exportData()
     if state.status and state.status.Parent then state.status.Text = "Exportando trace..." end
     local ok, json = pcall(encodeReport)
     if not ok then
-        if state.status and state.status.Parent then state.status.Text = "Erro JSON: "..tostring(json) end
-        return
+        local fallback = {
+            meta={
+                version="AxonPredictorSourceV2.5.1",
+                created=nowUnix(),
+                encodeError=tostring(json),
+            },
+            stats={
+                scans=state.scans,
+                sourceScans=state.sourceScanCount,
+                sourceSnapshots=#state.sourceSnapshots,
+                sourceEvents=#state.sourceEvents,
+                sourceCandidates=#state.sourceCandidates,
+            },
+            currentPredictions=jsonSafe(state.lastCards),
+            sourceDiscovery={
+                candidates=jsonSafe(state.sourceCandidates),
+            },
+        }
+        local ok2, minimal = pcall(function() return HttpService:JSONEncode(fallback) end)
+        if ok2 then
+            json = minimal
+            ok = true
+        else
+            if state.status and state.status.Parent then
+                state.status.Text = "Erro JSON persistente: "..tostring(minimal)
+            end
+            return
+        end
     end
     local name = "Psico_Axon_PredictorTrace_"..tostring(math.floor(nowUnix()))..".json"
     local wrote = false
@@ -1568,7 +1642,7 @@ local function startTrace()
 end
 
 local sg = Instance.new("ScreenGui")
-sg.Name = "PSICO_AXON_PREDICTOR_SOURCE_V2_5"
+sg.Name = "PSICO_AXON_PREDICTOR_SOURCE_V2_5_1"
 sg.ResetOnSpawn = false
 sg.DisplayOrder = 1405
 sg.Parent = CoreGui
@@ -1587,7 +1661,7 @@ local title = Instance.new("TextLabel")
 title.BackgroundTransparency = 1
 title.Position = UDim2.fromOffset(14,10)
 title.Size = UDim2.new(1,-76,0,28)
-title.Text = "AXON PREDICTOR SOURCE V2.5 - ZERO-HOOK"
+title.Text = "AXON PREDICTOR SOURCE V2.5.1 - ZERO-HOOK"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 13
 title.TextColor3 = Color3.fromRGB(238,245,255)

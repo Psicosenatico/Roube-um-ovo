@@ -1,4 +1,4 @@
--- PSICOSENATICO | AXON PREDICTOR TRACE V2.2
+-- PSICOSENATICO | AXON PREDICTOR TRACE V2.3
 -- Zero-hook / passive observation.
 -- Reads Axon predictor UI and listens to replicated RemoteEvents with OnClientEvent only.
 -- Does NOT invoke remotes, hook functions, use debug/getgc, intercept HTTP, or mutate game state.
@@ -33,6 +33,9 @@ local state = {
     refreshLog = {},
     uiSnapshots = {},
     shiftedByPeriod = {},
+    panelVisibilityLog = {},
+    panelVisibleNow = nil,
+    lastPanelVisibleAt = nil,
     refreshClicks = 0,
     scans = 0,
     remoteConnections = {},
@@ -90,6 +93,24 @@ local function visibleOf(x)
     if not x:IsA("GuiObject") then return true end
     local ok, value = pcall(function() return x.Visible end)
     return ok and value ~= false
+end
+
+local function actuallyVisible(x)
+    local cur = x
+    while cur do
+        if cur:IsA("GuiObject") then
+            local ok, v = pcall(function() return cur.Visible end)
+            if ok and v == false then return false end
+        elseif cur:IsA("ScreenGui") then
+            local ok, enabled = pcall(function() return cur.Enabled end)
+            if ok and enabled == false then return false end
+        end
+        cur = cur.Parent
+        if cur == CoreGui then break end
+        local pg = player and player:FindFirstChildOfClass("PlayerGui")
+        if pg and cur == pg then break end
+    end
+    return true
 end
 
 local function safeAttributes(x)
@@ -226,7 +247,7 @@ local function collectTexts(node, maxCount)
     local out = {}
     local seenText = {}
     maxCount = maxCount or 40
-    if textOf(node) and visibleOf(node) then
+    if textOf(node) and actuallyVisible(node) then
         local tx = textOf(node)
         seenText[tx] = true
         out[#out+1] = {text=tx, path=pathOf(node), class=node.ClassName}
@@ -235,7 +256,7 @@ local function collectTexts(node, maxCount)
     if ok then
         for _, d in ipairs(desc) do
             if #out >= maxCount then break end
-            if (d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox")) and visibleOf(d) then
+            if (d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox")) and actuallyVisible(d) then
                 local tx = textOf(d)
                 if tx and not seenText[tx] then
                     seenText[tx] = true
@@ -348,7 +369,7 @@ local function collectStatusTexts(root)
     local ok, desc = pcall(function() return root:GetDescendants() end)
     if not ok then return out end
     for _, d in ipairs(desc) do
-        if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+        if (d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox")) and actuallyVisible(d) then
             local tx = textOf(d)
             local s = lower(tx)
             if tx and (
@@ -459,6 +480,17 @@ local function predictorPanelVisible(statuses, cards)
     return false
 end
 
+local function notePanelVisibility(visible, capturedAt)
+    if visible then state.lastPanelVisibleAt = capturedAt end
+    if state.panelVisibleNow == visible then return end
+    state.panelVisibleNow = visible
+    addBounded(state.panelVisibilityLog, {
+        unix=capturedAt,
+        currentPeriod=periodAt(capturedAt),
+        visible=visible,
+    }, 120)
+end
+
 local function visibleTextsForRoots(roots, limit)
     local out, seen = {}, {}
     limit = limit or 220
@@ -467,7 +499,7 @@ local function visibleTextsForRoots(roots, limit)
         if ok then
             for _, d in ipairs(desc) do
                 if #out >= limit then break end
-                if (d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox")) and visibleOf(d) then
+                if (d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox")) and actuallyVisible(d) then
                     local tx = textOf(d)
                     if tx and not seen[tx] then
                         seen[tx] = true
@@ -494,7 +526,7 @@ local function scanPredictor(reason)
         local ok, desc = pcall(function() return root:GetDescendants() end)
         if ok then
             for _, d in ipairs(desc) do
-                if d:IsA("TextLabel") or d:IsA("TextButton") then
+                if (d:IsA("TextLabel") or d:IsA("TextButton")) and actuallyVisible(d) then
                     local tx = textOf(d)
                     if tx and parseEtaSeconds(tx) ~= nil then
                         local card = parseCard(d, root, capturedAt)
@@ -516,6 +548,7 @@ local function scanPredictor(reason)
 
     state.scans += 1
     local panelVisible = predictorPanelVisible(statuses, cards)
+    notePanelVisibility(panelVisible, capturedAt)
 
     if reason == "manual-snapshot" then
         addBounded(state.uiSnapshots, {
@@ -692,11 +725,34 @@ local function validatePeriod(period, rawRareSpawns, revealUnix)
         if not matchedActual[i] then unpredicted[#unpredicted+1] = act end
     end
 
-    local nearTarget = {}
     local boundary = period * PERIOD_SECONDS
+    local confirmed, unverified = {}, {}
     for _, pred in ipairs(predictions) do
         if type(pred.lastSeen) == "number" and pred.lastSeen >= boundary - 20 then
-            nearTarget[#nearTarget+1] = pred
+            confirmed[#confirmed+1] = pred
+        else
+            unverified[#unverified+1] = pred
+        end
+    end
+
+    local coverageGap = nil
+    if type(state.lastPanelVisibleAt) == "number" then
+        coverageGap = math.max(0, boundary - state.lastPanelVisibleAt)
+    end
+    local coverageAtTarget = coverageGap ~= nil and coverageGap <= 20
+
+    local confirmedMisses = {}
+    local confirmedHits = {}
+    if coverageAtTarget then
+        local confirmedIds = {}
+        for _, pred in ipairs(confirmed) do confirmedIds[pred.id] = true end
+        for _, hit in ipairs(hits) do
+            if hit.prediction and confirmedIds[hit.prediction.id] then
+                confirmedHits[#confirmedHits+1] = hit
+            end
+        end
+        for _, miss in ipairs(misses) do
+            if confirmedIds[miss.id] then confirmedMisses[#confirmedMisses+1] = miss end
         end
     end
 
@@ -704,15 +760,23 @@ local function validatePeriod(period, rawRareSpawns, revealUnix)
         unix=revealUnix,
         periodIndex=period,
         predictedCount=#predictions,
-        nearTargetPredictedCount=#nearTarget,
         actualRareCount=#actual,
         exactHitCount=#hits,
         predictions=predictions,
-        nearTargetPredictions=nearTarget,
         actual=actual,
         exactHits=hits,
         misses=misses,
         unpredictedActual=unpredicted,
+        coverageAtTarget=coverageAtTarget,
+        coverageGapSeconds=coverageGap,
+        lastPanelVisibleAt=state.lastPanelVisibleAt,
+        confirmedAtTarget=confirmed,
+        confirmedAtTargetCount=#confirmed,
+        unverifiedBecauseHidden=unverified,
+        confirmedExactHits=confirmedHits,
+        confirmedExactHitCount=#confirmedHits,
+        confirmedMisses=confirmedMisses,
+        validationStatus=coverageAtTarget and "covered" or "insufficient-ui-coverage",
     }
 end
 
@@ -874,7 +938,7 @@ local function report()
 
     return {
         meta={
-            version="AxonPredictorTraceV2.2",
+            version="AxonPredictorTraceV2.3",
             zeroHook=true,
             passive=true,
             created=nowUnix(),
@@ -894,6 +958,7 @@ local function report()
             reveals=#state.reveals,
             validations=#state.validations,
             refreshLog=#state.refreshLog,
+            panelVisibilityTransitions=#state.panelVisibilityLog,
             history=#history,
         },
         currentPredictions=state.lastCards,
@@ -906,6 +971,8 @@ local function report()
         refreshLog=state.refreshLog,
         uiSnapshots=state.uiSnapshots,
         shiftedByPeriod=state.shiftedByPeriod,
+        panelVisibilityLog=state.panelVisibilityLog,
+        lastPanelVisibleAt=state.lastPanelVisibleAt,
     }
 end
 
@@ -962,7 +1029,7 @@ local function startTrace()
 end
 
 local sg = Instance.new("ScreenGui")
-sg.Name = "PSICO_AXON_PREDICTOR_TRACE_V2_2"
+sg.Name = "PSICO_AXON_PREDICTOR_TRACE_V2_3"
 sg.ResetOnSpawn = false
 sg.DisplayOrder = 1405
 sg.Parent = CoreGui
@@ -981,7 +1048,7 @@ local title = Instance.new("TextLabel")
 title.BackgroundTransparency = 1
 title.Position = UDim2.fromOffset(14,10)
 title.Size = UDim2.new(1,-76,0,28)
-title.Text = "AXON PREDICTOR TRACE V2.2 - ZERO-HOOK"
+title.Text = "AXON PREDICTOR TRACE V2.3 - ZERO-HOOK"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 13
 title.TextColor3 = Color3.fromRGB(238,245,255)

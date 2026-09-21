@@ -1,4 +1,4 @@
--- PSICOSENATICO | AXON PREDICTOR SOURCE CAPTURE V2.5.2
+-- PSICOSENATICO | AXON PREDICTOR SOURCE CAPTURE V2.6
 -- Zero-hook / passive observation.
 -- Reads Axon predictor UI and listens to replicated RemoteEvents with OnClientEvent only.
 -- Does NOT invoke remotes, hook functions, use debug/getgc, intercept HTTP, or mutate game state.
@@ -51,6 +51,11 @@ local state = {
     sourceLastFingerprint = nil,
     sourceScanCount = 0,
     lastSourceScan = 0,
+    refreshWindows = {},
+    activeRefreshWindow = nil,
+    broadSourceConnections = {},
+    attachedBroadSourceObjects = setmetatable({}, {__mode = "k"}),
+    attachedBroadSourceRoots = setmetatable({}, {__mode = "k"}),
     refreshClicks = 0,
     scans = 0,
     remoteConnections = {},
@@ -1086,6 +1091,8 @@ local function attachExistingRemotes()
     for _, x in ipairs(desc) do attachRemote(x) end
 end
 
+local beginRefreshWindow
+
 local function attachRefreshButtons()
     for _, root in ipairs(rootCandidates()) do
         local ok, desc = pcall(function() return root:GetDescendants() end)
@@ -1097,6 +1104,7 @@ local function attachRefreshButtons()
                         state.attachedRefreshButtons[d] = true
                         d.MouseButton1Click:Connect(function()
                             state.refreshClicks += 1
+                            beginRefreshWindow()
                             local entry = {
                                 unix=nowUnix(),
                                 currentPeriod=periodAt(nowUnix()),
@@ -1421,6 +1429,163 @@ local function attachSourceObservers()
     for _, root in ipairs(rootCandidates()) do attachSourceRoot(root) end
 end
 
+local function axonMainRoots()
+    local out, seen = {}, {}
+    for _, root in ipairs(rootCandidates()) do
+        local main = nil
+        local ok, found = pcall(function()
+            return root:FindFirstChild("AxonStealAnEggMain", true)
+        end)
+        if ok then main = found end
+        main = main or root
+        if main and not seen[main] then
+            seen[main] = true
+            out[#out+1] = main
+        end
+    end
+    return out
+end
+
+local function interestingProperty(x, prop)
+    if prop == "Text" and (x:IsA("TextLabel") or x:IsA("TextButton") or x:IsA("TextBox")) then return true end
+    if prop == "Image" and (x:IsA("ImageLabel") or x:IsA("ImageButton")) then return true end
+    if prop == "Value" and x:IsA("ValueBase") then return true end
+    if prop == "Visible" and x:IsA("GuiObject") then return true end
+    if prop == "Enabled" and x:IsA("ScreenGui") then return true end
+    if prop == "LayoutOrder" and x:IsA("GuiObject") then return true end
+    if prop == "Name" then return true end
+    return false
+end
+
+local function readProperty(x, prop)
+    local ok, value = pcall(function() return x[prop] end)
+    if not ok then return "<read-error>" end
+    return sanitize(value)
+end
+
+local function recordRefreshWindowEvent(kind, x, data)
+    local win = state.activeRefreshWindow
+    if not win then return end
+    local t = nowUnix()
+    if t > (win.untilUnix or 0) then return end
+    win.events = win.events or {}
+    addBounded(win.events, {
+        unix=t,
+        offset=t - win.unix,
+        kind=kind,
+        path=x and pathOf(x) or nil,
+        class=x and x.ClassName or nil,
+        name=x and x.Name or nil,
+        data=sanitize(data),
+    }, 1200)
+end
+
+local function attachBroadSourceObject(x)
+    if state.attachedBroadSourceObjects[x] then return end
+    state.attachedBroadSourceObjects[x] = true
+
+    local lastProps = {}
+    local watchedProps = {"Text","Image","Value","Visible","Enabled","LayoutOrder","Name"}
+    for _, prop in ipairs(watchedProps) do
+        if interestingProperty(x, prop) then
+            lastProps[prop] = readProperty(x, prop)
+        end
+    end
+
+    local changed = x.Changed:Connect(function(prop)
+        prop = tostring(prop or "")
+        if interestingProperty(x, prop) then
+            local before = lastProps[prop]
+            local after = readProperty(x, prop)
+            lastProps[prop] = after
+            if tostring(before) ~= tostring(after) then
+                recordRefreshWindowEvent("property-changed", x, {property=prop, before=before, after=after})
+            end
+        end
+    end)
+    state.broadSourceConnections[#state.broadSourceConnections+1] = changed
+
+    local okAttr, attrConn = pcall(function()
+        return x.AttributeChanged:Connect(function(name)
+            recordRefreshWindowEvent("attribute-changed", x, {
+                attribute=tostring(name),
+                value=sanitize(x:GetAttribute(name))
+            })
+        end)
+    end)
+    if okAttr and attrConn then
+        state.broadSourceConnections[#state.broadSourceConnections+1] = attrConn
+    end
+
+    if x:IsA("BindableEvent") then
+        local conn = x.Event:Connect(function(...)
+            local packed = table.pack(...)
+            local args = {}
+            for i=1, packed.n do args[i] = sanitize(packed[i]) end
+            recordRefreshWindowEvent("bindable-event", x, {args=args})
+        end)
+        state.broadSourceConnections[#state.broadSourceConnections+1] = conn
+    end
+end
+
+local function attachBroadSourceRoot(root)
+    if state.attachedBroadSourceRoots[root] then return end
+    state.attachedBroadSourceRoots[root] = true
+
+    attachBroadSourceObject(root)
+    local ok, desc = pcall(function() return root:GetDescendants() end)
+    if ok then
+        for _, x in ipairs(desc) do attachBroadSourceObject(x) end
+    end
+
+    local c1 = root.DescendantAdded:Connect(function(x)
+        attachBroadSourceObject(x)
+        recordRefreshWindowEvent("descendant-added", x, compactInstance(x))
+    end)
+    local c2 = root.DescendantRemoving:Connect(function(x)
+        recordRefreshWindowEvent("descendant-removing", x, compactInstance(x))
+    end)
+    state.broadSourceConnections[#state.broadSourceConnections+1] = c1
+    state.broadSourceConnections[#state.broadSourceConnections+1] = c2
+end
+
+local function attachBroadSourceObservers()
+    for _, root in ipairs(axonMainRoots()) do attachBroadSourceRoot(root) end
+end
+
+beginRefreshWindow = function()
+    local t = nowUnix()
+    local win = {
+        unix=t,
+        untilUnix=t + 3.0,
+        currentPeriod=periodAt(t),
+        beforePredictions=sanitize(state.lastCards),
+        events={},
+    }
+    state.activeRefreshWindow = win
+    addBounded(state.refreshWindows, win, 30)
+    attachBroadSourceObservers()
+
+    task.delay(0.40, function()
+        if state.closed then return end
+        win.after040=sanitize(state.lastCards)
+        captureSourceSnapshot("refresh-window+0.40", true)
+    end)
+    task.delay(1.20, function()
+        if state.closed then return end
+        win.after120=sanitize(state.lastCards)
+    end)
+    task.delay(3.10, function()
+        if state.closed then return end
+        win.after310=sanitize(state.lastCards)
+        win.finishedAt=nowUnix()
+        if state.activeRefreshWindow == win then
+            state.activeRefreshWindow = nil
+        end
+        checkpoint()
+    end)
+end
+
 local function captureSourceSnapshot(reason, force)
     local roots = rootCandidates()
     local cards = state.lastCards or {}
@@ -1458,7 +1623,7 @@ local function report()
 
     return {
         meta={
-            version="AxonPredictorSourceV2.5.2",
+            version="AxonPredictorSourceV2.6",
             zeroHook=true,
             passive=true,
             created=nowUnix(),
@@ -1484,6 +1649,7 @@ local function report()
             sourceSnapshots=#state.sourceSnapshots,
             sourceEvents=#state.sourceEvents,
             sourceCandidates=#state.sourceCandidates,
+            refreshWindows=#state.refreshWindows,
             history=#history,
         },
         currentPredictions=state.lastCards,
@@ -1504,6 +1670,7 @@ local function report()
             snapshots=state.sourceSnapshots,
             events=state.sourceEvents,
             candidates=state.sourceCandidates,
+            refreshWindows=state.refreshWindows,
         },
     }
 end
@@ -1585,7 +1752,7 @@ end
 local function emergencyReport(encodeError)
     return {
         meta={
-            version="AxonPredictorSourceV2.5.2",
+            version="AxonPredictorSourceV2.6",
             created=nowUnix(),
             encodeError=asciiSafeString(encodeError),
             emergency=true,
@@ -1649,12 +1816,13 @@ local function exportData()
     -- if a future full-report field becomes incompatible with JSON again.
     if writefile then
         local sourceOnly = {
-            meta={version="AxonPredictorSourceV2.5.2", created=nowUnix(), sourceOnly=true},
+            meta={version="AxonPredictorSourceV2.6", created=nowUnix(), sourceOnly=true},
             currentPredictions=state.lastCards,
             sourceDiscovery={
                 candidates=state.sourceCandidates,
                 events=state.sourceEvents,
                 snapshots=state.sourceSnapshots,
+                refreshWindows=state.refreshWindows,
             },
         }
         local okSource, sourceJson = pcall(safeJsonEncode, sourceOnly)
@@ -1681,6 +1849,7 @@ local function startTrace()
     scanPredictor("start")
     attachRefreshButtons()
     attachSourceObservers()
+    attachBroadSourceObservers()
     captureSourceSnapshot("start", true)
 
     task.spawn(function()
@@ -1688,6 +1857,7 @@ local function startTrace()
             attachRefreshButtons()
             scanPredictor("poll")
             attachSourceObservers()
+            attachBroadSourceObservers()
             local t = nowUnix()
             if t - state.lastSourceScan >= 5 then
                 state.lastSourceScan = t
@@ -1703,7 +1873,7 @@ local function startTrace()
 end
 
 local sg = Instance.new("ScreenGui")
-sg.Name = "PSICO_AXON_PREDICTOR_SOURCE_V2_5_2"
+sg.Name = "PSICO_AXON_PREDICTOR_SOURCE_V2_6"
 sg.ResetOnSpawn = false
 sg.DisplayOrder = 1405
 sg.Parent = CoreGui
@@ -1722,7 +1892,7 @@ local title = Instance.new("TextLabel")
 title.BackgroundTransparency = 1
 title.Position = UDim2.fromOffset(14,10)
 title.Size = UDim2.new(1,-76,0,28)
-title.Text = "AXON PREDICTOR SOURCE V2.5.2 - ZERO-HOOK"
+title.Text = "AXON PREDICTOR SOURCE V2.6 - ZERO-HOOK"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 13
 title.TextColor3 = Color3.fromRGB(238,245,255)
@@ -1815,6 +1985,9 @@ bClose.MouseButton1Click:Connect(function()
         pcall(function() conn:Disconnect() end)
     end
     for _, conn in ipairs(state.sourceConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    for _, conn in ipairs(state.broadSourceConnections) do
         pcall(function() conn:Disconnect() end)
     end
     sg:Destroy()

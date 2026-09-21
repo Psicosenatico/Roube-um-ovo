@@ -1,4 +1,4 @@
--- PSICOSENATICO | AXON PREDICTOR SOURCE CAPTURE V2.5.1
+-- PSICOSENATICO | AXON PREDICTOR SOURCE CAPTURE V2.5.2
 -- Zero-hook / passive observation.
 -- Reads Axon predictor UI and listens to replicated RemoteEvents with OnClientEvent only.
 -- Does NOT invoke remotes, hook functions, use debug/getgc, intercept HTTP, or mutate game state.
@@ -1458,7 +1458,7 @@ local function report()
 
     return {
         meta={
-            version="AxonPredictorSourceV2.5.1",
+            version="AxonPredictorSourceV2.5.2",
             zeroHook=true,
             passive=true,
             created=nowUnix(),
@@ -1508,23 +1508,44 @@ local function report()
     }
 end
 
+local function asciiSafeString(v)
+    local s = tostring(v or "")
+    local out = table.create(#s)
+    for i = 1, #s do
+        local b = string.byte(s, i)
+        if b == 9 or b == 10 or b == 13 or (b >= 32 and b <= 126) then
+            out[#out+1] = string.char(b)
+        else
+            out[#out+1] = string.format("<0x%02X>", b)
+        end
+    end
+    return table.concat(out)
+end
+
 local function jsonSafe(v, depth, seen)
     depth = depth or 0
     seen = seen or {}
-    if depth > 18 then return "<json-depth-limit>" end
+    if depth > 20 then return "<json-depth-limit>" end
 
     local t = typeof(v)
     if t == "nil" then return nil end
-    if t == "boolean" or t == "string" then return v end
+    if t == "boolean" then return v end
+    if t == "string" then return asciiSafeString(v) end
     if t == "number" then
         if v ~= v or v == math.huge or v == -math.huge then
-            return tostring(v)
+            return asciiSafeString(v)
         end
         return v
     end
+
     if t ~= "table" then
-        return sanitize(v)
+        local safe = sanitize(v)
+        if type(safe) == "table" then
+            return jsonSafe(safe, depth + 1, seen)
+        end
+        return asciiSafeString(safe)
     end
+
     if seen[v] then return "<json-cycle>" end
     seen[v] = true
 
@@ -1538,16 +1559,14 @@ local function jsonSafe(v, depth, seen)
         end
     end
 
-    local out
+    local out = {}
     if otherCount == 0 and (numericCount == 0 or numericCount == maxNumeric) then
-        out = {}
         for i = 1, maxNumeric do
             out[i] = jsonSafe(v[i], depth + 1, seen)
         end
     else
-        out = {}
         for k, value in pairs(v) do
-            out[tostring(k)] = jsonSafe(value, depth + 1, seen)
+            out[asciiSafeString(k)] = jsonSafe(value, depth + 1, seen)
         end
     end
 
@@ -1555,57 +1574,99 @@ local function jsonSafe(v, depth, seen)
     return out
 end
 
+local function safeJsonEncode(value)
+    return HttpService:JSONEncode(jsonSafe(value))
+end
+
 local function encodeReport()
-    local safe = jsonSafe(report())
-    return HttpService:JSONEncode(safe)
+    return safeJsonEncode(report())
+end
+
+local function emergencyReport(encodeError)
+    return {
+        meta={
+            version="AxonPredictorSourceV2.5.2",
+            created=nowUnix(),
+            encodeError=asciiSafeString(encodeError),
+            emergency=true,
+        },
+        stats={
+            scans=state.scans,
+            sourceScans=state.sourceScanCount,
+            sourceSnapshots=#state.sourceSnapshots,
+            sourceEvents=#state.sourceEvents,
+            sourceCandidates=#state.sourceCandidates,
+        },
+        currentPredictions=state.lastCards,
+        sourceDiscovery={
+            candidates=state.sourceCandidates,
+            events=state.sourceEvents,
+            snapshots=state.sourceSnapshots,
+        },
+    }
 end
 
 local function checkpoint()
     if not writefile then return false end
     local ok, json = pcall(encodeReport)
-    if not ok then return false end
+    if not ok then
+        local ok2, fallback = pcall(function()
+            return safeJsonEncode(emergencyReport(json))
+        end)
+        if not ok2 then return false end
+        json = fallback
+    end
     return pcall(writefile, "Psico_Axon_PredictorTrace_Live.json", json)
 end
 
 local function exportData()
-    if state.status and state.status.Parent then state.status.Text = "Exportando trace..." end
+    if state.status and state.status.Parent then state.status.Text = "Exportando captura..." end
+
     local ok, json = pcall(encodeReport)
+    local usedEmergency = false
     if not ok then
-        local fallback = {
-            meta={
-                version="AxonPredictorSourceV2.5.1",
-                created=nowUnix(),
-                encodeError=tostring(json),
-            },
-            stats={
-                scans=state.scans,
-                sourceScans=state.sourceScanCount,
-                sourceSnapshots=#state.sourceSnapshots,
-                sourceEvents=#state.sourceEvents,
-                sourceCandidates=#state.sourceCandidates,
-            },
-            currentPredictions=jsonSafe(state.lastCards),
-            sourceDiscovery={
-                candidates=jsonSafe(state.sourceCandidates),
-            },
-        }
-        local ok2, minimal = pcall(function() return HttpService:JSONEncode(fallback) end)
+        usedEmergency = true
+        local ok2, fallback = pcall(function()
+            return safeJsonEncode(emergencyReport(json))
+        end)
         if ok2 then
-            json = minimal
+            json = fallback
             ok = true
         else
             if state.status and state.status.Parent then
-                state.status.Text = "Erro JSON persistente: "..tostring(minimal)
+                state.status.Text = "Erro JSON persistente: "..asciiSafeString(fallback)
             end
             return
         end
     end
-    local name = "Psico_Axon_PredictorTrace_"..tostring(math.floor(nowUnix()))..".json"
+
+    local stamp = tostring(math.floor(nowUnix()))
+    local name = "Psico_Axon_PredictorTrace_"..stamp..".json"
     local wrote = false
     if writefile then wrote = pcall(writefile, name, json) end
+
+    -- Source-only backup is intentionally smaller and should survive even
+    -- if a future full-report field becomes incompatible with JSON again.
+    if writefile then
+        local sourceOnly = {
+            meta={version="AxonPredictorSourceV2.5.2", created=nowUnix(), sourceOnly=true},
+            currentPredictions=state.lastCards,
+            sourceDiscovery={
+                candidates=state.sourceCandidates,
+                events=state.sourceEvents,
+                snapshots=state.sourceSnapshots,
+            },
+        }
+        local okSource, sourceJson = pcall(safeJsonEncode, sourceOnly)
+        if okSource then
+            pcall(writefile, "Psico_Axon_PredictorSource_"..stamp..".json", sourceJson)
+        end
+    end
+
     if not wrote and setclipboard then pcall(setclipboard, json) end
     if state.status and state.status.Parent then
-        state.status.Text = (wrote and "EXPORTADO: " or "JSON COPIADO: ")..name.." | "..#json.." bytes"
+        local mode = usedEmergency and "EXPORTADO (EMERGENCIA): " or (wrote and "EXPORTADO: " or "JSON COPIADO: ")
+        state.status.Text = mode..name.." | "..#json.." bytes"
     end
 end
 
@@ -1642,7 +1703,7 @@ local function startTrace()
 end
 
 local sg = Instance.new("ScreenGui")
-sg.Name = "PSICO_AXON_PREDICTOR_SOURCE_V2_5_1"
+sg.Name = "PSICO_AXON_PREDICTOR_SOURCE_V2_5_2"
 sg.ResetOnSpawn = false
 sg.DisplayOrder = 1405
 sg.Parent = CoreGui
@@ -1661,7 +1722,7 @@ local title = Instance.new("TextLabel")
 title.BackgroundTransparency = 1
 title.Position = UDim2.fromOffset(14,10)
 title.Size = UDim2.new(1,-76,0,28)
-title.Text = "AXON PREDICTOR SOURCE V2.5.1 - ZERO-HOOK"
+title.Text = "AXON PREDICTOR SOURCE V2.5.2 - ZERO-HOOK"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 13
 title.TextColor3 = Color3.fromRGB(238,245,255)

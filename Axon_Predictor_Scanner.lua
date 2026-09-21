@@ -1767,6 +1767,7 @@ local function emergencyReport(encodeError)
             candidates=state.sourceCandidates,
             events=state.sourceEvents,
             snapshots=state.sourceSnapshots,
+            refreshWindows=state.refreshWindows,
         },
     }
 end

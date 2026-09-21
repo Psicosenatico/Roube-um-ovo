@@ -1569,7 +1569,6 @@ beginRefreshWindow = function()
     task.delay(0.40, function()
         if state.closed then return end
         win.after040=sanitize(state.lastCards)
-        captureSourceSnapshot("refresh-window+0.40", true)
     end)
     task.delay(1.20, function()
         if state.closed then return end
@@ -1582,7 +1581,6 @@ beginRefreshWindow = function()
         if state.activeRefreshWindow == win then
             state.activeRefreshWindow = nil
         end
-        checkpoint()
     end)
 end
 

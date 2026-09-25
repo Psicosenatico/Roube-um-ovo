@@ -261,6 +261,32 @@ local function fly(dest,token,stopDist,timeout)
     return false
 end
 
+local function retreatToSafe(token)
+    if not CFG.SafetyEnabled then return false end
+    state.target=nil
+    state.damageTaken=false
+    state.retreats+=1
+    state.lastError="Proteção: recuando para a área segura"
+    cleanupMove()
+
+    local ok=fly(SAFE_ZONE,token,2,ARRIVE_TIMEOUT)
+    if not ok or not CFG.Enabled or state.token~=token then return false end
+
+    state.lastError="Proteção: aguardando recuperação"
+    while CFG.Enabled and state.token==token do
+        local h=select(1,humRoot())
+        if not h or h.Health<=0 then return false end
+        if h.MaxHealth>0 and (h.Health/h.MaxHealth)>=CFG.ResumeHealthPct then
+            state.damageTaken=false
+            state.lastHealth=h.Health
+            state.lastError=nil
+            return true
+        end
+        task.wait(.35)
+    end
+    return false
+end
+
 local function behind(target)
     local p=pos(target)
     if not p then return nil end
@@ -306,6 +332,11 @@ local function attack(info,token)
         local tp=pos(target)
         local bp=behind(target)
         if not h or not r or h.Health<=0 or not tp or not bp then break end
+
+        if CFG.SafetyEnabled and (state.damageTaken or healthRatio()<=CFG.RetreatHealthPct) then
+            retreatToSafe(token)
+            break
+        end
 
         local totalDist=math.floor((bp-r.Position).Magnitude)
         if totalDist>SHORT_TP_DISTANCE then
@@ -399,6 +430,7 @@ local function start()
     if CFG.Enabled then return end
     CFG.Enabled=true
     state.token+=1
+    bindDamageWatch()
     local token=state.token
     task.spawn(function() loop(token) end)
 end
@@ -407,6 +439,7 @@ local function stop()
     CFG.Enabled=false
     state.token+=1
     state.target=nil
+    state.damageTaken=false
     cleanupMove()
 end
 

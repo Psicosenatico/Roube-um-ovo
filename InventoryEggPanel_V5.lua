@@ -2,7 +2,57 @@
 -- V8.7.4 baseline: compact inventory list + direct egg equip by EggInventory UID.
 -- Equip path verified from Egg Equip Scanner: EggInventory UID -> RF/EggWorld/AskWearTool -> AssetEgg Tool.
 
+local function sanitizeLegacyCleanup(fn)
+    if type(fn) ~= 'function' then return end
+    local getter = (debug and debug.getupvalues) or getupvalues
+    if type(getter) ~= 'function' then return end
+
+    local seenFns, seenTables = {}, {}
+    local function walk(v, depth)
+        if depth > 6 then return end
+        if type(v) == 'function' then
+            if seenFns[v] then return end
+            seenFns[v] = true
+            local ok, ups = pcall(getter, v)
+            if ok and type(ups) == 'table' then
+                for _, u in pairs(ups) do
+                    walk(u, depth + 1)
+                end
+            end
+        elseif type(v) == 'table' then
+            if seenTables[v] then return end
+            seenTables[v] = true
+
+            -- Older builds stored the REAL placed egg Model inside an ESP
+            -- record. Their generic cleanup could therefore destroy it.
+            local m = rawget(v, 'Model')
+            if typeof(m) == 'Instance' and m:IsA('Model') then
+                local a, dangerous = m, false
+                while a do
+                    if a.Name == 'PlacedEggRenders' or a.Name == 'ClientRenderedAssets' then
+                        dangerous = true
+                        break
+                    end
+                    a = a.Parent
+                end
+                if dangerous then
+                    rawset(v, 'Model', nil)
+                end
+            end
+
+            for _, u in pairs(v) do
+                if type(u) == 'function' or type(u) == 'table' then
+                    walk(u, depth + 1)
+                end
+            end
+        end
+    end
+
+    pcall(walk, fn, 0)
+end
+
 if _G.PSICO_INVENTORY_PANEL_CLEANUP then
+    sanitizeLegacyCleanup(_G.PSICO_INVENTORY_PANEL_CLEANUP)
     pcall(_G.PSICO_INVENTORY_PANEL_CLEANUP)
 end
 
@@ -765,11 +815,11 @@ local function basePass(rec)
     return baseMutationPass(rec)
 end
 
-local function ensureBaseEsp(uid, rec, model)
+local function ensureBaseEsp(uid, rec, model, visible)
     local adornee = placedAdornee(model)
     if not adornee then return end
     local e = baseEsp[uid]
-    if e and e.Model ~= model then
+    if e and (not e.Highlight or e.Highlight.Adornee ~= model) then
         destroyBaseEsp(uid)
         e = nil
     end
@@ -800,7 +850,9 @@ local function ensureBaseEsp(uid, rec, model)
             lines[i] = x
         end
 
-        e = {Highlight=h, Billboard=bb, Lines=lines, Model=model}
+        -- Never store the real world model in this table.
+        -- This makes even accidental generic cleanup incapable of deleting it.
+        e = {Highlight=h, Billboard=bb, Lines=lines}
         baseEsp[uid] = e
     end
 
@@ -808,7 +860,7 @@ local function ensureBaseEsp(uid, rec, model)
     local col = colors[rar] or Color3.fromRGB(225,232,245)
     e.Highlight.FillColor = col
     e.Highlight.OutlineColor = col
-    e.Highlight.Enabled = BASE.ShowHighlight
+    e.Highlight.Enabled = visible and BASE.ShowHighlight
     e.Billboard.MaxDistance = BASE.MaxDistance
 
     local texts = {}
@@ -865,13 +917,21 @@ local function ensureBaseEsp(uid, rec, model)
         end
     end
     e.Billboard.Size = UDim2.fromOffset(210, math.max(14, #texts * 14))
-    e.Billboard.Enabled = #texts > 0
+    e.Billboard.Enabled = visible and #texts > 0
 end
+
+local baseResyncTried = false
 
 local function refreshBaseEsp()
     baseEspEnabled = BASE.Enabled
+
     if not baseEspEnabled then
-        clearBaseEsp()
+        -- Turning the ESP off only hides our overlays. It does not destroy
+        -- anything in Workspace and it does not destroy the overlay objects.
+        for _, e in pairs(baseEsp) do
+            if e.Highlight then e.Highlight.Enabled = false end
+            if e.Billboard then e.Billboard.Enabled = false end
+        end
         baseEnableButton.Text = 'Ativar ESP da base: OFF'
         baseEnableButton.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
         baseStatus.Text = 'ESP desligado'
@@ -882,31 +942,56 @@ local function refreshBaseEsp()
 
     local inv = readOwnedEggs()
     local keep = {}
-    local placedCount, filteredCount, matchedCount = 0, 0, 0
+    local placedCount, filteredCount, displayedCount, physicalCount = 0, 0, 0, 0
 
     for key, rec in pairs(type(inv) == 'table' and inv or {}) do
         if type(rec) == 'table' and isPlaced(rec) then
             placedCount = placedCount + 1
-            if basePass(rec) then
-                filteredCount = filteredCount + 1
-                local uid = recordUid(key, rec)
-                local model = visualForPlacedUid(uid)
-                if model then
-                    matchedCount = matchedCount + 1
-                    keep[uid] = true
-                    ensureBaseEsp(uid, rec, model)
-                end
+            local uid = recordUid(key, rec)
+            local model = visualForPlacedUid(uid)
+            local pass = basePass(rec)
+
+            if pass then filteredCount = filteredCount + 1 end
+
+            if model then
+                physicalCount = physicalCount + 1
+                keep[uid] = true
+
+                -- IMPORTANT: every physical egg keeps its overlay record.
+                -- Filters only toggle Enabled on our Billboard/Highlight.
+                ensureBaseEsp(uid, rec, model, pass)
+
+                if pass then displayedCount = displayedCount + 1 end
             end
         end
     end
 
+    -- Only remove overlays whose real egg no longer exists at all
+    -- (hatched/removed). Filtered eggs are kept and merely hidden.
     for uid in pairs(baseEsp) do
         if not keep[uid] then destroyBaseEsp(uid) end
     end
 
     baseEnableButton.Text = 'Ativar ESP da base: ON'
     baseEnableButton.BackgroundColor3 = Color3.fromRGB(42, 91, 190)
-    baseStatus.Text = ('Colocados:%d • Filtro:%d • Exibidos:%d'):format(placedCount, filteredCount, matchedCount)
+    baseStatus.Text = ('Colocados:%d • Filtro:%d • Exibidos:%d'):format(placedCount, filteredCount, displayedCount)
+
+    -- Recovery for a session where an older buggy build already deleted
+    -- ClientRendered placed eggs locally. Ask the game's own EggState for
+    -- a fresh live snapshot once; the renderer can rebuild from that state.
+    if placedCount > 0 and physicalCount == 0 and not baseResyncTried then
+        baseResyncTried = true
+        if type(EggState) == 'table' and type(EggState.SyncOwnedEggs) == 'function' then
+            task.spawn(function()
+                pcall(EggState.SyncOwnedEggs)
+                renderedIndexAt = 0
+                task.wait(.35)
+                if BASE.Enabled and page.Parent then
+                    pcall(refreshBaseEsp)
+                end
+            end)
+        end
+    end
 end
 
 local rows = {}

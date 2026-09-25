@@ -454,20 +454,73 @@ local function preciseEarnings(rec)
     return nil
 end
 
-local function visualForPlacedUid(uid)
+local renderedIndex = {}
+local renderedIndexAt = 0
+
+local function rootRenderedModel(inst, folder)
+    local x = inst
+    local best = inst:IsA('Model') and inst or nil
+    while x and x ~= folder do
+        if x:IsA('Model') then best = x end
+        if x.Parent == folder then
+            return x:IsA('Model') and x or best
+        end
+        x = x.Parent
+    end
+    return best
+end
+
+local function refreshRenderedIndex(force)
+    local now = os.clock()
+    if not force and now - renderedIndexAt < 1.0 then return renderedIndex end
+    renderedIndexAt = now
+    renderedIndex = {}
+
     local folder = Workspace:FindFirstChild('ClientRenderedAssets')
-    if not folder then return nil end
-    uid = tostring(uid or '')
-    for _, m in ipairs(folder:GetChildren()) do
-        if m:IsA('Model') then
-            local muid = tostring(m:GetAttribute('UID') or '')
-            local owner = tonumber(m:GetAttribute('OwnerUserId'))
-            if muid == uid and owner == LP.UserId then
-                return m
-            end
+    if not folder then return renderedIndex end
+
+    local function add(inst)
+        local uid = inst:GetAttribute('UID')
+        if uid == nil and type(inst.Name) == 'string' then
+            -- Current renderer commonly names roots as <OwnerUserId>_<UID>.
+            uid = inst.Name:match('_(%x+)$')
+        end
+        if uid == nil then return end
+        uid = tostring(uid)
+
+        local owner = tonumber(inst:GetAttribute('OwnerUserId'))
+        local root = rootRenderedModel(inst, folder) or inst
+        if owner == nil and root then
+            owner = tonumber(root:GetAttribute('OwnerUserId'))
+        end
+
+        -- Exact UID is authoritative. Owner is used when present, but an
+        -- absent OwnerUserId must not hide a valid locally-rendered egg.
+        if owner == nil or owner == LP.UserId then
+            renderedIndex[uid] = root
         end
     end
-    return nil
+
+    for _, inst in ipairs(folder:GetChildren()) do add(inst) end
+    for _, inst in ipairs(folder:GetDescendants()) do
+        if inst:IsA('Model') or inst:IsA('Folder') then add(inst) end
+    end
+
+    return renderedIndex
+end
+
+local function recordUid(key, rec)
+    return tostring(
+        (type(rec) == 'table' and (rec.Uid or rec.UID or rec.Id or rec.ID))
+        or key
+        or ''
+    )
+end
+
+local function visualForPlacedUid(uid)
+    uid = tostring(uid or '')
+    if uid == '' then return nil end
+    return refreshRenderedIndex(false)[uid]
 end
 
 local baseEspEnabled = false
@@ -568,23 +621,36 @@ end
 local function refreshBaseEsp()
     if not baseEspEnabled then
         clearBaseEsp()
+        baseEspButton.Text = 'ESP Base: OFF'
         return
     end
+
+    -- Rebuild once per refresh so every placed record is matched against
+    -- the same renderer snapshot.
+    refreshRenderedIndex(true)
+
     local inv = readOwnedEggs()
     local keep = {}
+    local placedCount, matchedCount = 0, 0
+
     for key, rec in pairs(type(inv) == 'table' and inv or {}) do
         if type(rec) == 'table' and isPlaced(rec) then
-            local uid = tostring(key)
+            placedCount = placedCount + 1
+            local uid = recordUid(key, rec)
             local model = visualForPlacedUid(uid)
             if model then
+                matchedCount = matchedCount + 1
                 keep[uid] = true
                 ensureBaseEsp(uid, rec, model)
             end
         end
     end
+
     for uid in pairs(baseEsp) do
         if not keep[uid] then destroyBaseEsp(uid) end
     end
+
+    baseEspButton.Text = ('ESP Base: ON • %d/%d'):format(matchedCount, placedCount)
 end
 
 local rows = {}
@@ -730,7 +796,6 @@ end)
 
 conn(baseEspButton.Activated, function()
     baseEspEnabled = not baseEspEnabled
-    baseEspButton.Text = baseEspEnabled and 'ESP Base: ON' or 'ESP Base: OFF'
     baseEspButton.BackgroundColor3 = baseEspEnabled and Color3.fromRGB(42, 91, 190) or Color3.fromRGB(35, 44, 61)
     refreshBaseEsp()
 end)
@@ -762,6 +827,21 @@ task.spawn(function()
         if baseEspEnabled then
             refreshBaseEsp()
         end
+    end
+end)
+
+conn(Workspace.DescendantAdded, function(inst)
+    local folder = Workspace:FindFirstChild('ClientRenderedAssets')
+    if folder and inst:IsDescendantOf(folder) then
+        renderedIndexAt = 0
+        if baseEspEnabled then task.defer(refreshBaseEsp) end
+    end
+end)
+
+conn(Workspace.DescendantRemoving, function(inst)
+    local folder = Workspace:FindFirstChild('ClientRenderedAssets')
+    if folder and inst:IsDescendantOf(folder) then
+        renderedIndexAt = 0
     end
 end)
 

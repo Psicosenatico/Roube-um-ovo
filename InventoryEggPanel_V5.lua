@@ -843,10 +843,23 @@ local function ensureBaseEsp(uid, rec, model, visible)
 
         local lines = {}
         for i = 1, 4 do
-            local x = label(bb, '', UDim2.fromOffset(0, (i - 1) * 14), UDim2.new(1, 0, 0, 14), i == 1 and 10 or 8)
+            local x = Instance.new('TextLabel')
+            x.BackgroundTransparency = 1
+            x.BorderSizePixel = 0
+            x.Position = UDim2.fromOffset(0, (i - 1) * 13)
+            x.Size = UDim2.new(1, 0, 0, 13)
+            x.Font = Enum.Font.Gotham
+            x.Text = ''
+            x.TextSize = (i == 1 and 10 or 9)
             x.TextXAlignment = Enum.TextXAlignment.Center
-            x.TextStrokeTransparency = .15
-            if i == 1 then x.Font = Enum.Font.GothamBold end
+            x.TextYAlignment = Enum.TextYAlignment.Center
+            x.TextColor3 = Color3.fromRGB(240, 245, 255)
+            x.TextTransparency = 0
+            x.TextStrokeColor3 = Color3.new(0, 0, 0)
+            x.TextStrokeTransparency = .14
+            x.RichText = false
+            x.TextWrapped = false
+            x.Parent = bb
             lines[i] = x
         end
 
@@ -878,7 +891,11 @@ local function ensureBaseEsp(uid, rec, model, visible)
             local muts = recordMutations(rec)
             parts[#parts + 1] = (#muts > 0) and table.concat(muts, '+') or 'Sem mutação'
         end
-        texts[#texts + 1] = {Text = table.concat(parts, ' • '), Color = Color3.fromRGB(242,246,255)}
+        texts[#texts + 1] = {
+            Text = table.concat(parts, ' • '),
+            Color = Color3.fromRGB(245,248,255),
+            Bold = true
+        }
     end
 
     if BASE.ShowEggValue or BASE.ShowWeight then
@@ -901,7 +918,7 @@ local function ensureBaseEsp(uid, rec, model, visible)
             local m = math.floor((remain % 3600) / 60)
             local s = math.floor(remain % 60)
             local t = h > 0 and ('%dh %02dm'):format(h, m) or (m > 0 and ('%dm %02ds'):format(m, s) or ('%ds'):format(s))
-            texts[#texts + 1] = {Text = t .. ' restantes', Color = Color3.fromRGB(196,211,237)}
+            texts[#texts + 1] = {Text = t .. ' restantes', Color = Color3.fromRGB(220,228,242)}
         end
     end
 
@@ -913,10 +930,13 @@ local function ensureBaseEsp(uid, rec, model, visible)
             line.Text = item.Text
             line.TextColor3 = item.Color
             line.Font = item.Bold and Enum.Font.GothamBold or Enum.Font.Gotham
-            line.Position = UDim2.fromOffset(0, (i - 1) * 14)
+            line.Position = UDim2.fromOffset(0, (i - 1) * 13)
+            line.TextTransparency = 0
+            line.TextStrokeColor3 = Color3.new(0, 0, 0)
+            line.TextStrokeTransparency = .14
         end
     end
-    e.Billboard.Size = UDim2.fromOffset(210, math.max(14, #texts * 14))
+    e.Billboard.Size = UDim2.fromOffset(210, math.max(28, #texts * 13 + 3))
     e.Billboard.Enabled = visible and #texts > 0
 end
 

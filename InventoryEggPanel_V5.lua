@@ -38,6 +38,7 @@ local function req(p)
 end
 
 local Save = req('Shared.Save') or req('Data.Save')
+local EggState = req('Client.EggState')
 local ER = req('Shared.Util.EggRecords')
 local Assets = req('Data.Assets')
 local Networking = RS:FindFirstChild('Packages') and RS.Packages:FindFirstChild('Networking')
@@ -200,11 +201,46 @@ local function rv(r, k)
     return i and i[k]
 end
 
--- Placement belongs to the saved EggInventory record itself.
--- Do NOT use rv() here: rv() intentionally falls back to ItemData and can
--- therefore read unrelated nested metadata as if the egg were placed.
 local function isPlaced(rec)
-    return type(rec) == 'table' and rawget(rec, 'Placement') ~= nil
+    return type(rec) == 'table' and rec.Placement ~= nil
+end
+
+local ownedSyncTried = false
+local function readOwnedEggs()
+    -- Primary source: the game's own live EggState cache.
+    -- It tracks OwnerShifted/OwnerDropped and stores Placement on each runtime record.
+    if type(EggState) == 'table' and type(EggState.ReadOwnerEggs) == 'function' then
+        local ok, inv = pcall(EggState.ReadOwnerEggs, LP.UserId)
+        if not ok then
+            ok, inv = pcall(EggState.ReadOwnerEggs, EggState, LP.UserId)
+        end
+        if ok and type(inv) == 'table' and next(inv) ~= nil then
+            return inv, 'EggState'
+        end
+
+        if not ownedSyncTried and type(EggState.SyncOwnedEggs) == 'function' then
+            ownedSyncTried = true
+            pcall(EggState.SyncOwnedEggs)
+            task.wait(.05)
+            ok, inv = pcall(EggState.ReadOwnerEggs, LP.UserId)
+            if not ok then
+                ok, inv = pcall(EggState.ReadOwnerEggs, EggState, LP.UserId)
+            end
+            if ok and type(inv) == 'table' then
+                return inv, 'EggState'
+            end
+        elseif ok and type(inv) == 'table' then
+            return inv, 'EggState'
+        end
+    end
+
+    -- Compatibility fallback for older builds.
+    local sd = Save and call(Save, 'Get')
+    local inv = type(sd) == 'table' and sd.EggInventory
+    if type(inv) == 'table' then
+        return inv, 'Save'
+    end
+    return {}, 'none'
 end
 
 local function cat(r)
@@ -308,13 +344,15 @@ local function inCharacterUID(uid)
 end
 
 local function equipRecord(key, rec)
-    local liveData = Save and call(Save, 'Get')
-    local liveInv = type(liveData) == 'table' and liveData.EggInventory
-    local liveRec = type(liveInv) == 'table' and (liveInv[key] or liveInv[tostring(key)]) or rec
+    local liveInv = readOwnedEggs()
+    local liveRec = type(liveInv) == 'table' and (liveInv[key] or liveInv[tostring(key)]) or nil
+    if liveRec == nil then
+        return false, 'Este ovo não está mais disponível no inventário'
+    end
     if isPlaced(liveRec) then
         return false, 'Este ovo já está colocado na base'
     end
-    rec = liveRec or rec
+    rec = liveRec
 
     local uid = tostring(key or rv(rec, 'UID') or '')
     if uid == '' then
@@ -338,17 +376,25 @@ local function equipRecord(key, rec)
         end
     end
 
-    if not (AskWearTool and AskWearTool:IsA('RemoteFunction')) then
-        return false, 'RF/EggWorld/AskWearTool não encontrado'
-    end
-
-    -- This is the game's own wear request. Public implementations and our
-    -- scanner both identify the EggInventory table key as the argument.
-    local ok, result = pcall(function()
-        return AskWearTool:InvokeServer(uid)
-    end)
-    if not ok then
-        return false, 'AskWearTool falhou: ' .. tostring(result)
+    local ok, result, reason
+    if type(EggState) == 'table' and type(EggState.WearEggTool) == 'function' then
+        ok, result, reason = pcall(EggState.WearEggTool, uid)
+        if not ok then
+            ok, result, reason = pcall(EggState.WearEggTool, EggState, uid)
+        end
+        if ok and result ~= true then
+            return false, tostring(reason or 'WearEggTool recusou o ovo')
+        end
+    else
+        if not (AskWearTool and AskWearTool:IsA('RemoteFunction')) then
+            return false, 'WearEggTool/AskWearTool não encontrado'
+        end
+        ok, result = pcall(function()
+            return AskWearTool:InvokeServer(uid)
+        end)
+        if not ok then
+            return false, 'AskWearTool falhou: ' .. tostring(result)
+        end
     end
 
     -- The server normally places the AssetEgg Tool directly in Character.
@@ -385,8 +431,7 @@ end
 
 local function read()
     rows = {}
-    local sd = Save and call(Save, 'Get')
-    local inv = type(sd) == 'table' and sd.EggInventory
+    local inv = readOwnedEggs()
     if type(inv) ~= 'table' then return end
 
     for key, r in pairs(inv) do
@@ -488,8 +533,7 @@ conn(refresh.Activated, render)
 
 local placementSignature = ''
 local function inventorySignature()
-    local sd = Save and call(Save, 'Get')
-    local inv = type(sd) == 'table' and sd.EggInventory
+    local inv = readOwnedEggs()
     if type(inv) ~= 'table' then return '' end
     local keys = {}
     for key, rec in pairs(inv) do

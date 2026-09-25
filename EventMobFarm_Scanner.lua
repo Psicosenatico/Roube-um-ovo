@@ -1,6 +1,6 @@
--- PSICOSENATICO | EVENT MOB FARM SCANNER V1
--- Scanner leve e passivo para mapear mobs/evento/arma antes do Auto Farm.
--- Nao usa __namecall, hookfunction, getgc, decompile ou interceptacao global.
+-- PSICOSENATICO | EVENT MOB FARM SCANNER V2
+-- Targeted scanner for Dr. Scramble / drone combat + bat hit flow.
+-- Keeps the same stable file/loadstring.
 
 if _G.PSICO_EVENT_MOB_SCANNER_CLEANUP then
     pcall(_G.PSICO_EVENT_MOB_SCANNER_CLEANUP)
@@ -16,666 +16,600 @@ local UserInputService = game:GetService("UserInputService")
 
 local LP = Players.LocalPlayer
 local conns = {}
-local watchedHealth = {}
 local state = {
-    active = false,
-    startedUnix = os.time(),
-    events = {},
-    candidates = {},
-    relevantRemotes = {},
-    relevantModules = {},
-    bat = {},
-    startSnapshot = nil,
-    endSnapshot = nil,
+    active=false,
+    startedUnix=os.time(),
+    events={},
+    before=nil,
+    after=nil,
+    moduleInfo={},
+    hookSupported=false,
+    hookInstalled=false,
 }
 
-local TERMS = {
-    "mob","enemy","npc","boss","event","rift","scramble","sakura","bloom",
-    "hit","damage","attack","bat","combat","health","hp","monster","crystal"
-}
-
-local HEALTH_NAMES = {
-    Health=true, HP=true, Hp=true, HitPoints=true, Hitpoints=true,
-    Life=true, Lives=true, CurrentHealth=true, MaxHealth=true,
-}
-
-local function pushEvent(kind, data)
-    local e = {
-        t = os.clock(),
-        unix = os.time(),
-        kind = kind,
-        data = data,
-    }
-    state.events[#state.events+1] = e
-    if #state.events > 3000 then
-        table.remove(state.events, 1)
-    end
-end
-
-local function safeFullName(inst)
-    local ok, v = pcall(function() return inst:GetFullName() end)
+local function full(inst)
+    local ok,v=pcall(function() return inst:GetFullName() end)
     return ok and v or tostring(inst)
 end
 
-local function serial(v)
-    local tv = typeof(v)
-    if tv == "nil" or tv == "boolean" or tv == "string" or tv == "number" then return v end
-    if tv == "Vector3" then return {x=v.X,y=v.Y,z=v.Z} end
-    if tv == "CFrame" then
-        local p = v.Position
-        return {x=p.X,y=p.Y,z=p.Z}
-    end
-    if tv == "Color3" then return {r=v.R,g=v.G,b=v.B} end
-    if tv == "Instance" then
-        return {class=v.ClassName,name=v.Name,path=safeFullName(v)}
+local function simple(v, depth, seen)
+    depth=depth or 0
+    seen=seen or {}
+    local tv=typeof(v)
+    if tv=="nil" or tv=="boolean" or tv=="string" or tv=="number" then return v end
+    if tv=="Vector3" then return {x=v.X,y=v.Y,z=v.Z} end
+    if tv=="CFrame" then local p=v.Position return {x=p.X,y=p.Y,z=p.Z} end
+    if tv=="Color3" then return {r=v.R,g=v.G,b=v.B} end
+    if tv=="Instance" then return {class=v.ClassName,name=v.Name,path=full(v)} end
+    if tv=="table" then
+        if seen[v] then return "<cycle>" end
+        if depth>=4 then return "<depth>" end
+        seen[v]=true
+        local out={}
+        local n=0
+        for k,x in pairs(v) do
+            n+=1
+            if n>80 then out.__truncated=true break end
+            out[tostring(k)]=simple(x,depth+1,seen)
+        end
+        seen[v]=nil
+        return out
     end
     return tostring(v)
 end
 
+local function packArgs(...)
+    local p=table.pack(...)
+    local out={}
+    for i=1,p.n do out[i]=simple(p[i]) end
+    return out
+end
+
 local function attrs(inst)
-    local out = {}
-    local ok, a = pcall(function() return inst:GetAttributes() end)
-    if ok and type(a) == "table" then
-        for k,v in pairs(a) do out[k] = serial(v) end
+    local out={}
+    local ok,a=pcall(function() return inst:GetAttributes() end)
+    if ok and type(a)=="table" then
+        for k,v in pairs(a) do out[k]=simple(v) end
     end
     return out
 end
 
-local function lower(s)
-    return string.lower(tostring(s or ""))
-end
-
-local function matchesTerm(s)
-    s = lower(s)
-    for _,term in ipairs(TERMS) do
-        if s:find(term,1,true) then return true, term end
-    end
-    return false
-end
-
-local function rootOf(model)
-    if not model then return nil end
-    if model:IsA("BasePart") then return model end
-    if model:IsA("Model") then
-        return model:FindFirstChild("HumanoidRootPart")
-            or model.PrimaryPart
-            or model:FindFirstChildWhichIsA("BasePart", true)
-    end
-    return nil
-end
-
-local function healthObject(model)
-    if not model then return nil,nil,nil end
-
-    local hum = model:FindFirstChildOfClass("Humanoid")
-    if hum then return hum, tonumber(hum.Health), tonumber(hum.MaxHealth) end
-
-    for _,d in ipairs(model:GetDescendants()) do
-        if d:IsA("ValueBase") and HEALTH_NAMES[d.Name] then
-            local v = tonumber(d.Value)
-            if v then
-                local mx = tonumber(d:GetAttribute("Max"))
-                    or tonumber(d:GetAttribute("MaxHealth"))
-                    or v
-                return d, v, mx
-            end
-        end
-    end
-
-    for _,key in ipairs({"Health","HP","Hp","HitPoints","Life","CurrentHealth"}) do
-        local v = tonumber(model:GetAttribute(key))
-        if v then
-            local mx = tonumber(model:GetAttribute("MaxHealth"))
-                or tonumber(model:GetAttribute("MaxHP"))
-                or v
-            return model, v, mx
-        end
-    end
-
-    return nil,nil,nil
-end
-
-local function currentHealth(model)
-    local obj,h,m = healthObject(model)
-    return obj,h,m
-end
-
-local function modelTags(model)
-    local out = {}
-    local ok, tags = pcall(CollectionService.GetTags, CollectionService, model)
-    if ok and type(tags) == "table" then
-        for _,t in ipairs(tags) do out[#out+1] = t end
-    end
-    table.sort(out)
-    return out
-end
-
-local function childSummary(model)
-    local out = {}
-    local n = 0
-    for _,d in ipairs(model:GetDescendants()) do
-        n += 1
-        if n > 80 then break end
-        if d:IsA("Humanoid") or d:IsA("ValueBase") or d:IsA("ProximityPrompt")
-            or d:IsA("ClickDetector") or d:IsA("Animation")
-            or d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
-            local r = {name=d.Name,class=d.ClassName,path=safeFullName(d)}
-            if d:IsA("ValueBase") then
-                pcall(function() r.value = serial(d.Value) end)
-            elseif d:IsA("ProximityPrompt") then
-                r.actionText = d.ActionText
-                r.objectText = d.ObjectText
-                r.hold = d.HoldDuration
-            end
-            out[#out+1] = r
-        end
-    end
-    return out
-end
-
-local function candidateRow(model)
-    local _,h,mx = currentHealth(model)
-    local root = rootOf(model)
-    return {
-        name = model.Name,
-        class = model.ClassName,
-        path = safeFullName(model),
-        health = h,
-        maxHealth = mx,
-        attrs = attrs(model),
-        tags = modelTags(model),
-        pos = root and serial(root.Position) or nil,
-        children = childSummary(model),
+local function push(kind,data)
+    state.events[#state.events+1]={
+        t=os.clock(),unix=os.time(),kind=kind,data=data
     }
+    if #state.events>5000 then table.remove(state.events,1) end
 end
 
-local function isCandidateModel(inst)
-    if not inst:IsA("Model") then return false end
-    if LP.Character and inst == LP.Character then return false end
-    for _,p in ipairs(Players:GetPlayers()) do
-        if p.Character == inst then return false end
+local function findPath(path)
+    local x=ReplicatedStorage
+    for seg in path:gmatch("[^%.]+") do
+        x=x and x:FindFirstChild(seg)
     end
-
-    local obj,h,mx = currentHealth(inst)
-    if obj then
-        if h and mx and mx <= 100 then return true end
-        local hit = matchesTerm(inst.Name)
-        if hit then return true end
-    end
-
-    if matchesTerm(inst.Name) then
-        local root = rootOf(inst)
-        if root then return true end
-    end
-
-    return false
+    return x
 end
 
-local function watchCandidate(model)
-    if watchedHealth[model] then return end
-    if not isCandidateModel(model) then return end
-    watchedHealth[model] = true
+local function remote(name)
+    for _,d in ipairs(ReplicatedStorage:GetDescendants()) do
+        if (d:IsA("RemoteEvent") or d:IsA("RemoteFunction")) and d.Name==name then
+            return d
+        end
+    end
+end
 
-    local key = safeFullName(model)
-    state.candidates[key] = candidateRow(model)
-    pushEvent("candidate_seen", state.candidates[key])
+local TARGET_REMOTE_NAMES={
+    "RE/BatSwing/Trigger",
+    "RE/Scramble/Drones",
+    "RE/Scramble/State",
+    "RE/Scramble/Drops",
+    "RE/Scramble/RemoveDrops",
+    "RE/Scramble/Effect",
+    "RE/Scramble/Collect",
+}
 
-    local obj,h = healthObject(model)
-    if obj then
-        if obj:IsA("Humanoid") then
-            local last = tonumber(obj.Health)
-            local c = obj.HealthChanged:Connect(function(v)
-                if not state.active then return end
-                local nv = tonumber(v)
-                pushEvent("health_changed", {
-                    path=safeFullName(model),
-                    name=model.Name,
-                    from=last,
-                    to=nv,
-                })
-                last = nv
-            end)
-            conns[#conns+1] = c
+local targetRemotes={}
+for _,name in ipairs(TARGET_REMOTE_NAMES) do
+    local r=remote(name)
+    if r then targetRemotes[name]=r end
+end
 
-            local d = obj.Died:Connect(function()
+local function connectInbound()
+    for name,r in pairs(targetRemotes) do
+        if r:IsA("RemoteEvent") then
+            conns[#conns+1]=r.OnClientEvent:Connect(function(...)
                 if state.active then
-                    pushEvent("mob_died", {
-                        path=safeFullName(model),
-                        name=model.Name,
+                    push("remote_in",{
+                        remote=name,
+                        args=packArgs(...)
                     })
                 end
             end)
-            conns[#conns+1] = d
-        elseif obj:IsA("ValueBase") then
-            local last = tonumber(obj.Value)
-            local c = obj.Changed:Connect(function(v)
-                if not state.active then return end
-                local nv = tonumber(v)
-                pushEvent("health_value_changed", {
-                    path=safeFullName(model),
-                    valuePath=safeFullName(obj),
-                    name=model.Name,
-                    from=last,
-                    to=nv,
-                })
-                last = nv
-            end)
-            conns[#conns+1] = c
-        else
-            local last = tonumber(h)
-            for _,keyName in ipairs({"Health","HP","Hp","HitPoints","Life","CurrentHealth"}) do
-                if model:GetAttribute(keyName) ~= nil then
-                    local c = model:GetAttributeChangedSignal(keyName):Connect(function()
-                        if not state.active then return end
-                        local nv = tonumber(model:GetAttribute(keyName))
-                        pushEvent("health_attr_changed", {
-                            path=safeFullName(model),
-                            attr=keyName,
-                            name=model.Name,
-                            from=last,
-                            to=nv,
-                        })
-                        last = nv
-                    end)
-                    conns[#conns+1] = c
+        end
+    end
+end
+
+local oldNamecall=nil
+local hookClosure=nil
+
+local function installOutgoingHook()
+    if state.hookInstalled then return true end
+    if type(hookmetamethod)~="function" or type(getnamecallmethod)~="function" then
+        return false
+    end
+
+    local targetByInstance={}
+    for name,r in pairs(targetRemotes) do targetByInstance[r]=name end
+
+    local wrap = type(newcclosure)=="function" and newcclosure or function(f) return f end
+
+    local ok,old=pcall(function()
+        local previous
+        previous=hookmetamethod(game,"__namecall",wrap(function(self,...)
+            local method=getnamecallmethod()
+            if state.active and method=="FireServer" then
+                local n=targetByInstance[self]
+                if n then
+                    push("remote_out",{
+                        remote=n,
+                        args=packArgs(...)
+                    })
+                end
+            end
+            return previous(self,...)
+        end))
+        return previous
+    end)
+
+    if ok and old then
+        oldNamecall=old
+        state.hookInstalled=true
+        state.hookSupported=true
+        return true
+    end
+    return false
+end
+
+local function uninstallOutgoingHook()
+    if not state.hookInstalled then return end
+    state.active=false
+    -- Restore only if executor supports replacing the metamethod again.
+    if oldNamecall and type(hookmetamethod)=="function" then
+        pcall(function() hookmetamethod(game,"__namecall",oldNamecall) end)
+    end
+    state.hookInstalled=false
+    oldNamecall=nil
+end
+
+local function fnMeta(fn)
+    local out={type="function"}
+    if debug and debug.info then
+        pcall(function()
+            out.name=debug.info(fn,"n")
+            out.source=debug.info(fn,"s")
+            out.line=debug.info(fn,"l")
+            out.argc=debug.info(fn,"a")
+        end)
+    end
+
+    local gc=(debug and debug.getconstants) or getconstants
+    if type(gc)=="function" then
+        local ok,c=pcall(gc,fn)
+        if ok and type(c)=="table" then
+            out.constants={}
+            for _,v in ipairs(c) do
+                local t=typeof(v)
+                if t=="string" or t=="number" or t=="boolean" then
+                    out.constants[#out.constants+1]=v
+                    if #out.constants>=120 then break end
                 end
             end
         end
     end
 
-    local anc = model.AncestryChanged:Connect(function(_,parent)
-        if state.active and parent == nil then
-            pushEvent("candidate_removed", {
-                path=key,
-                name=model.Name,
-            })
-        end
-    end)
-    conns[#conns+1] = anc
-end
-
-local function scanCandidates()
-    local count = 0
-    for _,inst in ipairs(Workspace:GetDescendants()) do
-        if inst:IsA("Model") and isCandidateModel(inst) then
-            watchCandidate(inst)
-            count += 1
-        end
-    end
-    return count
-end
-
-local function scanRelevantObjects()
-    local remotes, modules = {}, {}
-    for _,d in ipairs(ReplicatedStorage:GetDescendants()) do
-        local path = safeFullName(d)
-        local hit = matchesTerm(path)
-        if hit then
-            if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
-                remotes[#remotes+1] = {
-                    name=d.Name,class=d.ClassName,path=path,attrs=attrs(d)
-                }
-            elseif d:IsA("ModuleScript") then
-                modules[#modules+1] = {
-                    name=d.Name,path=path,attrs=attrs(d)
-                }
+    local gu=(debug and debug.getupvalues) or getupvalues
+    if type(gu)=="function" then
+        local ok,u=pcall(gu,fn)
+        if ok and type(u)=="table" then
+            out.upvalues={}
+            local n=0
+            for k,v in pairs(u) do
+                n+=1
+                if n>40 then break end
+                local tv=typeof(v)
+                if tv=="string" or tv=="number" or tv=="boolean" then
+                    out.upvalues[tostring(k)]=v
+                elseif tv=="Instance" then
+                    out.upvalues[tostring(k)]=simple(v)
+                elseif tv=="table" then
+                    local shallow={}
+                    local m=0
+                    for kk,vv in pairs(v) do
+                        m+=1
+                        if m>30 then break end
+                        local tt=typeof(vv)
+                        if tt=="string" or tt=="number" or tt=="boolean" then
+                            shallow[tostring(kk)]=vv
+                        end
+                    end
+                    out.upvalues[tostring(k)]=shallow
+                end
             end
         end
-        if #remotes > 400 and #modules > 400 then break end
     end
-    table.sort(remotes,function(a,b) return a.path < b.path end)
-    table.sort(modules,function(a,b) return a.path < b.path end)
-    state.relevantRemotes = remotes
-    state.relevantModules = modules
+    return out
+end
+
+local MODULE_PATHS={
+    "Controllers.Game.ScrambleClientController",
+    "Controllers.Game.ScrambleClientController.PersonalDrones",
+    "Controllers.Game.ScrambleClientController.DroneVisual",
+    "Controllers.Game.ScrambleClientController.HitFeedback",
+    "Shared.Util.ScrambleRules",
+    "Shared.Util.ScrambleDroneMotion",
+    "Shared.Modules.BatController.Client",
+    "Shared.Modules.BatController.Config",
+}
+
+local function inspectModules()
+    local out={}
+    for _,path in ipairs(MODULE_PATHS) do
+        local m=findPath(path)
+        local row={path=path,found=m~=nil}
+        if m and m:IsA("ModuleScript") then
+            local ok,v=pcall(require,m)
+            row.requireOk=ok
+            row.returnType=typeof(v)
+            if ok then
+                if type(v)=="table" then
+                    row.keys={}
+                    local n=0
+                    for k,x in pairs(v) do
+                        n+=1
+                        if n>100 then break end
+                        local item={key=tostring(k),type=typeof(x)}
+                        if type(x)=="function" then item.meta=fnMeta(x)
+                        elseif typeof(x)=="Instance" then item.value=simple(x)
+                        elseif type(x)=="string" or type(x)=="number" or type(x)=="boolean" then item.value=x
+                        end
+                        row.keys[#row.keys+1]=item
+                    end
+                elseif type(v)=="function" then
+                    row.functionMeta=fnMeta(v)
+                end
+            else
+                row.error=tostring(v)
+            end
+        end
+        out[#out+1]=row
+    end
+    state.moduleInfo=out
+    return out
 end
 
 local function isBat(tool)
-    if not (tool and tool:IsA("Tool")) then return false end
-    if tool:GetAttribute("IsBat") == true then return true end
-    if lower(tool:GetAttribute("GearName")):find("bat",1,true) then return true end
-    if lower(tool.Name):find("bat",1,true) then return true end
-    return false
+    return tool and tool:IsA("Tool") and (
+        tool:GetAttribute("IsBat")==true
+        or tostring(tool:GetAttribute("GearName") or ""):lower():find("bat",1,true)
+        or tool.Name:lower():find("bat",1,true)
+    )
 end
 
-local function toolRow(tool, where)
-    local descendants = {}
-    for _,d in ipairs(tool:GetDescendants()) do
-        if d:IsA("LocalScript") or d:IsA("ModuleScript") or d:IsA("RemoteEvent")
-            or d:IsA("RemoteFunction") or d:IsA("Animation")
-            or d:IsA("Sound") or d:IsA("ValueBase") then
-            local r = {name=d.Name,class=d.ClassName,path=safeFullName(d),attrs=attrs(d)}
-            if d:IsA("ValueBase") then
-                pcall(function() r.value = serial(d.Value) end)
-            end
-            descendants[#descendants+1] = r
-        end
-    end
-    return {
-        where=where,
-        name=tool.Name,
-        attrs=attrs(tool),
-        enabled=tool.Enabled,
-        canBeDropped=tool.CanBeDropped,
-        textureId=tool.TextureId,
-        descendants=descendants,
-    }
-end
-
-local function scanBat()
-    local out = {}
+local function batInfo()
+    local out={}
     for _,pair in ipairs({
         {LP.Character,"Character"},
         {LP:FindFirstChildOfClass("Backpack"),"Backpack"}
     }) do
-        local box,where = pair[1],pair[2]
+        local box,where=pair[1],pair[2]
         if box then
-            for _,x in ipairs(box:GetChildren()) do
-                if x:IsA("Tool") and isBat(x) then
-                    out[#out+1] = toolRow(x, where)
+            for _,tool in ipairs(box:GetChildren()) do
+                if isBat(tool) then
+                    local row={
+                        where=where,name=tool.Name,attrs=attrs(tool),enabled=tool.Enabled,
+                        descendants={}
+                    }
+                    for _,d in ipairs(tool:GetDescendants()) do
+                        if d:IsA("LocalScript") or d:IsA("ModuleScript") or d:IsA("Animation")
+                            or d:IsA("RemoteEvent") or d:IsA("RemoteFunction") or d:IsA("ValueBase") then
+                            row.descendants[#row.descendants+1]={
+                                name=d.Name,class=d.ClassName,path=full(d),attrs=attrs(d)
+                            }
+                        end
+                    end
+                    out[#out+1]=row
                 end
             end
         end
     end
-    state.bat = out
-    return #out
+    return out
 end
 
-local function playerPos()
-    local c = LP.Character
-    local root = c and (c:FindFirstChild("HumanoidRootPart") or c.PrimaryPart)
-    return root and serial(root.Position) or nil
+local function watchBatActivations()
+    local function attach(box,where)
+        if not box then return end
+        local function one(tool)
+            if not isBat(tool) then return end
+            conns[#conns+1]=tool.Activated:Connect(function()
+                if state.active then
+                    push("bat_activated",{where=where,name=tool.Name,attrs=attrs(tool)})
+                end
+            end)
+        end
+        for _,x in ipairs(box:GetChildren()) do one(x) end
+        conns[#conns+1]=box.ChildAdded:Connect(one)
+    end
+    attach(LP:FindFirstChildOfClass("Backpack"),"Backpack")
+    if LP.Character then attach(LP.Character,"Character") end
+    conns[#conns+1]=LP.CharacterAdded:Connect(function(ch) attach(ch,"Character") end)
 end
 
-local function nearbyInteresting(limit)
-    limit = limit or 120
-    local out = {}
-    local c = LP.Character
-    local pr = c and (c:FindFirstChild("HumanoidRootPart") or c.PrimaryPart)
+local function interestingName(s)
+    s=tostring(s or ""):lower()
+    return s:find("drone",1,true)
+        or s:find("scramble",1,true)
+        or s:find("brock",1,true)
+        or s:find("mob",1,true)
+        or s:find("enemy",1,true)
+        or s:find("monster",1,true)
+end
+
+local function rootPart(inst)
+    if inst:IsA("BasePart") then return inst end
+    if inst:IsA("Model") then return inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart",true) end
+    return nil
+end
+
+local function nearEventObjects(radius)
+    radius=radius or 220
+    local out={}
+    local ch=LP.Character
+    local pr=ch and (ch:FindFirstChild("HumanoidRootPart") or ch.PrimaryPart)
     if not pr then return out end
 
     for _,inst in ipairs(Workspace:GetDescendants()) do
         if inst:IsA("Model") or inst:IsA("Folder") then
-            local hit = matchesTerm(inst.Name)
-            if hit or inst:IsA("Model") then
-                local r = rootOf(inst)
-                if r then
-                    local dist = (r.Position - pr.Position).Magnitude
-                    if dist <= limit then
-                        local _,h,mx = currentHealth(inst)
-                        if hit or h ~= nil then
-                            out[#out+1] = {
-                                name=inst.Name,
-                                class=inst.ClassName,
-                                path=safeFullName(inst),
-                                distance=dist,
-                                health=h,
-                                maxHealth=mx,
-                                attrs=attrs(inst),
-                                tags=modelTags(inst),
-                            }
+            local r=rootPart(inst)
+            local dist=r and (r.Position-pr.Position).Magnitude or nil
+            if (dist and dist<=radius) or interestingName(inst.Name) then
+                local row={
+                    name=inst.Name,class=inst.ClassName,path=full(inst),
+                    distance=dist,attrs=attrs(inst),tags={}
+                }
+                local ok,tags=pcall(CollectionService.GetTags,CollectionService,inst)
+                if ok then row.tags=tags end
+                row.children={}
+                local n=0
+                for _,d in ipairs(inst:GetDescendants()) do
+                    n+=1
+                    if n>100 then break end
+                    if d:IsA("ValueBase") or d:IsA("BillboardGui") or d:IsA("SurfaceGui")
+                        or d:IsA("ProximityPrompt") or d:IsA("ClickDetector") then
+                        local x={name=d.Name,class=d.ClassName,path=full(d),attrs=attrs(d)}
+                        if d:IsA("ValueBase") then pcall(function() x.value=simple(d.Value) end) end
+                        if d:IsA("BillboardGui") or d:IsA("SurfaceGui") then
+                            x.texts={}
+                            for _,g in ipairs(d:GetDescendants()) do
+                                if g:IsA("TextLabel") or g:IsA("TextButton") then
+                                    x.texts[#x.texts+1]=g.Text
+                                    if #x.texts>=20 then break end
+                                end
+                            end
                         end
+                        row.children[#row.children+1]=x
                     end
                 end
+                out[#out+1]=row
+                if #out>=350 then break end
             end
         end
-        if #out >= 250 then break end
     end
 
-    table.sort(out,function(a,b) return (a.distance or 1e9) < (b.distance or 1e9) end)
+    table.sort(out,function(a,b)
+        return (a.distance or 1e9)<(b.distance or 1e9)
+    end)
     return out
 end
 
+local function playerPos()
+    local c=LP.Character
+    local r=c and (c:FindFirstChild("HumanoidRootPart") or c.PrimaryPart)
+    return r and simple(r.Position) or nil
+end
+
 local function snapshot(label)
-    scanCandidates()
-    scanRelevantObjects()
-    scanBat()
-
-    local cand = {}
-    for _,row in pairs(state.candidates) do cand[#cand+1] = row end
-    table.sort(cand,function(a,b) return a.path < b.path end)
-
     return {
         label=label,
         unix=os.time(),
         playerPos=playerPos(),
-        bats=state.bat,
-        candidates=cand,
-        nearby=nearbyInteresting(150),
-        relevantRemotes=state.relevantRemotes,
-        relevantModules=state.relevantModules,
+        bats=batInfo(),
+        nearby=nearEventObjects(240),
+        modules=state.moduleInfo,
+        remotes=(function()
+            local out={}
+            for n,r in pairs(targetRemotes) do out[#out+1]={name=n,path=full(r),class=r.ClassName} end
+            table.sort(out,function(a,b)return a.name<b.name end)
+            return out
+        end)(),
     }
 end
 
-local root = (function()
-    local ok,h = pcall(function() return gethui and gethui() end)
+connectInbound()
+watchBatActivations()
+inspectModules()
+
+local root=(function()
+    local ok,h=pcall(function() return gethui and gethui() end)
     return (ok and h) or CoreGui
 end)()
 
-local gui = Instance.new("ScreenGui")
-gui.Name = "PsicoEventMobScannerV1"
-gui.ResetOnSpawn = false
-gui.IgnoreGuiInset = true
-gui.Parent = root
+local gui=Instance.new("ScreenGui")
+gui.Name="PsicoEventMobScannerV2"
+gui.ResetOnSpawn=false
+gui.IgnoreGuiInset=true
+gui.Parent=root
 
-local viewport = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize or Vector2.new(1280,720)
-local w = math.clamp(math.floor(viewport.X * .62), 560, 820)
-local h = math.clamp(math.floor(viewport.Y * .58), 330, 470)
+local vp=Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize or Vector2.new(1280,720)
+local w=math.clamp(math.floor(vp.X*.64),560,850)
+local h=math.clamp(math.floor(vp.Y*.58),330,470)
 
-local main = Instance.new("Frame")
-main.Size = UDim2.fromOffset(w,h)
-main.Position = UDim2.new(.5,-w/2,.5,-h/2)
-main.BackgroundColor3 = Color3.fromRGB(10,20,38)
-main.BorderSizePixel = 0
-main.Parent = gui
-Instance.new("UICorner",main).CornerRadius = UDim.new(0,18)
+local main=Instance.new("Frame")
+main.Size=UDim2.fromOffset(w,h)
+main.Position=UDim2.new(.5,-w/2,.5,-h/2)
+main.BackgroundColor3=Color3.fromRGB(10,20,38)
+main.BorderSizePixel=0
+main.Parent=gui
+Instance.new("UICorner",main).CornerRadius=UDim.new(0,18)
 
-local header = Instance.new("Frame")
-header.Size = UDim2.new(1,0,0,54)
-header.BackgroundTransparency = 1
-header.Active = true
-header.Parent = main
+local header=Instance.new("Frame")
+header.Size=UDim2.new(1,0,0,54)
+header.BackgroundTransparency=1
+header.Active=true
+header.Parent=main
 
-local title = Instance.new("TextLabel")
-title.BackgroundTransparency = 1
-title.Position = UDim2.fromOffset(18,8)
-title.Size = UDim2.new(1,-90,0,38)
-title.Font = Enum.Font.GothamBold
-title.Text = "EVENT MOB FARM SCANNER • V1"
-title.TextSize = 22
-title.TextColor3 = Color3.fromRGB(245,248,255)
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = header
+local title=Instance.new("TextLabel")
+title.BackgroundTransparency=1
+title.Position=UDim2.fromOffset(18,8)
+title.Size=UDim2.new(1,-90,0,38)
+title.Font=Enum.Font.GothamBold
+title.Text="EVENT MOB FARM SCANNER • V2"
+title.TextSize=21
+title.TextColor3=Color3.fromRGB(245,248,255)
+title.TextXAlignment=Enum.TextXAlignment.Left
+title.Parent=header
 
-local close = Instance.new("TextButton")
-close.Size = UDim2.fromOffset(48,38)
-close.Position = UDim2.new(1,-60,0,8)
-close.BackgroundColor3 = Color3.fromRGB(35,44,61)
-close.Text = "×"
-close.TextSize = 22
-close.TextColor3 = Color3.new(1,1,1)
-close.Font = Enum.Font.GothamBold
-close.Parent = header
-Instance.new("UICorner",close).CornerRadius = UDim.new(0,10)
+local close=Instance.new("TextButton")
+close.Size=UDim2.fromOffset(48,38)
+close.Position=UDim2.new(1,-60,0,8)
+close.BackgroundColor3=Color3.fromRGB(35,44,61)
+close.Text="×"
+close.TextSize=22
+close.TextColor3=Color3.new(1,1,1)
+close.Font=Enum.Font.GothamBold
+close.Parent=header
+Instance.new("UICorner",close).CornerRadius=UDim.new(0,10)
 
-local status = Instance.new("TextLabel")
-status.BackgroundColor3 = Color3.fromRGB(16,34,58)
-status.BorderSizePixel = 0
-status.Position = UDim2.fromOffset(18,64)
-status.Size = UDim2.new(1,-36,0,112)
-status.Font = Enum.Font.Code
-status.TextSize = 15
-status.TextColor3 = Color3.fromRGB(220,230,245)
-status.TextWrapped = true
-status.TextXAlignment = Enum.TextXAlignment.Left
-status.TextYAlignment = Enum.TextYAlignment.Top
-status.Text = "1) Vá até a área do evento\n2) INICIAR CAPTURA\n3) Mate manualmente 1–3 mobs usando o bastão\n4) FINALIZAR e EXPORTAR JSON"
-status.Parent = main
-Instance.new("UICorner",status).CornerRadius = UDim.new(0,12)
+local status=Instance.new("TextLabel")
+status.BackgroundColor3=Color3.fromRGB(16,34,58)
+status.BorderSizePixel=0
+status.Position=UDim2.fromOffset(18,64)
+status.Size=UDim2.new(1,-36,0,118)
+status.Font=Enum.Font.Code
+status.TextSize=14
+status.TextColor3=Color3.fromRGB(220,230,245)
+status.TextWrapped=true
+status.TextXAlignment=Enum.TextXAlignment.Left
+status.TextYAlignment=Enum.TextYAlignment.Top
+status.Text="V2 pronto. Vá até os mobs do evento.\nINICIAR → bata manualmente em 2–3 mobs → FINALIZAR → EXPORTAR."
+status.Parent=main
+Instance.new("UICorner",status).CornerRadius=UDim.new(0,12)
 
-local function btn(txt,x,y,ww,cb)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(ww,-8,0,48)
-    b.Position = UDim2.new(x,18,y,0)
-    b.BackgroundColor3 = Color3.fromRGB(42,91,151)
-    b.TextColor3 = Color3.new(1,1,1)
-    b.Text = txt
-    b.TextSize = 16
-    b.Font = Enum.Font.GothamBold
-    b.Parent = main
-    Instance.new("UICorner",b).CornerRadius = UDim.new(0,10)
+local function button(text,x,y,wid,cb)
+    local b=Instance.new("TextButton")
+    b.Size=UDim2.new(wid,-8,0,48)
+    b.Position=UDim2.new(x,18,y,0)
+    b.BackgroundColor3=Color3.fromRGB(42,91,151)
+    b.TextColor3=Color3.new(1,1,1)
+    b.Text=text
+    b.TextSize=16
+    b.Font=Enum.Font.GothamBold
+    b.Parent=main
+    Instance.new("UICorner",b).CornerRadius=UDim.new(0,10)
     b.Activated:Connect(cb)
     return b
 end
 
-local startBtn, stopBtn, exportBtn, rescanBtn
-
-startBtn = btn("INICIAR CAPTURA",0,0.55,.5,function()
-    state.events = {}
-    state.candidates = {}
-    state.startSnapshot = snapshot("before")
-    state.active = true
-    local c = #state.startSnapshot.candidates
-    local b = #state.startSnapshot.bats
-    status.Text = ("CAPTURA ATIVA\nCandidatos encontrados: %d | Bastões: %d\nAgora mate manualmente 1–3 mobs do evento e depois toque FINALIZAR."):format(c,b)
+button("INICIAR",0,.56,.5,function()
+    state.events={}
+    inspectModules()
+    state.before=snapshot("before")
+    local hooked=installOutgoingHook()
+    state.active=true
+    status.Text=("CAPTURA ATIVA\nHook de saída: %s | Scramble remotes: %d\nAgora bata manualmente em 2–3 mobs e depois FINALIZAR."):format(
+        hooked and "SIM" or "NÃO",
+        (function() local n=0 for k in pairs(targetRemotes) do if k:find("Scramble",1,true) then n+=1 end end return n end)()
+    )
 end)
 
-stopBtn = btn("FINALIZAR",.5,0.55,.5,function()
-    state.active = false
-    state.endSnapshot = snapshot("after")
-    local healthEvents, deaths = 0,0
+button("FINALIZAR",.5,.56,.5,function()
+    state.active=false
+    state.after=snapshot("after")
+    uninstallOutgoingHook()
+    local rin,rout,bat=0,0,0
     for _,e in ipairs(state.events) do
-        if e.kind:find("health",1,true) then healthEvents += 1 end
-        if e.kind == "mob_died" or e.kind == "candidate_removed" then deaths += 1 end
+        if e.kind=="remote_in" then rin+=1 end
+        if e.kind=="remote_out" then rout+=1 end
+        if e.kind=="bat_activated" then bat+=1 end
     end
-    status.Text = ("CAPTURA FINALIZADA\nEventos: %d | Mudanças de vida: %d | mortes/remoções: %d\nAgora EXPORTAR JSON."):format(#state.events,healthEvents,deaths)
+    status.Text=("FINALIZADO\nRemote IN:%d | Remote OUT:%d | Bat Activated:%d | Eventos:%d\nAgora EXPORTAR JSON."):format(rin,rout,bat,#state.events)
 end)
 
-exportBtn = btn("EXPORTAR JSON",0,0.73,.62,function()
-    if not state.startSnapshot then
-        status.Text = "Faça INICIAR CAPTURA antes de exportar."
-        return
-    end
-    if not state.endSnapshot then
-        state.active = false
-        state.endSnapshot = snapshot("after_auto")
-    end
+button("EXPORTAR JSON",0,.74,.62,function()
+    if not state.before then status.Text="Use INICIAR primeiro." return end
+    if state.active then state.active=false uninstallOutgoingHook() end
+    if not state.after then state.after=snapshot("after_auto") end
 
-    local payload = {
-        scanner="Psico Event Mob Farm Scanner V1",
-        placeId=game.PlaceId,
-        gameId=game.GameId,
+    local payload={
+        scanner="Psico Event Mob Farm Scanner V2",
+        placeId=game.PlaceId,gameId=game.GameId,
         startedUnix=state.startedUnix,
-        startSnapshot=state.startSnapshot,
-        endSnapshot=state.endSnapshot,
+        hookSupported=state.hookSupported,
+        before=state.before,after=state.after,
+        moduleInfo=state.moduleInfo,
         events=state.events,
     }
 
-    local ok,json = pcall(HttpService.JSONEncode,HttpService,payload)
-    if not ok then
-        status.Text = "Erro JSON: "..tostring(json)
-        return
-    end
-
-    local name = "Psico_EventMobFarm_"..os.time()..".json"
+    local ok,json=pcall(HttpService.JSONEncode,HttpService,payload)
+    if not ok then status.Text="Erro JSON: "..tostring(json) return end
+    local name="Psico_EventMobFarm_V2_"..os.time()..".json"
     if writefile then
-        local ok2,err = pcall(writefile,name,json)
-        status.Text = ok2 and ("Exportado: "..name) or ("writefile falhou: "..tostring(err))
+        local ok2,err=pcall(writefile,name,json)
+        status.Text=ok2 and ("Exportado: "..name) or ("writefile falhou: "..tostring(err))
     elseif setclipboard then
         pcall(setclipboard,json)
-        status.Text = "JSON copiado para o clipboard."
+        status.Text="JSON copiado."
     else
-        status.Text = "Executor sem writefile/setclipboard."
+        status.Text="Sem writefile/setclipboard."
     end
 end)
 
-rescanBtn = btn("REFAZER LEITURA",.62,0.73,.38,function()
-    local c = scanCandidates()
-    local b = scanBat()
-    scanRelevantObjects()
-    status.Text = ("Leitura refeita\nCandidatos: %d | Bastões: %d | Remotes relevantes: %d | Modules relevantes: %d"):format(c,b,#state.relevantRemotes,#state.relevantModules)
+button("SNAPSHOT",.62,.74,.38,function()
+    local s=snapshot("manual")
+    push("manual_snapshot",s)
+    status.Text=("Snapshot: %d objetos próximos | %d módulos inspecionados"):format(#s.nearby,#state.moduleInfo)
 end)
 
--- Workspace additions are cheap to observe and help identify event-spawned mobs.
-conns[#conns+1] = Workspace.DescendantAdded:Connect(function(inst)
-    if inst:IsA("Model") then
-        task.defer(function()
-            if inst.Parent and isCandidateModel(inst) then
-                watchCandidate(inst)
-                if state.active then
-                    pushEvent("candidate_spawned", candidateRow(inst))
-                end
-            end
-        end)
-    end
-end)
-
--- Bat movement between Backpack/Character is useful for reconstructing equip/attack flow.
-local function watchToolContainer(container,where)
-    if not container then return end
-    conns[#conns+1] = container.ChildAdded:Connect(function(x)
-        if x:IsA("Tool") and isBat(x) and state.active then
-            pushEvent("bat_added", toolRow(x,where))
-        end
-    end)
-    conns[#conns+1] = container.ChildRemoved:Connect(function(x)
-        if x:IsA("Tool") and isBat(x) and state.active then
-            pushEvent("bat_removed", {name=x.Name,from=where,attrs=attrs(x)})
-        end
-    end)
-end
-watchToolContainer(LP:FindFirstChildOfClass("Backpack"),"Backpack")
-if LP.Character then watchToolContainer(LP.Character,"Character") end
-conns[#conns+1] = LP.CharacterAdded:Connect(function(ch)
-    watchToolContainer(ch,"Character")
-end)
-
--- Mobile-friendly drag by header.
+-- Mobile-friendly drag.
 do
     local dragging=false
     local dragStart,startPos
     header.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
-            dragging=true
-            dragStart=input.Position
-            startPos=main.Position
+        if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+            dragging=true dragStart=input.Position startPos=main.Position
         end
     end)
     header.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
+        if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
             dragging=false
         end
     end)
-    conns[#conns+1] = UserInputService.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
-            or input.UserInputType == Enum.UserInputType.Touch) then
-            local delta=input.Position-dragStart
-            main.Position=UDim2.new(
-                startPos.X.Scale,startPos.X.Offset+delta.X,
-                startPos.Y.Scale,startPos.Y.Offset+delta.Y
-            )
+    conns[#conns+1]=UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch) then
+            local d=input.Position-dragStart
+            main.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y)
         end
     end)
 end
 
 local function cleanup()
     state.active=false
+    uninstallOutgoingHook()
     for _,c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     table.clear(conns)
     pcall(function() gui:Destroy() end)
-    if _G.PSICO_EVENT_MOB_SCANNER_CLEANUP == cleanup then
-        _G.PSICO_EVENT_MOB_SCANNER_CLEANUP = nil
+    if _G.PSICO_EVENT_MOB_SCANNER_CLEANUP==cleanup then
+        _G.PSICO_EVENT_MOB_SCANNER_CLEANUP=nil
     end
 end
 
 close.Activated:Connect(cleanup)
-_G.PSICO_EVENT_MOB_SCANNER_CLEANUP = cleanup
-
--- Initial passive reading only.
-task.defer(function()
-    local c=scanCandidates()
-    local b=scanBat()
-    scanRelevantObjects()
-    status.Text = ("Pronto para capturar.\nCandidatos atuais: %d | Bastões: %d | Remotes: %d\nVá até o evento e toque INICIAR CAPTURA."):format(c,b,#state.relevantRemotes)
-end)
+_G.PSICO_EVENT_MOB_SCANNER_CLEANUP=cleanup

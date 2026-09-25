@@ -654,11 +654,18 @@ end
 local function destroyBaseEsp(uid)
     local e = baseEsp[uid]
     if not e then return end
-    for _, obj in pairs(e) do
-        if typeof(obj) == 'Instance' then
-            pcall(function() obj:Destroy() end)
-        end
+
+    -- CRITICAL: e.Model is the REAL placed egg from Workspace.PlacedEggRenders.
+    -- Never destroy it. Filters must remove ONLY our visual overlay.
+    if e.Highlight and typeof(e.Highlight) == 'Instance' then
+        pcall(function() e.Highlight:Destroy() end)
     end
+    if e.Billboard and typeof(e.Billboard) == 'Instance' then
+        pcall(function() e.Billboard:Destroy() end)
+    end
+
+    -- Text labels are children of Billboard and are destroyed with it.
+    -- Keep the world model completely untouched.
     baseEsp[uid] = nil
 end
 

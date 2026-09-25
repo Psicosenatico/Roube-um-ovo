@@ -1,4 +1,4 @@
--- PSICOSENATICO | Egg Equip Scanner V1.3
+-- PSICOSENATICO | Egg Equip Scanner V1.4
 -- Scanner leve para comparar ANTES/DEPOIS ao equipar manualmente UM ovo.
 -- Sem __namecall, hookfunction, getgc ou decompile.
 
@@ -139,8 +139,30 @@ local function eggInventory()
  end
  return out
 end
+local function nativeEggCounter()
+ local pg=LP:FindFirstChildOfClass('PlayerGui')
+ if not pg then return {found=false} end
+ for _,d in ipairs(pg:GetDescendants()) do
+  if d:IsA('TextLabel') or d:IsA('TextButton') or d:IsA('TextBox') then
+   local txt=tostring(d.Text or '')
+   local used,cap=txt:match('Eggs:%s*(%d+)%s*/%s*(%d+)')
+   if used and cap then
+    return {found=true,text=txt,used=tonumber(used),capacity=tonumber(cap),path=d:GetFullName()}
+   end
+  end
+ end
+ return {found=false}
+end
+
 local function snap(label)
- return {label=label,unix=os.time(),tools=tools(),eggInventory=eggInventory(),relevantRemotes=remotes()}
+ return {
+  label=label,
+  unix=os.time(),
+  tools=tools(),
+  eggInventory=eggInventory(),
+  nativeEggCounter=nativeEggCounter(),
+  relevantRemotes=remotes()
+ }
 end
 local function event(kind,x)
  S.events[#S.events+1]={t=os.clock(),unix=os.time(),kind=kind,item=x and toolRow(x,x.Parent==LP.Character and 'Character' or 'Backpack') or nil}
@@ -162,7 +184,7 @@ local H=math.floor(math.clamp(vp.Y*0.62,320,470))
 local main=Instance.new('Frame');main.Name='Main';main.AnchorPoint=Vector2.new(.5,.5);main.Position=UDim2.fromScale(.5,.5);main.Size=UDim2.fromOffset(W,H);main.BackgroundColor3=Color3.fromRGB(9,19,36);main.BorderSizePixel=0;main.Parent=gui;corner(main,18)
 
 local header=Instance.new('Frame');header.Name='Header';header.BackgroundTransparency=1;header.Position=UDim2.fromOffset(16,8);header.Size=UDim2.new(1,-32,0,42);header.Active=true;header.Parent=main
-local title=Instance.new('TextLabel');title.BackgroundTransparency=1;title.Size=UDim2.new(1,-56,1,0);title.Font=Enum.Font.GothamBold;title.Text='EGG EQUIP SCANNER • V1.3';title.TextSize=22;title.TextColor3=Color3.new(1,1,1);title.TextXAlignment=Enum.TextXAlignment.Left;title.Parent=header
+local title=Instance.new('TextLabel');title.BackgroundTransparency=1;title.Size=UDim2.new(1,-56,1,0);title.Font=Enum.Font.GothamBold;title.Text='EGG EQUIP SCANNER • V1.4';title.TextSize=22;title.TextColor3=Color3.new(1,1,1);title.TextXAlignment=Enum.TextXAlignment.Left;title.Parent=header
 local close=Instance.new('TextButton');close.AnchorPoint=Vector2.new(1,0);close.Position=UDim2.new(1,0,0,0);close.Size=UDim2.fromOffset(42,38);close.BackgroundColor3=Color3.fromRGB(31,43,62);close.BorderSizePixel=0;close.Text='×';close.TextSize=24;close.Font=Enum.Font.GothamBold;close.TextColor3=Color3.new(1,1,1);close.Parent=header;corner(close,11)
 
 local status=Instance.new('TextLabel');status.Position=UDim2.fromOffset(18,58);status.Size=UDim2.new(1,-36,0,96);status.BackgroundColor3=Color3.fromRGB(16,34,58);status.BorderSizePixel=0;status.TextColor3=Color3.fromRGB(220,230,245);status.Font=Enum.Font.Code;status.TextSize=15;status.TextWrapped=true;status.TextXAlignment=Enum.TextXAlignment.Left;status.TextYAlignment=Enum.TextYAlignment.Top;status.Text='1) CAPTURAR ANTES\n2) Equipe manualmente UM ovo\n3) CAPTURAR DEPOIS → EXPORTAR JSON';status.Parent=main;corner(status,12)
@@ -175,15 +197,19 @@ end
 mkButton('CAPTURAR ANTES',0,0,.5,.5,function()
  S.before=snap('before');S.events={}
  local x=S.before.eggInventory
- status.Text=('ANTES: %d total • %d livres • %d colocados • %s\nAgora equipe/coloque UM ovo e toque CAPTURAR DEPOIS.'):format(x.count or 0,x.unplaced or 0,x.placed or 0,x.source or '?')
+ local n=S.before.nativeEggCounter or {}
+ local native=n.found and (tostring(n.used)..'/'..tostring(n.capacity)) or '?'
+ status.Text=('ANTES: EggState %d total • %d livres • %d colocados • UI %s • %s\nAgora coloque UM ovo na base e toque CAPTURAR DEPOIS.'):format(x.count or 0,x.unplaced or 0,x.placed or 0,native,x.source or '?')
 end)
 mkButton('CAPTURAR DEPOIS',.5,0,.5,.5,function()
  S.after=snap('after')
  local x=S.after.eggInventory
- status.Text=('DEPOIS: %d total • %d livres • %d colocados • %s\nEventos Tool: %d • Agora EXPORTAR JSON.'):format(x.count or 0,x.unplaced or 0,x.placed or 0,x.source or '?',#S.events)
+ local n=S.after.nativeEggCounter or {}
+ local native=n.found and (tostring(n.used)..'/'..tostring(n.capacity)) or '?'
+ status.Text=('DEPOIS: EggState %d total • %d livres • %d colocados • UI %s • %s\nEventos Tool: %d • Agora EXPORTAR JSON.'):format(x.count or 0,x.unplaced or 0,x.placed or 0,native,x.source or '?',#S.events)
 end)
 mkButton('EXPORTAR JSON',0,.5,.72,.5,function()
- local payload={scanner='Psico Egg Equip Scanner V1.3',placeId=game.PlaceId,gameId=game.GameId,started=S.started,before=S.before,after=S.after,events=S.events}
+ local payload={scanner='Psico Egg Equip Scanner V1.4',placeId=game.PlaceId,gameId=game.GameId,started=S.started,before=S.before,after=S.after,events=S.events}
  local ok,json=pcall(function() return Http:JSONEncode(payload) end)
  if not ok then status.Text='Erro JSON: '..tostring(json);return end
  local name='Psico_EggEquip_'..os.time()..'.json'

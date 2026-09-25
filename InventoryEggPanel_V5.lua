@@ -422,6 +422,25 @@ local function equipRecord(key, rec)
 end
 
 local rows = {}
+local inventoryTotal = 0
+local cachedCapacity = nil
+
+local function nativeCapacity()
+    local pg = LP:FindFirstChildOfClass('PlayerGui')
+    if not pg then return cachedCapacity end
+
+    for _, d in ipairs(pg:GetDescendants()) do
+        if d:IsA('TextLabel') or d:IsA('TextButton') or d:IsA('TextBox') then
+            local txt = tostring(d.Text or '')
+            local used, cap = txt:match('Eggs:%s*(%d+)%s*/%s*(%d+)')
+            if used and cap then
+                cachedCapacity = tonumber(cap) or cachedCapacity
+                return cachedCapacity
+            end
+        end
+    end
+    return cachedCapacity
+end
 
 local function clear()
     for _, x in ipairs(list:GetChildren()) do
@@ -431,10 +450,14 @@ end
 
 local function read()
     rows = {}
+    inventoryTotal = 0
     local inv = readOwnedEggs()
     if type(inv) ~= 'table' then return end
 
     for key, r in pairs(inv) do
+        if type(r) == 'table' then
+            inventoryTotal = inventoryTotal + 1
+        end
         if type(r) == 'table' and not isPlaced(r) then
             local c = tostring(cat(r) or '?')
             local cfg = catalog(c)
@@ -475,7 +498,12 @@ local function render()
         end
     end)
 
-    status.Text = ('Ovos:%d • %s'):format(#rows, modes[mode])
+    local cap = nativeCapacity()
+    if cap then
+        status.Text = ('Inventário:%d/%d • Disponíveis:%d • %s'):format(inventoryTotal, cap, #rows, modes[mode])
+    else
+        status.Text = ('Inventário:%d • Disponíveis:%d • %s'):format(inventoryTotal, #rows, modes[mode])
+    end
 
     for i, e in ipairs(rows) do
         local card = Instance.new('TextButton')

@@ -502,7 +502,8 @@ local y=0
 local enable=button(page,"AUTO FARM: OFF",UDim2.fromOffset(0,y),UDim2.new(1,-4,0,32)); y+=38
 local status=label(page,"Aguardando...",UDim2.fromOffset(4,y),UDim2.new(1,-8,0,52),8); status.TextWrapped=true; status.TextYAlignment=Enum.TextYAlignment.Top; y+=56
 local priority=button(page,"Prioridade: Raros primeiro",UDim2.fromOffset(0,y),UDim2.new(1,-4,0,28)); y+=34
-local only=button(page,"Somente durante evento: ON",UDim2.fromOffset(0,y),UDim2.new(1,-4,0,28)); y+=38
+local only=button(page,"Somente durante evento: ON",UDim2.fromOffset(0,y),UDim2.new(1,-4,0,28)); y+=34
+local safety=button(page,"Proteção de dano: ON",UDim2.fromOffset(0,y),UDim2.new(1,-4,0,28)); y+=38
 label(page,"Tipos de drone",UDim2.fromOffset(2,y),UDim2.new(1,-4,0,18),8); y+=22
 local aug=button(page,"Augmented: ON",UDim2.fromOffset(0,y),UDim2.new(1/3,-4,0,28))
 local rea=button(page,"Reactor: ON",UDim2.new(1/3,2,0,y),UDim2.new(1/3,-4,0,28))
@@ -518,6 +519,7 @@ local function refresh()
     bs(enable,CFG.Enabled,"AUTO FARM: ")
     priority.Text=CFG.Priority=="Rarest" and "Prioridade: Raros primeiro" or "Prioridade: Mais próximo"
     bs(only,CFG.OnlyDuringEvent,"Somente durante evento: ")
+    bs(safety,CFG.SafetyEnabled,"Proteção de dano: ")
     bs(aug,CFG.Augmented,"Augmented: "); bs(rea,CFG.Reactor,"Reactor: "); bs(scr,CFG.Scrap,"Scrap: ")
 end
 
@@ -531,11 +533,17 @@ end
 conns[#conns+1]=enable.Activated:Connect(function() if CFG.Enabled then stop() else start() end refresh() end)
 conns[#conns+1]=priority.Activated:Connect(function() CFG.Priority=CFG.Priority=="Rarest" and "Closest" or "Rarest"; refresh() end)
 conns[#conns+1]=only.Activated:Connect(function() CFG.OnlyDuringEvent=not CFG.OnlyDuringEvent; refresh() end)
+conns[#conns+1]=safety.Activated:Connect(function()
+    CFG.SafetyEnabled=not CFG.SafetyEnabled
+    state.damageTaken=false
+    refresh()
+end)
 conns[#conns+1]=aug.Activated:Connect(function() CFG.Augmented=not CFG.Augmented; refresh() end)
 conns[#conns+1]=rea.Activated:Connect(function() CFG.Reactor=not CFG.Reactor; refresh() end)
 conns[#conns+1]=scr.Activated:Connect(function() CFG.Scrap=not CFG.Scrap; refresh() end)
 conns[#conns+1]=reset.Activated:Connect(function() stop(); state.kills=0; state.attacks=0; state.lastError=nil; refresh() end)
 conns[#conns+1]=LP.CharacterAdded:Connect(function()
+    task.delay(.5,bindDamageWatch)
     if CFG.Enabled then
         state.token+=1; cleanupMove()
         local t=state.token
@@ -546,13 +554,14 @@ end)
 task.spawn(function()
     while page.Parent do
         task.wait(.25)
-        local active,txt=eventInfo()
+        local active,_,txt=eventInfo()
         local list=drones()
         local tier=state.target and state.target:GetAttribute("ScrambleTier")
         local target=state.target and ((tier or "?").." • "..state.target.Name) or "nenhum"
-        status.Text=state.lastError and ("ERRO: "..state.lastError) or string.format(
-            "Evento: %s\nDrones visíveis: %d • Alvo: %s\nAtaques: %d • Eliminados: %d",
-            txt~="" and txt or (active and "ativo" or "não detectado"),#list,target,state.attacks,state.kills
+        local hp=math.floor(healthRatio()*100+.5)
+        status.Text=state.lastError and (state.lastError.." • HP:"..hp.."%") or string.format(
+            "Evento: %s • HP:%d%%\nDrones visíveis: %d • Alvo: %s\nAtaques:%d • Eliminados:%d • Recuos:%d",
+            txt~="" and txt or (active and "ativo" or "não detectado"),hp,#list,target,state.attacks,state.kills,state.retreats
         )
         refresh()
     end
@@ -560,6 +569,7 @@ end)
 
 local function cleanup()
     stop()
+    if state.healthConn then pcall(function() state.healthConn:Disconnect() end) state.healthConn=nil end
     for _,c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     pcall(function() page:Destroy() end); pcall(function() tab:Destroy() end)
     if _G.PSICO_EVENT_AUTOFARM_CLEANUP==cleanup then _G.PSICO_EVENT_AUTOFARM_CLEANUP=nil end

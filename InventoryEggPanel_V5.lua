@@ -200,6 +200,13 @@ local function rv(r, k)
     return i and i[k]
 end
 
+-- Placement belongs to the saved EggInventory record itself.
+-- Do NOT use rv() here: rv() intentionally falls back to ItemData and can
+-- therefore read unrelated nested metadata as if the egg were placed.
+local function isPlaced(rec)
+    return type(rec) == 'table' and rawget(rec, 'Placement') ~= nil
+end
+
 local function cat(r)
     return rv(r, 'AssetCategory') or rv(r, 'Category') or rv(r, 'Name')
 end
@@ -301,6 +308,14 @@ local function inCharacterUID(uid)
 end
 
 local function equipRecord(key, rec)
+    local liveData = Save and call(Save, 'Get')
+    local liveInv = type(liveData) == 'table' and liveData.EggInventory
+    local liveRec = type(liveInv) == 'table' and (liveInv[key] or liveInv[tostring(key)]) or rec
+    if isPlaced(liveRec) then
+        return false, 'Este ovo já está colocado na base'
+    end
+    rec = liveRec or rec
+
     local uid = tostring(key or rv(rec, 'UID') or '')
     if uid == '' then
         return false, 'UID do ovo não encontrado'
@@ -375,7 +390,7 @@ local function read()
     if type(inv) ~= 'table' then return end
 
     for key, r in pairs(inv) do
-        if type(r) == 'table' then
+        if type(r) == 'table' and not isPlaced(r) then
             local c = tostring(cat(r) or '?')
             local cfg = catalog(c)
             local rar = cfg and (cfg.Rarity.DisplayName or cfg.Rarity._id) or tostring(r.Rarity or '?')
@@ -470,6 +485,35 @@ end
 
 conn(tab.Activated, show)
 conn(refresh.Activated, render)
+
+local placementSignature = ''
+local function inventorySignature()
+    local sd = Save and call(Save, 'Get')
+    local inv = type(sd) == 'table' and sd.EggInventory
+    if type(inv) ~= 'table' then return '' end
+    local keys = {}
+    for key, rec in pairs(inv) do
+        if type(rec) == 'table' and not isPlaced(rec) then
+            keys[#keys + 1] = tostring(key)
+        end
+    end
+    table.sort(keys)
+    return table.concat(keys, '|')
+end
+
+task.spawn(function()
+    while page.Parent do
+        task.wait(.75)
+        if page.Visible then
+            local sig = inventorySignature()
+            if placementSignature ~= '' and sig ~= placementSignature then
+                render()
+            end
+            placementSignature = sig
+        end
+    end
+end)
+
 conn(sort.Activated, function()
     mode = mode % 3 + 1
     sort.Text = 'Ordenar: ' .. modes[mode]

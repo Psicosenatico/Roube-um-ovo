@@ -77,7 +77,17 @@ local function eventInfo()
         return LP.PlayerGui.HUD.GameHUD.BottomRight.ExperimentTimer.Value.Text
     end)
     t=ok and tostring(t or "") or ""
-    return t:find("Event ends",1,true)~=nil,t
+    local active=t:find("Event ends",1,true)~=nil
+    local m=tonumber(t:match("(%d+)m")) or 0
+    local sec=tonumber(t:match("(%d+)s")) or 0
+    return active,(m*60+sec),t
+end
+
+local function eventShouldFarm()
+    if not CFG.OnlyDuringEvent then return true end
+    local active,sec=eventInfo()
+    -- Same cutoff used by the published ManagerDrone.
+    return active and sec>10
 end
 
 local function isDrone(x)
@@ -291,25 +301,37 @@ end
 local function loop(token)
     state.lastError=nil
     state.spawnIndex=1
-
-    -- Published InitialFlyAndStartLoop: starting from the plot/safe side
-    -- first goes through SAFE_ZONE before crossing toward event Spawn 1.
-    local _,initialRoot=humRoot()
-    if initialRoot and math.floor(initialRoot.Position.X-POINT_1.X)<=0 then
-        state.lastError="Rota segura inicial..."
-        fly(SAFE_ZONE,token,2,ARRIVE_TIMEOUT)
-        if not CFG.Enabled or state.token~=token then cleanupMove() return end
-        task.wait(SAFE_WAIT_TIME)
-        state.lastError=nil
-    end
+    local routeReady=false
 
     while CFG.Enabled and state.token==token do
         local h=select(1,humRoot())
-        if not h or h.Health<=0 then task.wait(.5) continue end
+        if not h or h.Health<=0 then
+            cleanupMove()
+            routeReady=false
+            task.wait(.5)
+            continue
+        end
 
-        if CFG.OnlyDuringEvent then
-            local active=eventInfo()
-            if not active then cleanupMove() task.wait(.6) continue end
+        -- Published ManagerDrone does not start AttackDrone at all until
+        -- the event is active and has more than 10 seconds remaining.
+        if not eventShouldFarm() then
+            cleanupMove()
+            routeReady=false
+            task.wait(.6)
+            continue
+        end
+
+        if not routeReady then
+            local _,initialRoot=humRoot()
+            if initialRoot and math.floor(initialRoot.Position.X-POINT_1.X)<=0 then
+                state.lastError="Rota segura inicial..."
+                fly(SAFE_ZONE,token,2,ARRIVE_TIMEOUT)
+                if not CFG.Enabled or state.token~=token then cleanupMove() return end
+                task.wait(SAFE_WAIT_TIME)
+                state.lastError=nil
+            end
+            state.spawnIndex=1
+            routeReady=true
         end
 
         local list=drones()
@@ -319,6 +341,12 @@ local function loop(token)
         else
             fly(SPAWNS[state.spawnIndex],token,2,ARRIVE_TIMEOUT)
             if not CFG.Enabled or state.token~=token then break end
+            if not eventShouldFarm() then
+                routeReady=false
+                cleanupMove()
+                continue
+            end
+
             task.wait(SPAWN_WAIT_TIME)
             local after=drones()
             if after[1] then

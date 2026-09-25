@@ -9,6 +9,7 @@ end
 local Players = game:GetService('Players')
 local RS = game:GetService('ReplicatedStorage')
 local CoreGui = game:GetService('CoreGui')
+local Workspace = game:GetService('Workspace')
 local LP = Players.LocalPlayer
 
 local conns = {}
@@ -40,6 +41,7 @@ end
 local Save = req('Shared.Save') or req('Data.Save')
 local EggState = req('Client.EggState')
 local ER = req('Shared.Util.EggRecords')
+local AssetEarnings = req('Shared.Util.AssetEarnings')
 local Assets = req('Data.Assets')
 local Networking = RS:FindFirstChild('Packages') and RS.Packages:FindFirstChild('Networking')
 local AskWearTool = Networking and Networking:FindFirstChild('RF/EggWorld/AskWearTool')
@@ -145,8 +147,9 @@ page.Visible = false
 page.Parent = host
 
 -- Keep the compact layout that is already working.
-local refresh = button(page, 'Atualizar', UDim2.new(0, 10, 0, 8), UDim2.new(.5, -13, 0, 30))
-local sort = button(page, 'Ordenar: $/s', UDim2.new(.5, 3, 0, 8), UDim2.new(.5, -13, 0, 30))
+local refresh = button(page, 'Atualizar', UDim2.new(0, 10, 0, 8), UDim2.new(1/3, -8, 0, 30))
+local sort = button(page, 'Ordenar: $/s', UDim2.new(1/3, 4, 0, 8), UDim2.new(1/3, -8, 0, 30))
+local baseEspButton = button(page, 'ESP Base: OFF', UDim2.new(2/3, 2, 0, 8), UDim2.new(1/3, -12, 0, 30))
 local status = label(page, '', UDim2.new(0, 10, 0, 40), UDim2.new(1, -20, 0, 14), 7)
 status.TextXAlignment = Enum.TextXAlignment.Center
 
@@ -421,6 +424,169 @@ local function equipRecord(key, rec)
     return false, 'Pedido enviado, mas a Tool AssetEgg não apareceu'
 end
 
+local function preciseEarnings(rec)
+    if type(rec) ~= 'table' then return nil end
+
+    -- Best path: the game itself converts SavedEgg -> AssetItemData using
+    -- the same category, scale, mutations, personality and other fields
+    -- that will exist on the pet after hatching.
+    local item = call(ER, 'ToAssetItemData', rec)
+    if type(item) == 'table' and type(AssetEarnings) == 'table' then
+        local v = call(AssetEarnings, 'MutationOnlyRatePerSecond', item)
+        v = tonumber(v)
+        if v and v >= 0 then return v end
+    end
+
+    -- Compatibility fallback: same shape used by the normal field-egg ESP.
+    if type(AssetEarnings) == 'table' then
+        local probe = {
+            Category = rec.AssetCategory or rec.Category,
+            Scale = rec.AssetScale or rec.Scale,
+            Mutations = rec.Mutations or {},
+            BaseMutation = rec.BaseMutation,
+            Personality = rec.AssetPersonality or rec.Personality,
+            CreatorTemporary = rec.CreatorTemporary,
+        }
+        local v = call(AssetEarnings, 'MutationOnlyRatePerSecond', probe)
+        v = tonumber(v)
+        if v and v >= 0 then return v end
+    end
+    return nil
+end
+
+local function visualForPlacedUid(uid)
+    local folder = Workspace:FindFirstChild('ClientRenderedAssets')
+    if not folder then return nil end
+    uid = tostring(uid or '')
+    for _, m in ipairs(folder:GetChildren()) do
+        if m:IsA('Model') then
+            local muid = tostring(m:GetAttribute('UID') or '')
+            local owner = tonumber(m:GetAttribute('OwnerUserId'))
+            if muid == uid and owner == LP.UserId then
+                return m
+            end
+        end
+    end
+    return nil
+end
+
+local baseEspEnabled = false
+local baseEsp = {}
+
+local function placedAdornee(model)
+    if not model then return nil end
+    return model.PrimaryPart or model:FindFirstChildWhichIsA('BasePart', true)
+end
+
+local function destroyBaseEsp(uid)
+    local e = baseEsp[uid]
+    if not e then return end
+    for _, obj in pairs(e) do
+        if typeof(obj) == 'Instance' then
+            pcall(function() obj:Destroy() end)
+        end
+    end
+    baseEsp[uid] = nil
+end
+
+local function clearBaseEsp()
+    for uid in pairs(baseEsp) do destroyBaseEsp(uid) end
+end
+
+local function rarityForRecord(rec)
+    local c = tostring(cat(rec) or '?')
+    local cfg = catalog(c)
+    local rar = cfg and (cfg.Rarity.DisplayName or cfg.Rarity._id) or tostring(rec.Rarity or '?')
+    local pet = cfg and (cfg.DisplayName or c) or c
+    return rar, pet
+end
+
+local function ensureBaseEsp(uid, rec, model)
+    local adornee = placedAdornee(model)
+    if not adornee then return end
+    local e = baseEsp[uid]
+    if e and e.Model ~= model then
+        destroyBaseEsp(uid)
+        e = nil
+    end
+
+    if not e then
+        local h = Instance.new('Highlight')
+        h.Name = 'PSICO_BASE_EGG_HIGHLIGHT'
+        h.Adornee = model
+        h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        h.FillTransparency = .88
+        h.OutlineTransparency = .12
+        h.Parent = model
+
+        local bb = Instance.new('BillboardGui')
+        bb.Name = 'PSICO_BASE_EGG_BILLBOARD'
+        bb.Adornee = adornee
+        bb.AlwaysOnTop = true
+        bb.MaxDistance = 10000
+        bb.Size = UDim2.fromOffset(190, 42)
+        bb.StudsOffset = Vector3.new(0, 2.2, 0)
+        bb.Parent = gui
+
+        local a = label(bb, '', UDim2.fromOffset(0, 0), UDim2.new(1, 0, 0, 14), 10)
+        a.TextXAlignment = Enum.TextXAlignment.Center
+        a.Font = Enum.Font.GothamBold
+        a.TextStrokeTransparency = .15
+
+        local b = label(bb, '', UDim2.fromOffset(0, 14), UDim2.new(1, 0, 0, 14), 9)
+        b.TextXAlignment = Enum.TextXAlignment.Center
+        b.TextStrokeTransparency = .15
+
+        local c = label(bb, '', UDim2.fromOffset(0, 28), UDim2.new(1, 0, 0, 14), 8)
+        c.TextXAlignment = Enum.TextXAlignment.Center
+        c.TextStrokeTransparency = .15
+
+        e = {Highlight=h, Billboard=bb, L1=a, L2=b, L3=c, Model=model}
+        baseEsp[uid] = e
+    end
+
+    local rar, pet = rarityForRecord(rec)
+    local col = colors[rar] or Color3.fromRGB(225,232,245)
+    e.Highlight.FillColor = col
+    e.Highlight.OutlineColor = col
+    e.L1.TextColor3 = col
+    e.L1.Text = pet .. ' • ' .. rar
+
+    local eps = preciseEarnings(rec)
+    e.L2.Text = eps and ('$' .. compact(eps) .. '/s após chocar') or '$?/s após chocar'
+
+    local wl = call(ER, 'WeightLabel', rec)
+    local remain = call(ER, 'GrowthSecondsRemaining', rec)
+    remain = tonumber(remain)
+    if remain and remain >= 0 then
+        e.L3.Text = tostring(wl or '') .. (wl and ' • ' or '') .. ('%.0fs restantes'):format(remain)
+    else
+        e.L3.Text = tostring(wl or '')
+    end
+end
+
+local function refreshBaseEsp()
+    if not baseEspEnabled then
+        clearBaseEsp()
+        return
+    end
+    local inv = readOwnedEggs()
+    local keep = {}
+    for key, rec in pairs(type(inv) == 'table' and inv or {}) do
+        if type(rec) == 'table' and isPlaced(rec) then
+            local uid = tostring(key)
+            local model = visualForPlacedUid(uid)
+            if model then
+                keep[uid] = true
+                ensureBaseEsp(uid, rec, model)
+            end
+        end
+    end
+    for uid in pairs(baseEsp) do
+        if not keep[uid] then destroyBaseEsp(uid) end
+    end
+end
+
 local rows = {}
 local inventoryTotal = 0
 local cachedCapacity = nil
@@ -462,7 +628,7 @@ local function read()
             local c = tostring(cat(r) or '?')
             local cfg = catalog(c)
             local rar = cfg and (cfg.Rarity.DisplayName or cfg.Rarity._id) or tostring(r.Rarity or '?')
-            local earn = cfg and tonumber(cfg.EarningRate)
+            local earn = preciseEarnings(r)
             local sell = tonumber(call(ER, 'SellPrice', r))
             local w = tonumber(call(ER, 'WeightKg', r))
             local wl = call(ER, 'WeightLabel', r)
@@ -557,7 +723,17 @@ local function show()
 end
 
 conn(tab.Activated, show)
-conn(refresh.Activated, render)
+conn(refresh.Activated, function()
+    render()
+    refreshBaseEsp()
+end)
+
+conn(baseEspButton.Activated, function()
+    baseEspEnabled = not baseEspEnabled
+    baseEspButton.Text = baseEspEnabled and 'ESP Base: ON' or 'ESP Base: OFF'
+    baseEspButton.BackgroundColor3 = baseEspEnabled and Color3.fromRGB(42, 91, 190) or Color3.fromRGB(35, 44, 61)
+    refreshBaseEsp()
+end)
 
 local placementSignature = ''
 local function inventorySignature()
@@ -583,6 +759,9 @@ task.spawn(function()
             end
             placementSignature = sig
         end
+        if baseEspEnabled then
+            refreshBaseEsp()
+        end
     end
 end)
 
@@ -605,6 +784,8 @@ conn(filters.Activated, function()
 end)
 
 _G.PSICO_INVENTORY_PANEL_CLEANUP = function()
+    baseEspEnabled = false
+    clearBaseEsp()
     for _, c in ipairs(conns) do
         pcall(function()
             c:Disconnect()

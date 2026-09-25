@@ -22,6 +22,9 @@ local CFG={
     AttackDelay=.12,
     FollowDistance=3,
     FlySpeed=500,
+    SafetyEnabled=true,
+    RetreatHealthPct=.70,
+    ResumeHealthPct=.90,
 }
 -- Published AttackDrone navigation constants.
 local ATTACK_RANGE=16
@@ -37,13 +40,44 @@ local SPAWN_WAIT_TIME=2
 local ARRIVE_TIMEOUT=15
 local PRIORITY={AugmentedDrone=1,ReactorDrone=2,ScrapDrone=3}
 local PREFIXES={"DroneVisual_","PersonalDrone_"}
-local state={token=0,target=nil,kills=0,attacks=0,spawnIndex=1,movers={},lastError=nil,lock=nil}
+local state={
+    token=0,target=nil,kills=0,attacks=0,spawnIndex=1,movers={},
+    lastError=nil,lock=nil,damageTaken=false,lastHealth=nil,healthConn=nil,
+    retreats=0
+}
 local conns={}
 
 local function humRoot()
     local c=LP.Character
     if not c then return nil,nil end
     return c:FindFirstChildOfClass("Humanoid"),c:FindFirstChild("HumanoidRootPart") or c.PrimaryPart
+end
+
+local function healthRatio()
+    local h=select(1,humRoot())
+    if not h or h.MaxHealth<=0 then return 0 end
+    return h.Health/h.MaxHealth
+end
+
+local function bindDamageWatch()
+    if state.healthConn then
+        pcall(function() state.healthConn:Disconnect() end)
+        state.healthConn=nil
+    end
+    local h=select(1,humRoot())
+    if not h then return end
+    state.lastHealth=h.Health
+    state.damageTaken=false
+    state.healthConn=h.HealthChanged:Connect(function(v)
+        local old=state.lastHealth
+        state.lastHealth=v
+        if CFG.Enabled and CFG.SafetyEnabled and old and v<old then
+            local max=math.max(1,h.MaxHealth)
+            if (old-v)/max>=.08 or v/max<=CFG.RetreatHealthPct then
+                state.damageTaken=true
+            end
+        end
+    end)
 end
 
 local function isBat(t)

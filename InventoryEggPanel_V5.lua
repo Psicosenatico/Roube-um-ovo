@@ -330,12 +330,15 @@ local rarityNum = {
     Mythic = 6, Cosmic = 7, Secret = 8, Eternal = 9, Divine = 10
 }
 local colors = {
+    Common = Color3.fromRGB(151, 151, 151),
+    Rare = Color3.fromRGB(25, 144, 255),
+    Epic = Color3.fromRGB(196, 2, 255),
     Legendary = Color3.fromRGB(255, 174, 58),
-    Mythic = Color3.fromRGB(255, 71, 121),
-    Cosmic = Color3.fromRGB(150, 67, 255),
-    Secret = Color3.fromRGB(245, 245, 245),
-    Eternal = Color3.fromRGB(245, 71, 255),
-    Divine = Color3.fromRGB(52, 255, 238)
+    Mythic = Color3.fromRGB(255, 43, 100),
+    Cosmic = Color3.fromRGB(65, 0, 170),
+    Secret = Color3.fromRGB(46, 46, 46),
+    Eternal = Color3.fromRGB(255, 30, 240),
+    Divine = Color3.fromRGB(251, 255, 0)
 }
 
 local function compact(n)
@@ -731,6 +734,42 @@ local function rarityForRecord(rec)
     return rar, pet
 end
 
+local function rarityColorForRecord(rec, rarityName)
+    local cfg = catalog(tostring(cat(rec) or '?'))
+    local rarityCfg = cfg and cfg.Rarity
+    local c = rarityCfg and rarityCfg.Color
+
+    -- In the live game this is normally already a Color3.
+    if typeof(c) == 'Color3' then
+        return c
+    end
+
+    -- Compatibility with serialized/table-shaped configs.
+    if type(c) == 'table' then
+        local r = tonumber(c.R or c.r)
+        local g = tonumber(c.G or c.g)
+        local b = tonumber(c.B or c.b)
+        if r and g and b then
+            if r <= 1 and g <= 1 and b <= 1 then
+                return Color3.new(r, g, b)
+            end
+            return Color3.fromRGB(r, g, b)
+        end
+    end
+
+    return colors[rarityName] or Color3.fromRGB(225, 232, 245)
+end
+
+local function rarityStrokeColor(color)
+    -- Dark rarities (notably Secret) use a light stroke so their authentic
+    -- dark text remains readable. Brighter rarities keep the normal black stroke.
+    local lum = color.R * .299 + color.G * .587 + color.B * .114
+    if lum < .28 then
+        return Color3.fromRGB(255, 255, 255)
+    end
+    return Color3.new(0, 0, 0)
+end
+
 local function recordMutations(rec)
     local out, seen = {}, {}
     local m = type(rec) == 'table' and rec.Mutations
@@ -870,7 +909,8 @@ local function ensureBaseEsp(uid, rec, model, visible)
     end
 
     local rar, pet = rarityForRecord(rec)
-    local col = colors[rar] or Color3.fromRGB(225,232,245)
+    local col = rarityColorForRecord(rec, rar)
+    local titleStroke = rarityStrokeColor(col)
     e.Highlight.FillColor = col
     e.Highlight.OutlineColor = col
     e.Highlight.Enabled = visible and BASE.ShowHighlight
@@ -878,7 +918,12 @@ local function ensureBaseEsp(uid, rec, model, visible)
 
     local texts = {}
     if BASE.ShowTitle then
-        texts[#texts + 1] = {Text = pet .. ' • ' .. rar, Color = col, Bold = true}
+        texts[#texts + 1] = {
+            Text = pet .. ' • ' .. rar,
+            Color = col,
+            Bold = true,
+            StrokeColor = titleStroke
+        }
     end
 
     if BASE.ShowEarnings or BASE.ShowMutation then
@@ -932,7 +977,7 @@ local function ensureBaseEsp(uid, rec, model, visible)
             line.Font = item.Bold and Enum.Font.GothamBold or Enum.Font.Gotham
             line.Position = UDim2.fromOffset(0, (i - 1) * 13)
             line.TextTransparency = 0
-            line.TextStrokeColor3 = Color3.new(0, 0, 0)
+            line.TextStrokeColor3 = item.StrokeColor or Color3.new(0, 0, 0)
             line.TextStrokeTransparency = .14
         end
     end
@@ -1110,7 +1155,8 @@ local function render()
 
         local st = Instance.new('UIStroke')
         st.Thickness = 1.5
-        st.Color = colors[e.rar] or Color3.fromRGB(74, 112, 190)
+        local cardColor = rarityColorForRecord(e.r, e.rar)
+        st.Color = cardColor
         st.Parent = card
 
         local im = Instance.new('ImageLabel')
@@ -1126,7 +1172,7 @@ local function render()
         local title = 'Ovo ' .. tostring(e.wl or (e.w and (compact(e.w) .. 'Kg') or '?'))
         local t = label(card, title, UDim2.new(0, 62, 0, 5), UDim2.new(1, -68, 0, 18), 10)
         t.Font = Enum.Font.GothamBold
-        t.TextColor3 = colors[e.rar] or Color3.fromRGB(235, 240, 250)
+        t.TextColor3 = cardColor
 
         label(card, e.rar .. ' • Conteúdo: ' .. e.c, UDim2.new(0, 62, 0, 24), UDim2.new(1, -68, 0, 15), 8)
         label(card, '$' .. compact(e.earn) .. '/s • Valor $' .. compact(e.sell), UDim2.new(0, 62, 0, 41), UDim2.new(1, -68, 0, 14), 7)

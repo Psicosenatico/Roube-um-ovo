@@ -457,53 +457,51 @@ end
 local renderedIndex = {}
 local renderedIndexAt = 0
 
-local function rootRenderedModel(inst, folder)
-    local x = inst
-    local best = inst:IsA('Model') and inst or nil
-    while x and x ~= folder do
-        if x:IsA('Model') then best = x end
-        if x.Parent == folder then
-            return x:IsA('Model') and x or best
-        end
-        x = x.Parent
-    end
-    return best
-end
-
 local function refreshRenderedIndex(force)
     local now = os.clock()
-    if not force and now - renderedIndexAt < 1.0 then return renderedIndex end
+    if not force and now - renderedIndexAt < .5 then return renderedIndex end
     renderedIndexAt = now
     renderedIndex = {}
 
-    local folder = Workspace:FindFirstChild('ClientRenderedAssets')
-    if not folder then return renderedIndex end
-
-    local function add(inst)
-        local uid = inst:GetAttribute('UID')
-        if uid == nil and type(inst.Name) == 'string' then
-            -- Current renderer commonly names roots as <OwnerUserId>_<UID>.
-            uid = inst.Name:match('_(%x+)$')
-        end
-        if uid == nil then return end
-        uid = tostring(uid)
-
-        local owner = tonumber(inst:GetAttribute('OwnerUserId'))
-        local root = rootRenderedModel(inst, folder) or inst
-        if owner == nil and root then
-            owner = tonumber(root:GetAttribute('OwnerUserId'))
-        end
-
-        -- Exact UID is authoritative. Owner is used when present, but an
-        -- absent OwnerUserId must not hide a valid locally-rendered egg.
-        if owner == nil or owner == LP.UserId then
-            renderedIndex[uid] = root
+    -- Correct source for eggs already placed on plots.
+    -- The game renders them under Workspace.PlacedEggRenders using
+    -- <OwnerUserId>_<UID> as the root model name.
+    local placed = Workspace:FindFirstChild('PlacedEggRenders')
+    if placed then
+        local prefix = tostring(LP.UserId) .. '_'
+        for _, inst in ipairs(placed:GetChildren()) do
+            if inst:IsA('Model') then
+                local name = tostring(inst.Name or '')
+                if name:sub(1, #prefix) == prefix then
+                    local uid = name:sub(#prefix + 1)
+                    if uid ~= '' then
+                        renderedIndex[uid] = inst
+                    end
+                else
+                    -- Compatibility fallback if a future build adds attributes.
+                    local uid = inst:GetAttribute('UID')
+                    local owner = tonumber(inst:GetAttribute('OwnerUserId'))
+                    if uid ~= nil and (owner == nil or owner == LP.UserId) then
+                        renderedIndex[tostring(uid)] = inst
+                    end
+                end
+            end
         end
     end
 
-    for _, inst in ipairs(folder:GetChildren()) do add(inst) end
-    for _, inst in ipairs(folder:GetDescendants()) do
-        if inst:IsA('Model') or inst:IsA('Folder') then add(inst) end
+    -- Old/general renderer fallback. This is NOT the primary path for
+    -- placed eggs, but keeping it costs little and helps across builds.
+    local generic = Workspace:FindFirstChild('ClientRenderedAssets')
+    if generic then
+        for _, inst in ipairs(generic:GetChildren()) do
+            if inst:IsA('Model') then
+                local uid = inst:GetAttribute('UID')
+                local owner = tonumber(inst:GetAttribute('OwnerUserId'))
+                if uid ~= nil and owner == LP.UserId and not renderedIndex[tostring(uid)] then
+                    renderedIndex[tostring(uid)] = inst
+                end
+            end
+        end
     end
 
     return renderedIndex
@@ -520,6 +518,14 @@ end
 local function visualForPlacedUid(uid)
     uid = tostring(uid or '')
     if uid == '' then return nil end
+
+    -- Fast exact lookup using the game's real naming convention.
+    local placed = Workspace:FindFirstChild('PlacedEggRenders')
+    if placed then
+        local direct = placed:FindFirstChild(tostring(LP.UserId) .. '_' .. uid)
+        if direct and direct:IsA('Model') then return direct end
+    end
+
     return refreshRenderedIndex(false)[uid]
 end
 
@@ -831,17 +837,19 @@ task.spawn(function()
 end)
 
 conn(Workspace.DescendantAdded, function(inst)
-    local folder = Workspace:FindFirstChild('ClientRenderedAssets')
-    if folder and inst:IsDescendantOf(folder) then
+    local placed = Workspace:FindFirstChild('PlacedEggRenders')
+    local generic = Workspace:FindFirstChild('ClientRenderedAssets')
+    if (placed and inst:IsDescendantOf(placed)) or (generic and inst:IsDescendantOf(generic)) then
         renderedIndexAt = 0
         if baseEspEnabled then task.defer(refreshBaseEsp) end
     end
 end)
 
 conn(Workspace.DescendantRemoving, function(inst)
-    local folder = Workspace:FindFirstChild('ClientRenderedAssets')
-    if folder and inst:IsDescendantOf(folder) then
+    local p = inst.Parent
+    if p and (p.Name == 'PlacedEggRenders' or p.Name == 'ClientRenderedAssets') then
         renderedIndexAt = 0
+        if baseEspEnabled then task.defer(refreshBaseEsp) end
     end
 end)
 

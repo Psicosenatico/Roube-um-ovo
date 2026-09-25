@@ -23,10 +23,21 @@ local CFG={
     FollowDistance=3,
     FlySpeed=500,
 }
+-- Published AttackDrone navigation constants.
+local ATTACK_RANGE=16
+local ATTACK_INTERVAL=.05
+local FOLLOW_SPEED=500
+local FOLLOW_BEHIND_DISTANCE=3
+local SHORT_TP_DISTANCE=20
 local SPAWNS={Vector3.new(2140,77,-367),Vector3.new(5723,77,-376)}
+local SAFE_ZONE=Vector3.new(533,70,-366)
+local POINT_1=Vector3.new(559,70,-370)
+local SAFE_WAIT_TIME=1
+local SPAWN_WAIT_TIME=2
+local ARRIVE_TIMEOUT=15
 local PRIORITY={AugmentedDrone=1,ReactorDrone=2,ScrapDrone=3}
 local PREFIXES={"DroneVisual_","PersonalDrone_"}
-local state={token=0,target=nil,kills=0,attacks=0,spawnIndex=1,movers={},lastError=nil}
+local state={token=0,target=nil,kills=0,attacks=0,spawnIndex=1,movers={},lastError=nil,lock=nil}
 local conns={}
 
 local function humRoot()
@@ -103,13 +114,19 @@ local function drones()
     local c=WS:FindFirstChild("ScrambleLocalVisuals")
     local out={}
     if not c then return out end
+    local currentSpawn=SPAWNS[state.spawnIndex] or SPAWNS[1]
     local _,root=humRoot()
     if not root then return out end
     for _,x in ipairs(c:GetChildren()) do
         local tier=x:GetAttribute("ScrambleTier")
         local p=pos(x)
         if isDrone(x) and p and PRIORITY[tier] and allowed(tier) then
-            out[#out+1]={obj=x,tier=tier,p=p,d=(p-root.Position).Magnitude,pri=PRIORITY[tier]}
+            out[#out+1]={
+                obj=x,tier=tier,p=p,
+                d=(p-root.Position).Magnitude,
+                spawnDist=math.floor((p-currentSpawn).Magnitude),
+                pri=PRIORITY[tier]
+            }
         end
     end
     table.sort(out,function(a,b)
@@ -117,15 +134,27 @@ local function drones()
             if math.abs(a.d-b.d)>.05 then return a.d<b.d end
             return a.pri<b.pri
         end
+        -- Published behavior: rarity/tier first, then distance from the
+        -- currently selected event spawn (not distance from the player).
         if a.pri~=b.pri then return a.pri<b.pri end
-        return a.d<b.d
+        return a.spawnDist<b.spawnDist
     end)
     return out
 end
 
 local function cleanupMove()
+    if state.lock then
+        pcall(function() state.lock:Disconnect() end)
+        state.lock=nil
+    end
     for _,x in ipairs(state.movers) do
-        if typeof(x)=="Instance" then pcall(function() x:Destroy() end) end
+        if typeof(x)=="Instance" then
+            pcall(function()
+                if x:IsA("BodyVelocity") then x.Velocity=Vector3.zero x.MaxForce=Vector3.zero end
+                if x:IsA("BodyGyro") then x.MaxTorque=Vector3.zero end
+                x:Destroy()
+            end)
+        end
     end
     table.clear(state.movers)
     local h,r=humRoot()
@@ -138,18 +167,50 @@ local function fly(dest,token,stopDist,timeout)
     local h,r=humRoot()
     if not h or not r or h.Health<=0 then return false end
     h.PlatformStand=true
+
     local bv=Instance.new("BodyVelocity")
-    bv.Name="PsicoEventBV"; bv.MaxForce=Vector3.new(math.huge,math.huge,math.huge); bv.P=1250; bv.Parent=r
+    bv.Name="YokudoBV"
+    bv.MaxForce=Vector3.new(math.huge,math.huge,math.huge)
+    bv.P=1250
+    bv.Velocity=Vector3.zero
+    bv.Parent=r
+
     local bg=Instance.new("BodyGyro")
-    bg.Name="PsicoEventBG"; bg.MaxTorque=Vector3.new(math.huge,math.huge,math.huge); bg.P=3000; bg.D=500; bg.Parent=r
+    bg.Name="YokudoBG"
+    bg.MaxTorque=Vector3.new(math.huge,math.huge,math.huge)
+    bg.P=3000
+    bg.D=500
+    bg.CFrame=r.CFrame
+    bg.Parent=r
     state.movers={bv,bg}
+
     local started=os.clock()
+    local arrive=stopDist or 2
+    local limit=timeout or ARRIVE_TIMEOUT
     while CFG.Enabled and state.token==token and r.Parent and h.Health>0 do
         local delta=dest-r.Position
-        if delta.Magnitude<=(stopDist or 4) then cleanupMove() return true end
-        if os.clock()-started>(timeout or 12) then cleanupMove() return false end
-        bv.Velocity=delta.Unit*CFG.FlySpeed
-        bg.CFrame=CFrame.new(r.Position,dest)
+        local dist=math.floor(delta.Magnitude)
+        if dist<=arrive then
+            bv.Velocity=Vector3.zero
+            bv.MaxForce=Vector3.zero
+            bg.MaxTorque=Vector3.zero
+            task.wait(.1)
+            cleanupMove()
+            local _,root=humRoot()
+            if root then
+                pcall(function()
+                    root.CFrame=CFrame.new(dest)
+                    root.AssemblyLinearVelocity=Vector3.zero
+                    root.AssemblyAngularVelocity=Vector3.zero
+                end)
+            end
+            return true
+        end
+        if os.clock()-started>limit then cleanupMove() return false end
+        if delta.Magnitude>.01 then
+            bv.Velocity=delta.Unit*FOLLOW_SPEED
+            bg.CFrame=CFrame.new(r.Position,dest)
+        end
         RunService.Heartbeat:Wait()
     end
     cleanupMove()
@@ -158,13 +219,36 @@ end
 
 local function behind(target)
     local p=pos(target)
-    return p and (p-look(target)*CFG.FollowDistance+Vector3.new(0,1,0))
+    if not p then return nil end
+    local b=p-look(target)*FOLLOW_BEHIND_DISTANCE
+    return Vector3.new(b.X,p.Y+1,b.Z)
+end
+
+local function lockBehind(target,token)
+    cleanupMove()
+    state.lock=RunService.Heartbeat:Connect(function()
+        if not CFG.Enabled or state.token~=token or not target or not target.Parent then
+            if state.lock then pcall(function() state.lock:Disconnect() end) state.lock=nil end
+            return
+        end
+        local _,r=humRoot()
+        local tp=pos(target)
+        local bp=behind(target)
+        if r and tp and bp then
+            pcall(function()
+                r.CFrame=CFrame.new(bp,tp)
+                r.AssemblyLinearVelocity=Vector3.zero
+                r.AssemblyAngularVelocity=Vector3.zero
+            end)
+        end
+    end)
 end
 
 local function attack(info,token)
     local target=info and info.obj
     if not target or not target.Parent then return end
     state.target=target
+
     local tool=equipBat()
     if not tool then
         state.lastError="Nenhum bastão encontrado"
@@ -172,18 +256,16 @@ local function attack(info,token)
         state.target=nil
         return
     end
-    local b=behind(target)
-    local _,root=humRoot()
-    if not b or not root then state.target=nil return end
-    if (root.Position-b).Magnitude>8 then fly(b,token,4,10) end
 
     while CFG.Enabled and state.token==token and target.Parent do
         local h,r=humRoot()
         local tp=pos(target)
         local bp=behind(target)
         if not h or not r or h.Health<=0 or not tp or not bp then break end
-        if (tp-r.Position).Magnitude>16 then
-            fly(bp,token,4,8)
+
+        local totalDist=math.floor((bp-r.Position).Magnitude)
+        if totalDist>SHORT_TP_DISTANCE then
+            fly(bp,token,2,ARRIVE_TIMEOUT)
         else
             cleanupMove()
             pcall(function()
@@ -191,12 +273,16 @@ local function attack(info,token)
                 r.AssemblyLinearVelocity=Vector3.zero
                 r.AssemblyAngularVelocity=Vector3.zero
             end)
+            lockBehind(target,token)
+
+            -- Keep the normal Tool activation in our build. Navigation and
+            -- follow behavior now match the published implementation.
             local ok=pcall(function() tool:Activate() end)
             if ok then state.attacks+=1 end
-            local cd=tonumber(tool:GetAttribute("CooldownDuration"))
-            task.wait((cd and cd>.05 and math.min(cd,1)) or CFG.AttackDelay)
+            task.wait(ATTACK_INTERVAL)
         end
     end
+
     cleanupMove()
     if not target.Parent then state.kills+=1 end
     state.target=nil
@@ -205,20 +291,43 @@ end
 local function loop(token)
     state.lastError=nil
     state.spawnIndex=1
+
+    -- Published InitialFlyAndStartLoop: starting from the plot/safe side
+    -- first goes through SAFE_ZONE before crossing toward event Spawn 1.
+    local _,initialRoot=humRoot()
+    if initialRoot and math.floor(initialRoot.Position.X-POINT_1.X)<=0 then
+        state.lastError="Rota segura inicial..."
+        fly(SAFE_ZONE,token,2,ARRIVE_TIMEOUT)
+        if not CFG.Enabled or state.token~=token then cleanupMove() return end
+        task.wait(SAFE_WAIT_TIME)
+        state.lastError=nil
+    end
+
     while CFG.Enabled and state.token==token do
         local h=select(1,humRoot())
         if not h or h.Health<=0 then task.wait(.5) continue end
+
         if CFG.OnlyDuringEvent then
             local active=eventInfo()
             if not active then cleanupMove() task.wait(.6) continue end
         end
+
         local list=drones()
         if list[1] then
             attack(list[1],token)
+            state.spawnIndex=1
         else
-            fly(SPAWNS[state.spawnIndex],token,5,15)
-            task.wait(1.5)
-            state.spawnIndex=state.spawnIndex==1 and 2 or 1
+            fly(SPAWNS[state.spawnIndex],token,2,ARRIVE_TIMEOUT)
+            if not CFG.Enabled or state.token~=token then break end
+            task.wait(SPAWN_WAIT_TIME)
+            local after=drones()
+            if after[1] then
+                attack(after[1],token)
+                state.spawnIndex=1
+            else
+                state.spawnIndex=state.spawnIndex==1 and 2 or 1
+            end
+            task.wait(.2)
         end
     end
     cleanupMove()

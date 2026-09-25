@@ -89,6 +89,24 @@ local function button(p, t, pos, size)
     return x
 end
 
+local function textBox(p, placeholder, pos, size)
+    local x = Instance.new('TextBox')
+    x.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
+    x.BorderSizePixel = 0
+    x.Position = pos
+    x.Size = size
+    x.Font = Enum.Font.Gotham
+    x.Text = ''
+    x.PlaceholderText = placeholder
+    x.PlaceholderColor3 = Color3.fromRGB(139, 151, 177)
+    x.TextColor3 = Color3.fromRGB(242, 246, 255)
+    x.TextSize = 9
+    x.ClearTextOnFocus = false
+    x.Parent = p
+    round(x, 8)
+    return x
+end
+
 local root = (function()
     local ok, h = pcall(function()
         return gethui and gethui()
@@ -137,6 +155,13 @@ local tab = button(
     filters.Size
 )
 
+local baseTab = button(
+    sidebar,
+    'ESP BASE',
+    UDim2.new(tab.Position.X.Scale, tab.Position.X.Offset, tab.Position.Y.Scale, tab.Position.Y.Offset + tab.Size.Y.Offset + gap),
+    tab.Size
+)
+
 local page = Instance.new('Frame')
 page.Name = 'InventoryEggPageV5'
 page.BackgroundTransparency = 1
@@ -147,9 +172,8 @@ page.Visible = false
 page.Parent = host
 
 -- Keep the compact layout that is already working.
-local refresh = button(page, 'Atualizar', UDim2.new(0, 10, 0, 8), UDim2.new(1/3, -8, 0, 30))
-local sort = button(page, 'Ordenar: $/s', UDim2.new(1/3, 4, 0, 8), UDim2.new(1/3, -8, 0, 30))
-local baseEspButton = button(page, 'ESP Base: OFF', UDim2.new(2/3, 2, 0, 8), UDim2.new(1/3, -12, 0, 30))
+local refresh = button(page, 'Atualizar', UDim2.new(0, 10, 0, 8), UDim2.new(.5, -13, 0, 30))
+local sort = button(page, 'Ordenar: $/s', UDim2.new(.5, 3, 0, 8), UDim2.new(.5, -13, 0, 30))
 local status = label(page, '', UDim2.new(0, 10, 0, 40), UDim2.new(1, -20, 0, 14), 7)
 status.TextXAlignment = Enum.TextXAlignment.Center
 
@@ -171,6 +195,83 @@ lay.Parent = list
 local pad = Instance.new('UIPadding')
 pad.PaddingBottom = UDim.new(0, 6)
 pad.Parent = list
+
+-- Independent base-egg ESP page. It deliberately does not share filters
+-- with the field-egg ESP or the inventory list.
+local basePage = Instance.new('ScrollingFrame')
+basePage.Name = 'BaseEggEspPageV5'
+basePage.BackgroundTransparency = 1
+basePage.BorderSizePixel = 0
+basePage.Position = mainPage.Position
+basePage.Size = mainPage.Size
+basePage.AnchorPoint = mainPage.AnchorPoint
+basePage.Visible = false
+basePage.ScrollBarThickness = 3
+basePage.ScrollBarImageColor3 = Color3.fromRGB(94, 139, 223)
+basePage.CanvasSize = UDim2.fromOffset(0, 390)
+basePage.Parent = host
+
+local BASE = {
+    Enabled = false,
+    MinRarity = 0,
+    MinEarnings = 0,
+    MinSellPrice = 0,
+    Pet = '',
+    MutationMode = 'Todas',
+    ShowTitle = true,
+    ShowEarnings = true,
+    ShowMutation = true,
+    ShowEggValue = false,
+    ShowWeight = false,
+    ShowTime = false,
+    ShowHighlight = true,
+    MaxDistance = 10000,
+}
+
+local by = 0
+local baseEnableButton = button(basePage, 'Ativar ESP da base: OFF', UDim2.fromOffset(0, by), UDim2.new(1, -4, 0, 30)); by = by + 36
+local baseStatus = label(basePage, 'Colocados: ? • Exibidos: ?', UDim2.fromOffset(2, by), UDim2.new(1, -6, 0, 16), 7)
+baseStatus.TextXAlignment = Enum.TextXAlignment.Center
+by = by + 22
+
+local function basePairLabel(txt, y)
+    return label(basePage, txt, UDim2.fromOffset(0, y), UDim2.new(.45, 0, 0, 28), 8)
+end
+local function basePairButton(txt, y)
+    return button(basePage, txt, UDim2.new(.47, 0, 0, y), UDim2.new(.53, -4, 0, 28))
+end
+local function basePairBox(ph, y)
+    return textBox(basePage, ph, UDim2.new(.47, 0, 0, y), UDim2.new(.53, -4, 0, 28))
+end
+
+basePairLabel('Raridade mínima', by)
+local baseRarityButton = basePairButton('Todas', by); by = by + 34
+basePairLabel('Rendimento mín. ($/s)', by)
+local baseEarningBox = basePairBox('Ex: 2B', by); by = by + 34
+basePairLabel('Valor do ovo mín. ($)', by)
+local baseValueBox = basePairBox('Opcional', by); by = by + 34
+basePairLabel('Pet', by)
+local basePetBox = basePairBox('Todos / nome', by); by = by + 34
+basePairLabel('Mutação', by)
+local baseMutationButton = basePairButton('Todas', by); by = by + 36
+basePairLabel('Distância máx.', by)
+local baseDistanceBox = basePairBox('10000', by); baseDistanceBox.Text = '10000'; by = by + 38
+
+local function baseToggleRow(txt, key, y)
+    local l = label(basePage, txt, UDim2.fromOffset(0, y), UDim2.new(.62, 0, 0, 26), 8)
+    local b = button(basePage, BASE[key] and 'ON' or 'OFF', UDim2.new(.65, 0, 0, y), UDim2.new(.35, -4, 0, 26))
+    return b
+end
+
+local baseTitleToggle = baseToggleRow('Mostrar nome/raridade', 'ShowTitle', by); by = by + 30
+local baseEarningsToggle = baseToggleRow('Mostrar $/s do pet', 'ShowEarnings', by); by = by + 30
+local baseMutationToggle = baseToggleRow('Mostrar mutação', 'ShowMutation', by); by = by + 30
+local baseValueToggle = baseToggleRow('Mostrar valor do ovo', 'ShowEggValue', by); by = by + 30
+local baseWeightToggle = baseToggleRow('Mostrar peso', 'ShowWeight', by); by = by + 30
+local baseTimeToggle = baseToggleRow('Mostrar tempo restante', 'ShowTime', by); by = by + 30
+local baseHighlightToggle = baseToggleRow('Mostrar contorno', 'ShowHighlight', by); by = by + 36
+local baseResetButton = button(basePage, 'Limpar filtros', UDim2.fromOffset(0, by), UDim2.new(1, -4, 0, 30)); by = by + 36
+basePage.CanvasSize = UDim2.fromOffset(0, by)
 
 local modes = {'$/s', 'Raridade', 'Valor do ovo'}
 local mode = 1
@@ -195,6 +296,19 @@ local function compact(n)
     if math.abs(n) >= 1e6 then return ('%.2fM'):format(n / 1e6) end
     if math.abs(n) >= 1e3 then return ('%.1fK'):format(n / 1e3) end
     return tostring(math.floor(n + .5))
+end
+
+local function parseSmartNumber(v)
+    local s = tostring(v or ''):upper()
+    s = s:gsub('%s+', ''):gsub('%$', ''):gsub('/S', ''):gsub('KG', '')
+    if s == '' then return 0 end
+    local suffix = s:match('([KMBT])$')
+    if suffix then s = s:sub(1, -2) end
+    s = s:gsub(',', '.')
+    local n = tonumber(s)
+    if not n or n < 0 then return 0 end
+    local mult = {K=1e3, M=1e6, B=1e9, T=1e12}
+    return n * (mult[suffix] or 1)
 end
 
 local function rv(r, k)
@@ -560,6 +674,90 @@ local function rarityForRecord(rec)
     return rar, pet
 end
 
+local function recordMutations(rec)
+    local out, seen = {}, {}
+    local m = type(rec) == 'table' and rec.Mutations
+    if type(m) == 'table' then
+        for _, v in pairs(m) do
+            local s = tostring(v or '')
+            local k = norm(s)
+            if k ~= '' and not seen[k] then
+                seen[k] = true
+                out[#out + 1] = s
+            end
+        end
+    end
+    local base = type(rec) == 'table' and rec.BaseMutation
+    if base and norm(base) ~= '' and not seen[norm(base)] then
+        seen[norm(base)] = true
+        out[#out + 1] = tostring(base)
+    end
+    if type(rec) == 'table' and rec.HasParasite and not seen.parasite then
+        out[#out + 1] = 'Parasite'
+    end
+    table.sort(out)
+    return out
+end
+
+local function baseMutationPass(rec)
+    local mode = BASE.MutationMode
+    local muts = recordMutations(rec)
+    if mode == 'Todas' then return true end
+    if mode == 'Com mutação' then return #muts > 0 end
+    if mode == 'Sem mutação' then return #muts == 0 end
+    local target = norm(mode)
+    for _, m in ipairs(muts) do
+        if norm(m) == target then return true end
+    end
+    return false
+end
+
+local function currentBaseMutationOptions()
+    local out = {'Todas', 'Com mutação', 'Sem mutação'}
+    local seen = {}
+    local inv = readOwnedEggs()
+    for _, rec in pairs(type(inv) == 'table' and inv or {}) do
+        if type(rec) == 'table' and isPlaced(rec) then
+            for _, m in ipairs(recordMutations(rec)) do
+                local k = norm(m)
+                if k ~= '' and not seen[k] then
+                    seen[k] = true
+                    out[#out + 1] = m
+                end
+            end
+        end
+    end
+    table.sort(out, function(a, b)
+        local fixed = {['Todas']=1, ['Com mutação']=2, ['Sem mutação']=3}
+        local aa, bb = fixed[a], fixed[b]
+        if aa or bb then return (aa or 99) < (bb or 99) end
+        return a < b
+    end)
+    return out
+end
+
+local function basePass(rec)
+    local rar, pet = rarityForRecord(rec)
+    if (rarityNum[rar] or 0) < BASE.MinRarity then return false end
+
+    local earn = preciseEarnings(rec) or 0
+    if earn < BASE.MinEarnings then return false end
+
+    local sell = tonumber(call(ER, 'SellPrice', rec)) or 0
+    if sell < BASE.MinSellPrice then return false end
+
+    local pf = norm(BASE.Pet)
+    if pf ~= '' then
+        local category = norm(cat(rec))
+        local display = norm(pet)
+        if not category:find(pf, 1, true) and not display:find(pf, 1, true) then
+            return false
+        end
+    end
+
+    return baseMutationPass(rec)
+end
+
 local function ensureBaseEsp(uid, rec, model)
     local adornee = placedAdornee(model)
     if not adornee then return end
@@ -582,25 +780,20 @@ local function ensureBaseEsp(uid, rec, model)
         bb.Name = 'PSICO_BASE_EGG_BILLBOARD'
         bb.Adornee = adornee
         bb.AlwaysOnTop = true
-        bb.MaxDistance = 10000
-        bb.Size = UDim2.fromOffset(190, 42)
+        bb.Size = UDim2.fromOffset(210, 56)
         bb.StudsOffset = Vector3.new(0, 2.2, 0)
         bb.Parent = gui
 
-        local a = label(bb, '', UDim2.fromOffset(0, 0), UDim2.new(1, 0, 0, 14), 10)
-        a.TextXAlignment = Enum.TextXAlignment.Center
-        a.Font = Enum.Font.GothamBold
-        a.TextStrokeTransparency = .15
+        local lines = {}
+        for i = 1, 4 do
+            local x = label(bb, '', UDim2.fromOffset(0, (i - 1) * 14), UDim2.new(1, 0, 0, 14), i == 1 and 10 or 8)
+            x.TextXAlignment = Enum.TextXAlignment.Center
+            x.TextStrokeTransparency = .15
+            if i == 1 then x.Font = Enum.Font.GothamBold end
+            lines[i] = x
+        end
 
-        local b = label(bb, '', UDim2.fromOffset(0, 14), UDim2.new(1, 0, 0, 14), 9)
-        b.TextXAlignment = Enum.TextXAlignment.Center
-        b.TextStrokeTransparency = .15
-
-        local c = label(bb, '', UDim2.fromOffset(0, 28), UDim2.new(1, 0, 0, 14), 8)
-        c.TextXAlignment = Enum.TextXAlignment.Center
-        c.TextStrokeTransparency = .15
-
-        e = {Highlight=h, Billboard=bb, L1=a, L2=b, L3=c, Model=model}
+        e = {Highlight=h, Billboard=bb, Lines=lines, Model=model}
         baseEsp[uid] = e
     end
 
@@ -608,46 +801,94 @@ local function ensureBaseEsp(uid, rec, model)
     local col = colors[rar] or Color3.fromRGB(225,232,245)
     e.Highlight.FillColor = col
     e.Highlight.OutlineColor = col
-    e.L1.TextColor3 = col
-    e.L1.Text = pet .. ' • ' .. rar
+    e.Highlight.Enabled = BASE.ShowHighlight
+    e.Billboard.MaxDistance = BASE.MaxDistance
 
-    local eps = preciseEarnings(rec)
-    e.L2.Text = eps and ('$' .. compact(eps) .. '/s após chocar') or '$?/s após chocar'
-
-    local wl = call(ER, 'WeightLabel', rec)
-    local remain = call(ER, 'GrowthSecondsRemaining', rec)
-    remain = tonumber(remain)
-    if remain and remain >= 0 then
-        e.L3.Text = tostring(wl or '') .. (wl and ' • ' or '') .. ('%.0fs restantes'):format(remain)
-    else
-        e.L3.Text = tostring(wl or '')
+    local texts = {}
+    if BASE.ShowTitle then
+        texts[#texts + 1] = {Text = pet .. ' • ' .. rar, Color = col, Bold = true}
     end
+
+    if BASE.ShowEarnings or BASE.ShowMutation then
+        local parts = {}
+        if BASE.ShowEarnings then
+            local eps = preciseEarnings(rec)
+            parts[#parts + 1] = eps and ('$' .. compact(eps) .. '/s após chocar') or '$?/s após chocar'
+        end
+        if BASE.ShowMutation then
+            local muts = recordMutations(rec)
+            parts[#parts + 1] = (#muts > 0) and table.concat(muts, '+') or 'Sem mutação'
+        end
+        texts[#texts + 1] = {Text = table.concat(parts, ' • '), Color = Color3.fromRGB(242,246,255)}
+    end
+
+    if BASE.ShowEggValue or BASE.ShowWeight then
+        local parts = {}
+        if BASE.ShowEggValue then
+            local sell = tonumber(call(ER, 'SellPrice', rec))
+            parts[#parts + 1] = sell and ('Ovo $' .. compact(sell)) or 'Ovo $?'
+        end
+        if BASE.ShowWeight then
+            local wl = call(ER, 'WeightLabel', rec)
+            parts[#parts + 1] = tostring(wl or '?kg')
+        end
+        texts[#texts + 1] = {Text = table.concat(parts, ' • '), Color = Color3.fromRGB(220,228,242)}
+    end
+
+    if BASE.ShowTime then
+        local remain = tonumber(call(ER, 'GrowthSecondsRemaining', rec))
+        if remain and remain >= 0 then
+            local h = math.floor(remain / 3600)
+            local m = math.floor((remain % 3600) / 60)
+            local s = math.floor(remain % 60)
+            local t = h > 0 and ('%dh %02dm'):format(h, m) or (m > 0 and ('%dm %02ds'):format(m, s) or ('%ds'):format(s))
+            texts[#texts + 1] = {Text = t .. ' restantes', Color = Color3.fromRGB(196,211,237)}
+        end
+    end
+
+    for i = 1, 4 do
+        local line = e.Lines[i]
+        local item = texts[i]
+        line.Visible = item ~= nil
+        if item then
+            line.Text = item.Text
+            line.TextColor3 = item.Color
+            line.Font = item.Bold and Enum.Font.GothamBold or Enum.Font.Gotham
+            line.Position = UDim2.fromOffset(0, (i - 1) * 14)
+        end
+    end
+    e.Billboard.Size = UDim2.fromOffset(210, math.max(14, #texts * 14))
+    e.Billboard.Enabled = #texts > 0
 end
 
 local function refreshBaseEsp()
+    baseEspEnabled = BASE.Enabled
     if not baseEspEnabled then
         clearBaseEsp()
-        baseEspButton.Text = 'ESP Base: OFF'
+        baseEnableButton.Text = 'Ativar ESP da base: OFF'
+        baseEnableButton.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
+        baseStatus.Text = 'ESP desligado'
         return
     end
 
-    -- Rebuild once per refresh so every placed record is matched against
-    -- the same renderer snapshot.
     refreshRenderedIndex(true)
 
     local inv = readOwnedEggs()
     local keep = {}
-    local placedCount, matchedCount = 0, 0
+    local placedCount, filteredCount, matchedCount = 0, 0, 0
 
     for key, rec in pairs(type(inv) == 'table' and inv or {}) do
         if type(rec) == 'table' and isPlaced(rec) then
             placedCount = placedCount + 1
-            local uid = recordUid(key, rec)
-            local model = visualForPlacedUid(uid)
-            if model then
-                matchedCount = matchedCount + 1
-                keep[uid] = true
-                ensureBaseEsp(uid, rec, model)
+            if basePass(rec) then
+                filteredCount = filteredCount + 1
+                local uid = recordUid(key, rec)
+                local model = visualForPlacedUid(uid)
+                if model then
+                    matchedCount = matchedCount + 1
+                    keep[uid] = true
+                    ensureBaseEsp(uid, rec, model)
+                end
             end
         end
     end
@@ -656,7 +897,9 @@ local function refreshBaseEsp()
         if not keep[uid] then destroyBaseEsp(uid) end
     end
 
-    baseEspButton.Text = ('ESP Base: ON • %d/%d'):format(matchedCount, placedCount)
+    baseEnableButton.Text = 'Ativar ESP da base: ON'
+    baseEnableButton.BackgroundColor3 = Color3.fromRGB(42, 91, 190)
+    baseStatus.Text = ('Colocados:%d • Filtro:%d • Exibidos:%d'):format(placedCount, filteredCount, matchedCount)
 end
 
 local rows = {}
@@ -791,20 +1034,128 @@ local function show()
         end
     end
     page.Visible = true
+    tab.BackgroundColor3 = Color3.fromRGB(42, 91, 190)
+    baseTab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
     render()
 end
 
 conn(tab.Activated, show)
-conn(refresh.Activated, function()
-    render()
+conn(refresh.Activated, render)
+
+local function showBasePage()
+    for _, x in ipairs(host:GetChildren()) do
+        if x:IsA('GuiObject') then x.Visible = (x == basePage) end
+    end
+    basePage.Visible = true
+    tab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
+    baseTab.BackgroundColor3 = Color3.fromRGB(42, 91, 190)
+    refreshBaseEsp()
+end
+
+conn(baseTab.Activated, showBasePage)
+
+local function refreshBaseControls()
+    baseRarityButton.Text = BASE.MinRarity == 0 and 'Todas' or ({'Common','Uncommon','Rare','Epic','Legendary','Mythic','Cosmic','Secret','Eternal','Divine'})[BASE.MinRarity]
+    baseMutationButton.Text = BASE.MutationMode
+    baseEnableButton.Text = BASE.Enabled and 'Ativar ESP da base: ON' or 'Ativar ESP da base: OFF'
+    baseTitleToggle.Text = BASE.ShowTitle and 'ON' or 'OFF'
+    baseEarningsToggle.Text = BASE.ShowEarnings and 'ON' or 'OFF'
+    baseMutationToggle.Text = BASE.ShowMutation and 'ON' or 'OFF'
+    baseValueToggle.Text = BASE.ShowEggValue and 'ON' or 'OFF'
+    baseWeightToggle.Text = BASE.ShowWeight and 'ON' or 'OFF'
+    baseTimeToggle.Text = BASE.ShowTime and 'ON' or 'OFF'
+    baseHighlightToggle.Text = BASE.ShowHighlight and 'ON' or 'OFF'
+end
+
+conn(baseEnableButton.Activated, function()
+    BASE.Enabled = not BASE.Enabled
+    refreshBaseControls()
     refreshBaseEsp()
 end)
 
-conn(baseEspButton.Activated, function()
-    baseEspEnabled = not baseEspEnabled
-    baseEspButton.BackgroundColor3 = baseEspEnabled and Color3.fromRGB(42, 91, 190) or Color3.fromRGB(35, 44, 61)
+conn(baseRarityButton.Activated, function()
+    BASE.MinRarity = BASE.MinRarity + 1
+    if BASE.MinRarity > 10 then BASE.MinRarity = 0 end
+    refreshBaseControls()
     refreshBaseEsp()
 end)
+
+conn(baseEarningBox.FocusLost, function()
+    BASE.MinEarnings = parseSmartNumber(baseEarningBox.Text)
+    baseEarningBox.Text = BASE.MinEarnings > 0 and compact(BASE.MinEarnings) or ''
+    refreshBaseEsp()
+end)
+
+conn(baseValueBox.FocusLost, function()
+    BASE.MinSellPrice = parseSmartNumber(baseValueBox.Text)
+    baseValueBox.Text = BASE.MinSellPrice > 0 and compact(BASE.MinSellPrice) or ''
+    refreshBaseEsp()
+end)
+
+conn(basePetBox.FocusLost, function()
+    BASE.Pet = tostring(basePetBox.Text or '')
+    refreshBaseEsp()
+end)
+
+conn(baseMutationButton.Activated, function()
+    local opts = currentBaseMutationOptions()
+    local idx = 1
+    for i, v in ipairs(opts) do
+        if v == BASE.MutationMode then idx = i break end
+    end
+    idx = idx + 1
+    if idx > #opts then idx = 1 end
+    BASE.MutationMode = opts[idx]
+    refreshBaseControls()
+    refreshBaseEsp()
+end)
+
+conn(baseDistanceBox.FocusLost, function()
+    local n = tonumber(baseDistanceBox.Text)
+    if not n or n < 20 then n = 10000 end
+    BASE.MaxDistance = math.floor(n)
+    baseDistanceBox.Text = tostring(BASE.MaxDistance)
+    refreshBaseEsp()
+end)
+
+local function wireBaseToggle(btn, key)
+    conn(btn.Activated, function()
+        BASE[key] = not BASE[key]
+        refreshBaseControls()
+        refreshBaseEsp()
+    end)
+end
+wireBaseToggle(baseTitleToggle, 'ShowTitle')
+wireBaseToggle(baseEarningsToggle, 'ShowEarnings')
+wireBaseToggle(baseMutationToggle, 'ShowMutation')
+wireBaseToggle(baseValueToggle, 'ShowEggValue')
+wireBaseToggle(baseWeightToggle, 'ShowWeight')
+wireBaseToggle(baseTimeToggle, 'ShowTime')
+wireBaseToggle(baseHighlightToggle, 'ShowHighlight')
+
+conn(baseResetButton.Activated, function()
+    BASE.MinRarity = 0
+    BASE.MinEarnings = 0
+    BASE.MinSellPrice = 0
+    BASE.Pet = ''
+    BASE.MutationMode = 'Todas'
+    BASE.ShowTitle = true
+    BASE.ShowEarnings = true
+    BASE.ShowMutation = true
+    BASE.ShowEggValue = false
+    BASE.ShowWeight = false
+    BASE.ShowTime = false
+    BASE.ShowHighlight = true
+    BASE.MaxDistance = 10000
+    baseEarningBox.Text = ''
+    baseValueBox.Text = ''
+    basePetBox.Text = ''
+    baseDistanceBox.Text = '10000'
+    refreshBaseControls()
+    refreshBaseEsp()
+end)
+
+refreshBaseControls()
 
 local placementSignature = ''
 local function inventorySignature()
@@ -861,14 +1212,20 @@ end)
 
 conn(fun.Activated, function()
     page.Visible = false
+    basePage.Visible = false
     mainPage.Visible = true
     filterPage.Visible = false
+    tab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
+    baseTab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
 end)
 
 conn(filters.Activated, function()
     page.Visible = false
+    basePage.Visible = false
     mainPage.Visible = false
     filterPage.Visible = true
+    tab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
+    baseTab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
 end)
 
 _G.PSICO_INVENTORY_PANEL_CLEANUP = function()
@@ -880,5 +1237,7 @@ _G.PSICO_INVENTORY_PANEL_CLEANUP = function()
         end)
     end
     pcall(function() page:Destroy() end)
+    pcall(function() basePage:Destroy() end)
     pcall(function() tab:Destroy() end)
+    pcall(function() baseTab:Destroy() end)
 end

@@ -1,4 +1,4 @@
--- PSICOSENATICO | Egg Equip Scanner V1.2
+-- PSICOSENATICO | Egg Equip Scanner V1.3
 -- Scanner leve para comparar ANTES/DEPOIS ao equipar manualmente UM ovo.
 -- Sem __namecall, hookfunction, getgc ou decompile.
 
@@ -13,6 +13,28 @@ local Camera=workspace.CurrentCamera
 local LP=Players.LocalPlayer
 local C={}
 local S={before=nil,after=nil,events={},started=os.time()}
+local ownedSyncTried=false
+
+local function findPath(p)
+ local x=RS
+ for q in p:gmatch('[^%.]+') do x=x and x:FindFirstChild(q) end
+ return x
+end
+local function req(p)
+ local m=findPath(p)
+ if not(m and m:IsA('ModuleScript')) then return nil end
+ local ok,v=pcall(require,m)
+ return ok and v or nil
+end
+local function call(t,n,...)
+ if type(t)~='table' or type(t[n])~='function' then return nil,false end
+ local ok,v=pcall(t[n],...)
+ if ok then return v,true end
+ ok,v=pcall(t[n],t,...)
+ return ok and v or nil,ok
+end
+local Save=req('Shared.Save') or req('Data.Save')
+local EggState=req('Client.EggState')
 
 local function uiParent()
  local ok,h=pcall(function() return gethui and gethui() end)
@@ -69,22 +91,50 @@ local function remotes()
  return out
 end
 local function eggInventory()
- local out={ok=false,count=0,records={}}
- local shared=RS:FindFirstChild('Shared');local m=shared and shared:FindFirstChild('Save')
- if not(m and m:IsA('ModuleScript')) then return out end
- local ok,sv=pcall(require,m);if not(ok and type(sv)=='table' and type(sv.Get)=='function') then return out end
- local ok2,data=pcall(sv.Get);if not(ok2 and type(data)=='table') then return out end
- local inv=data.EggInventory;out.ok=true
- if type(inv)=='table' then
-  for k,r in pairs(inv) do
-   out.count+=1
-   if type(r)=='table' then
-    local z={key=tostring(k)}
-    for _,n in ipairs({'Uid','UID','Id','ID','AssetCategory','Rarity','Weight','WeightKg','AssetScale','State','AreaId','NestId','Pet','PetName','DisplayName'}) do
-     if r[n]~=nil then z[n]=val(r[n]) end
-    end
-    out.records[#out.records+1]=z
+ local out={ok=false,count=0,placed=0,unplaced=0,source='none',records={}}
+ local inv
+
+ -- Primary: official live EggState cache used by the client.
+ if type(EggState)=='table' and type(EggState.ReadOwnerEggs)=='function' then
+  local ok,v=pcall(EggState.ReadOwnerEggs,LP.UserId)
+  if not ok then ok,v=pcall(EggState.ReadOwnerEggs,EggState,LP.UserId) end
+  if ok and type(v)=='table' then inv=v;out.source='EggState' end
+  if type(inv)=='table' and next(inv)==nil and not ownedSyncTried and type(EggState.SyncOwnedEggs)=='function' then
+   ownedSyncTried=true
+   pcall(EggState.SyncOwnedEggs)
+   task.wait(.05)
+   ok,v=pcall(EggState.ReadOwnerEggs,LP.UserId)
+   if not ok then ok,v=pcall(EggState.ReadOwnerEggs,EggState,LP.UserId) end
+   if ok and type(v)=='table' then inv=v;out.source='EggState' end
+  end
+ end
+
+ -- Compatibility fallback.
+ if type(inv)~='table' then
+  local data=Save and call(Save,'Get')
+  if type(data)=='table' and type(data.EggInventory)=='table' then
+   inv=data.EggInventory;out.source='Save'
+  end
+ end
+
+ if type(inv)~='table' then return out end
+ out.ok=true
+ for k,r in pairs(inv) do
+  out.count+=1
+  if type(r)=='table' then
+   local placed=r.Placement~=nil
+   if placed then out.placed+=1 else out.unplaced+=1 end
+   local z={key=tostring(k),placed=placed}
+   for _,n in ipairs({'Uid','UID','Id','ID','AssetCategory','Rarity','Weight','WeightKg','AssetScale','State','AreaId','NestId','Pet','PetName','DisplayName'}) do
+    if r[n]~=nil then z[n]=val(r[n]) end
    end
+   if placed and type(r.Placement)=='table' then
+    z.Placement={}
+    for _,n in ipairs({'PlacedAt','ReadyAt','GrowthDuration','GrowthCreditSeconds','NightGrowthPeriodIndex','NightGrowthCreditSeconds','LocalCFrame'}) do
+     if r.Placement[n]~=nil then z.Placement[n]=val(r.Placement[n]) end
+    end
+   end
+   out.records[#out.records+1]=z
   end
  end
  return out
@@ -112,7 +162,7 @@ local H=math.floor(math.clamp(vp.Y*0.62,320,470))
 local main=Instance.new('Frame');main.Name='Main';main.AnchorPoint=Vector2.new(.5,.5);main.Position=UDim2.fromScale(.5,.5);main.Size=UDim2.fromOffset(W,H);main.BackgroundColor3=Color3.fromRGB(9,19,36);main.BorderSizePixel=0;main.Parent=gui;corner(main,18)
 
 local header=Instance.new('Frame');header.Name='Header';header.BackgroundTransparency=1;header.Position=UDim2.fromOffset(16,8);header.Size=UDim2.new(1,-32,0,42);header.Active=true;header.Parent=main
-local title=Instance.new('TextLabel');title.BackgroundTransparency=1;title.Size=UDim2.new(1,-56,1,0);title.Font=Enum.Font.GothamBold;title.Text='EGG EQUIP SCANNER • V1.2';title.TextSize=22;title.TextColor3=Color3.new(1,1,1);title.TextXAlignment=Enum.TextXAlignment.Left;title.Parent=header
+local title=Instance.new('TextLabel');title.BackgroundTransparency=1;title.Size=UDim2.new(1,-56,1,0);title.Font=Enum.Font.GothamBold;title.Text='EGG EQUIP SCANNER • V1.3';title.TextSize=22;title.TextColor3=Color3.new(1,1,1);title.TextXAlignment=Enum.TextXAlignment.Left;title.Parent=header
 local close=Instance.new('TextButton');close.AnchorPoint=Vector2.new(1,0);close.Position=UDim2.new(1,0,0,0);close.Size=UDim2.fromOffset(42,38);close.BackgroundColor3=Color3.fromRGB(31,43,62);close.BorderSizePixel=0;close.Text='×';close.TextSize=24;close.Font=Enum.Font.GothamBold;close.TextColor3=Color3.new(1,1,1);close.Parent=header;corner(close,11)
 
 local status=Instance.new('TextLabel');status.Position=UDim2.fromOffset(18,58);status.Size=UDim2.new(1,-36,0,96);status.BackgroundColor3=Color3.fromRGB(16,34,58);status.BorderSizePixel=0;status.TextColor3=Color3.fromRGB(220,230,245);status.Font=Enum.Font.Code;status.TextSize=15;status.TextWrapped=true;status.TextXAlignment=Enum.TextXAlignment.Left;status.TextYAlignment=Enum.TextYAlignment.Top;status.Text='1) CAPTURAR ANTES\n2) Equipe manualmente UM ovo\n3) CAPTURAR DEPOIS → EXPORTAR JSON';status.Parent=main;corner(status,12)
@@ -123,13 +173,17 @@ local function mkButton(txt,x,y,w,h,fn)
  local b=Instance.new('TextButton');b.Position=UDim2.new(x,0,y,0);b.Size=UDim2.new(w,-5,h,-5);b.BackgroundColor3=Color3.fromRGB(42,91,151);b.BorderSizePixel=0;b.Text=txt;b.TextColor3=Color3.new(1,1,1);b.Font=Enum.Font.GothamBold;b.TextSize=16;b.Parent=btnArea;corner(b,12);C[#C+1]=b.Activated:Connect(fn);return b
 end
 mkButton('CAPTURAR ANTES',0,0,.5,.5,function()
- S.before=snap('before');S.events={};status.Text='ANTES capturado. Agora equipe manualmente UM ovo e depois toque CAPTURAR DEPOIS.'
+ S.before=snap('before');S.events={}
+ local x=S.before.eggInventory
+ status.Text=('ANTES: %d total • %d livres • %d colocados • %s\nAgora equipe/coloque UM ovo e toque CAPTURAR DEPOIS.'):format(x.count or 0,x.unplaced or 0,x.placed or 0,x.source or '?')
 end)
 mkButton('CAPTURAR DEPOIS',.5,0,.5,.5,function()
- S.after=snap('after');status.Text='DEPOIS capturado. Eventos de Tool: '..#S.events..'. Agora EXPORTAR JSON.'
+ S.after=snap('after')
+ local x=S.after.eggInventory
+ status.Text=('DEPOIS: %d total • %d livres • %d colocados • %s\nEventos Tool: %d • Agora EXPORTAR JSON.'):format(x.count or 0,x.unplaced or 0,x.placed or 0,x.source or '?',#S.events)
 end)
 mkButton('EXPORTAR JSON',0,.5,.72,.5,function()
- local payload={scanner='Psico Egg Equip Scanner V1.2',placeId=game.PlaceId,gameId=game.GameId,started=S.started,before=S.before,after=S.after,events=S.events}
+ local payload={scanner='Psico Egg Equip Scanner V1.3',placeId=game.PlaceId,gameId=game.GameId,started=S.started,before=S.before,after=S.after,events=S.events}
  local ok,json=pcall(function() return Http:JSONEncode(payload) end)
  if not ok then status.Text='Erro JSON: '..tostring(json);return end
  local name='Psico_EggEquip_'..os.time()..'.json'

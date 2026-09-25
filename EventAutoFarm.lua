@@ -23,8 +23,8 @@ local CFG={
     FollowDistance=3,
     FlySpeed=500,
     SafetyEnabled=true,
-    RetreatHealthPct=.70,
-    ResumeHealthPct=.90,
+    RetreatHealthPct=.80,
+    ResumeHealthPct=.95,
 }
 -- Published AttackDrone navigation constants.
 local ATTACK_RANGE=16
@@ -72,10 +72,8 @@ local function bindDamageWatch()
         local old=state.lastHealth
         state.lastHealth=v
         if CFG.Enabled and CFG.SafetyEnabled and old and v<old then
-            local max=math.max(1,h.MaxHealth)
-            if (old-v)/max>=.08 or v/max<=CFG.RetreatHealthPct then
-                state.damageTaken=true
-            end
+            -- Qualquer perda de vida passa a ser tratada como risco.
+            state.damageTaken=true
         end
     end)
 end
@@ -232,6 +230,10 @@ local function fly(dest,token,stopDist,timeout)
     local arrive=stopDist or 2
     local limit=timeout or ARRIVE_TIMEOUT
     while CFG.Enabled and state.token==token and r.Parent and h.Health>0 do
+        if CFG.SafetyEnabled and state.damageTaken and (dest-SAFE_ZONE).Magnitude>4 then
+            cleanupMove()
+            return false
+        end
         local delta=dest-r.Position
         local dist=math.floor(delta.Magnitude)
         if dist<=arrive then
@@ -377,6 +379,13 @@ local function loop(token)
             continue
         end
 
+        if CFG.SafetyEnabled and state.damageTaken then
+            retreatToSafe(token)
+            routeReady=false
+            task.wait(.1)
+            continue
+        end
+
         -- Published ManagerDrone does not start AttackDrone at all until
         -- the event is active and has more than 10 seconds remaining.
         if not eventShouldFarm() then
@@ -503,7 +512,8 @@ local enable=button(page,"AUTO FARM: OFF",UDim2.fromOffset(0,y),UDim2.new(1,-4,0
 local status=label(page,"Aguardando...",UDim2.fromOffset(4,y),UDim2.new(1,-8,0,52),8); status.TextWrapped=true; status.TextYAlignment=Enum.TextYAlignment.Top; y+=56
 local priority=button(page,"Prioridade: Raros primeiro",UDim2.fromOffset(0,y),UDim2.new(1,-4,0,28)); y+=34
 local only=button(page,"Somente durante evento: ON",UDim2.fromOffset(0,y),UDim2.new(1,-4,0,28)); y+=34
-local safety=button(page,"Proteção de dano: ON",UDim2.fromOffset(0,y),UDim2.new(1,-4,0,28)); y+=38
+local safety=button(page,"Proteção de dano: ON",UDim2.fromOffset(0,y),UDim2.new(1,-4,0,28)); y+=34
+local safetyInfo=label(page,"Recuo imediato ao detectar qualquer dano • retorna com 95% HP",UDim2.fromOffset(2,y),UDim2.new(1,-6,0,24),7); safetyInfo.TextWrapped=true; y+=30
 label(page,"Tipos de drone",UDim2.fromOffset(2,y),UDim2.new(1,-4,0,18),8); y+=22
 local aug=button(page,"Augmented: ON",UDim2.fromOffset(0,y),UDim2.new(1/3,-4,0,28))
 local rea=button(page,"Reactor: ON",UDim2.new(1/3,2,0,y),UDim2.new(1/3,-4,0,28))

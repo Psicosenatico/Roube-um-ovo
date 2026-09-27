@@ -20,12 +20,14 @@ local Workspace=game:GetService("Workspace")
 local ReplicatedStorage=game:GetService("ReplicatedStorage")
 local CoreGui=game:GetService("CoreGui")
 local UIS=game:GetService("UserInputService")
+local VirtualUser=game:GetService("VirtualUser")
 local LP=Players.LocalPlayer
 
 local CONFIG={
     EggESP=true,
     InstantPrompt=true,
     InstantHit=true,
+    AntiAFK=true,
     MinRarity=0,
     MinEarnings=0,
     MinSellPrice=0,
@@ -76,6 +78,10 @@ local State={
     CarryMultiplier=1,
     LastCarryUid=nil,
     LastCarryServerMultiplier=nil,
+    AntiAFKTriggers=0,
+    AntiAFKLastPulse=os.clock(),
+    AntiAFKLastReason="início",
+    AntiAFKLastSuccess=nil,
     Stats={EspVisible=0,CatalogPets=0},
 }
 
@@ -90,7 +96,8 @@ local SpeedPowerProjection
 local gui,mainFrame,uiScale,floatButton
 local statusLabel,liveInfoLabel
 local rarityButton,mutationButton,petButton,availabilityButton
-local espToggleButton,promptToggleButton,hitToggleButton
+local espToggleButton,promptToggleButton,hitToggleButton,antiAfkToggleButton
+local antiAfkStatusLabel
 local petModal,petSearchBox,petList
 
 local function safeString(v)
@@ -900,6 +907,51 @@ local function updateToggleVisual(btn,on)
     btn.Text=base..(on and "  ON" or "  OFF")
 end
 
+local ANTI_AFK_INTERVAL=6*60
+
+local function antiAfkPulse(reason)
+    if not (State.Alive and CONFIG.AntiAFK) then return false end
+    local ok=pcall(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new(0,0))
+    end)
+    if not ok then
+        ok=pcall(function()
+            local camera=Workspace.CurrentCamera
+            local cf=camera and camera.CFrame or CFrame.new()
+            VirtualUser:CaptureController()
+            VirtualUser:Button2Down(Vector2.new(0,0),cf)
+            task.wait(.05)
+            VirtualUser:Button2Up(Vector2.new(0,0),cf)
+        end)
+    end
+    State.AntiAFKLastPulse=os.clock()
+    State.AntiAFKLastReason=reason or "preventivo"
+    State.AntiAFKLastSuccess=ok
+    if ok then State.AntiAFKTriggers=State.AntiAFKTriggers+1 end
+    return ok
+end
+
+local function refreshAntiAfkStatus()
+    if not antiAfkStatusLabel then return end
+    if not CONFIG.AntiAFK then
+        antiAfkStatusLabel.Text="Anti AFK desativado"
+        antiAfkStatusLabel.TextColor3=Color3.fromRGB(170,184,210)
+        return
+    end
+    local elapsed=math.max(0,os.clock()-(State.AntiAFKLastPulse or os.clock()))
+    local remain=math.max(0,ANTI_AFK_INTERVAL-elapsed)
+    local min=math.floor(remain/60)
+    local sec=math.floor(remain%60)
+    local result=State.AntiAFKLastSuccess==false and " • falha na última tentativa" or ""
+    antiAfkStatusLabel.Text=string.format(
+        "Protegido • próxima ação %d:%02d • ativações %d%s",
+        min,sec,State.AntiAFKTriggers or 0,result
+    )
+    antiAfkStatusLabel.TextColor3=State.AntiAFKLastSuccess==false
+        and Color3.fromRGB(255,176,120) or Color3.fromRGB(139,164,207)
+end
+
 local function applyPrompt(prompt)
     if not prompt:IsA("ProximityPrompt") then return end
     local original=State.PromptOriginals[prompt]
@@ -1118,6 +1170,10 @@ local function makeMainToggle(parent,label,y,key)
             refreshPrompts()
         elseif key=="InstantHit" then
             if CONFIG.InstantHit then refreshBats() else restoreBats() end
+        elseif key=="AntiAFK" then
+            State.AntiAFKLastPulse=os.clock()
+            State.AntiAFKLastReason=CONFIG.AntiAFK and "ativado" or "desativado"
+            refreshAntiAfkStatus()
         end
         refreshStatus()
     end)
@@ -1203,7 +1259,7 @@ mainPage.BackgroundTransparency=1
 mainPage.BorderSizePixel=0
 mainPage.Position=UDim2.fromOffset(8,8)
 mainPage.Size=UDim2.new(1,-16,1,-16)
-mainPage.CanvasSize=UDim2.fromOffset(0,166)
+mainPage.CanvasSize=UDim2.fromOffset(0,222)
 mainPage.ScrollBarThickness=3
 mainPage.ScrollBarImageColor3=Color3.fromRGB(94,139,223)
 mainPage.Parent=contentHost
@@ -1222,7 +1278,11 @@ filterPage.Parent=contentHost
 espToggleButton=makeMainToggle(mainPage,"ESP • Ovos",0,"EggESP")
 promptToggleButton=makeMainToggle(mainPage,"Instant Prompt",38,"InstantPrompt")
 hitToggleButton=makeMainToggle(mainPage,"Instant Hit • Bat",76,"InstantHit")
-local refreshButton=mkButton(mainPage,"Atualizar ovos",UDim2.fromOffset(0,114),UDim2.new(1,0,0,32))
+antiAfkToggleButton=makeMainToggle(mainPage,"Anti AFK • 6 min",114,"AntiAFK")
+antiAfkStatusLabel=mkLabel(mainPage,"Protegido • próxima ação 6:00 • ativações 0",UDim2.fromOffset(4,150),UDim2.new(1,-8,0,24),8)
+antiAfkStatusLabel.TextXAlignment=Enum.TextXAlignment.Center
+antiAfkStatusLabel.TextColor3=Color3.fromRGB(139,164,207)
+local refreshButton=mkButton(mainPage,"Atualizar ovos",UDim2.fromOffset(0,180),UDim2.new(1,0,0,32))
 
 local filterY=0
 mkLabel(filterPage,"Raridade mínima",UDim2.fromOffset(0,filterY),UDim2.new(.45,0,0,28),9)
@@ -1566,6 +1626,13 @@ end)
 connect(Workspace.DescendantRemoving,function(inst)
     if type(inst.Name)=="string" and State.Eggs[inst.Name] then queueRefresh() end
 end)
+connect(LP.Idled,function()
+    if CONFIG.AntiAFK then
+        antiAfkPulse("Idled")
+        refreshAntiAfkStatus()
+    end
+end)
+
 connect(LP.ChildAdded,function(child)
     if child:IsA("Backpack") then
         connect(child.ChildAdded,function(tool)
@@ -1616,6 +1683,8 @@ refreshBats()
 updateToggleVisual(espToggleButton,CONFIG.EggESP)
 updateToggleVisual(promptToggleButton,CONFIG.InstantPrompt)
 updateToggleVisual(hitToggleButton,CONFIG.InstantHit)
+updateToggleVisual(antiAfkToggleButton,CONFIG.AntiAFK)
+refreshAntiAfkStatus()
 
 task.defer(function()
     task.wait(.4)
@@ -1627,6 +1696,10 @@ task.defer(function()
         task.wait(.65)
         if CONFIG.EggESP then refreshESP() end
         if CONFIG.InstantHit then refreshBats() end
+        if CONFIG.AntiAFK and os.clock()-(State.AntiAFKLastPulse or 0)>=ANTI_AFK_INTERVAL then
+            antiAfkPulse("preventivo 6 min")
+        end
+        refreshAntiAfkStatus()
         refreshStatus()
         refreshLiveInfo()
     end

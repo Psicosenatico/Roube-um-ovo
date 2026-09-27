@@ -26,6 +26,7 @@ local CONFIG={
     EggESP=true,
     InstantPrompt=true,
     InstantHit=true,
+    AutoTrain=true,
     MinRarity=0,
     MinEarnings=0,
     MinSellPrice=0,
@@ -76,6 +77,14 @@ local State={
     CarryMultiplier=1,
     LastCarryUid=nil,
     LastCarryServerMultiplier=nil,
+    AutoTrainLastWear=0,
+    AutoTrainLastPower=nil,
+    AutoTrainLastPowerAt=0,
+    AutoTrainRate=0,
+    AutoTrainEarned=0,
+    AutoTrainStatus="Inicializando",
+    AutoTrainBelt=nil,
+    AutoTrainBeltAt=0,
     Stats={EspVisible=0,CatalogPets=0},
 }
 
@@ -86,11 +95,14 @@ local MutationCatalog
 local GuardEscapePrediction
 local TreadmillUtil
 local SpeedPowerProjection
+local PlotState
+local SharedRemotes
 
 local gui,mainFrame,uiScale,floatButton
 local statusLabel,liveInfoLabel
 local rarityButton,mutationButton,petButton,availabilityButton
-local espToggleButton,promptToggleButton,hitToggleButton
+local espToggleButton,promptToggleButton,hitToggleButton,autoTrainToggleButton
+local autoTrainStatusLabel
 local petModal,petSearchBox,petList
 
 local function safeString(v)
@@ -261,6 +273,8 @@ local function resolveModules()
     GuardEscapePrediction=requireOptional("Shared.Modules.GuardAreas.GuardEscapePrediction")
     TreadmillUtil=requireOptional("Shared.Util.TreadmillUtil")
     SpeedPowerProjection=requireOptional("Client.SpeedPowerProjection")
+    PlotState=requireOptional("Client.PlotState")
+    SharedRemotes=requireOptional("Shared.Remotes")
     indexMutationScalars()
     return true
 end
@@ -980,6 +994,191 @@ local function restoreBats()
     end
 end
 
+
+-- Auto Train uses the game's own treadmill flow:
+-- own plot treadmill -> walk onto belt -> AskWearStill every 1.2s.
+local AUTO_TRAIN_WEAR_INTERVAL=1.2
+
+local function unwrapRemote(v)
+    if typeof(v)=="Instance" then return v end
+    if typeof(v)~="table" then return nil end
+    for _,key in ipairs({"Remote","remote","Instance","_remote","_instance","Event"}) do
+        if typeof(v[key])=="Instance" then return v[key] end
+    end
+    return v
+end
+
+local function resolveOwnPlot()
+    if typeof(PlotState)~="table" then PlotState=requireOptional("Client.PlotState") end
+    local info,ok=callTableFn(PlotState,"ResolvePlot")
+    return ok and typeof(info)=="table" and info or nil
+end
+
+local function findTreadmillPart()
+    local now=os.clock()
+    local cached=State.AutoTrainBelt
+    if cached and cached.Parent and now-(State.AutoTrainBeltAt or 0)<.85 then return cached end
+
+    local belt
+    local info=resolveOwnPlot()
+    local folder=info and info.PlotFolder
+    if folder then
+        belt=folder:FindFirstChild("TreadmillBottom",true)
+        if not (belt and belt:IsA("BasePart")) then
+            belt=nil
+            local bestVolume=-1
+            for _,d in ipairs(folder:GetDescendants()) do
+                if d:IsA("BasePart") then
+                    local n=lower(d.Name)
+                    if n:find("treadmill",1,true) or n=="bottom" or n:find("belt",1,true) then
+                        local volume=d.Size.X*d.Size.Y*d.Size.Z
+                        if volume>bestVolume then bestVolume=volume; belt=d end
+                    end
+                end
+            end
+        end
+    end
+
+    if not belt then
+        local renders=Workspace:FindFirstChild("__ClientTreadmillRenders")
+        local root=playerRoot()
+        local bestDist=math.huge
+        if renders and root then
+            for _,d in ipairs(renders:GetDescendants()) do
+                if d:IsA("BasePart") then
+                    local n=lower(d.Name)
+                    if n=="treadmillbottom" or n=="bottom" or n:find("belt",1,true) then
+                        local dist=(d.Position-root.Position).Magnitude
+                        if dist<bestDist then bestDist=dist; belt=d end
+                    end
+                end
+            end
+        end
+    end
+
+    State.AutoTrainBelt=belt
+    State.AutoTrainBeltAt=now
+    return belt
+end
+
+local function onTreadmill(root,belt)
+    if not (root and belt and belt:IsA("BasePart")) then return false end
+    local localPos=belt.CFrame:PointToObjectSpace(root.Position)
+    local sx=belt.Size.X*.5+2
+    local sz=belt.Size.Z*.5+2
+    local inBounds=math.abs(localPos.X)<=sx and math.abs(localPos.Z)<=sz
+    if inBounds then return math.abs(root.Position.Y-belt.Position.Y)<10 end
+    local flat=Vector3.new(root.Position.X-belt.Position.X,0,root.Position.Z-belt.Position.Z).Magnitude
+    return flat<6 and math.abs(root.Position.Y-belt.Position.Y)<10
+end
+
+local function treadmillTarget(belt)
+    return belt and (belt.Position+Vector3.new(0,belt.Size.Y*.5+3.2,0)) or nil
+end
+
+local function treadmillRemote()
+    if typeof(SharedRemotes)~="table" then SharedRemotes=requireOptional("Shared.Remotes") end
+    local group=typeof(SharedRemotes)=="table" and SharedRemotes.Treadmill or nil
+    return unwrapRemote(typeof(group)=="table" and group.AskWearStill or nil)
+end
+
+local function askWearStill()
+    local remote=treadmillRemote()
+    if not remote then return false,"remote ausente" end
+    if typeof(remote)=="Instance" and remote:IsA("RemoteFunction") then
+        local ok,result=pcall(function() return remote:InvokeServer() end)
+        return ok and result==true, ok and result or "InvokeServer falhou"
+    end
+    if typeof(remote)=="table" and type(remote.InvokeServer)=="function" then
+        local ok,result=pcall(function() return remote:InvokeServer() end)
+        if not ok then ok,result=pcall(remote.InvokeServer,remote) end
+        return ok and result==true, ok and result or "wrapper falhou"
+    end
+    return false,"remote inválido"
+end
+
+local function stopAutoTrainMovement()
+    local hum=playerHumanoid()
+    if hum then
+        pcall(function() hum:Move(Vector3.zero,false) end)
+    end
+end
+
+local function refreshAutoTrainStatus()
+    if not autoTrainStatusLabel then return end
+    if not CONFIG.AutoTrain then
+        autoTrainStatusLabel.Text="Auto Train desativado"
+        autoTrainStatusLabel.TextColor3=Color3.fromRGB(170,184,210)
+        return
+    end
+    local rate=tonumber(State.AutoTrainRate) or 0
+    local earned=tonumber(State.AutoTrainEarned) or 0
+    autoTrainStatusLabel.Text=string.format(
+        "%s • +%s/s • sessão +%s",
+        State.AutoTrainStatus or "Auto Train",
+        formatCompact(rate),
+        formatCompact(earned)
+    )
+    autoTrainStatusLabel.TextColor3=Color3.fromRGB(139,164,207)
+end
+
+local function autoTrainTick()
+    if not (State.Alive and CONFIG.AutoTrain) then return end
+
+    local hum=playerHumanoid()
+    local root=playerRoot()
+    if not (hum and root) or hum.Health<=0 then
+        State.AutoTrainStatus="Aguardando personagem"
+        return
+    end
+
+    local power=readSpeedPower()
+    local now=os.clock()
+    if finite(power) then
+        if finite(State.AutoTrainLastPower) and now>(State.AutoTrainLastPowerAt or 0) then
+            local dt=now-(State.AutoTrainLastPowerAt or 0)
+            if dt>.2 then
+                local gain=math.max(0,power-State.AutoTrainLastPower)
+                State.AutoTrainEarned=(State.AutoTrainEarned or 0)+gain
+                State.AutoTrainRate=gain/dt
+            end
+        end
+        State.AutoTrainLastPower=power
+        State.AutoTrainLastPowerAt=now
+    end
+
+    local belt=findTreadmillPart()
+    if not belt then
+        State.AutoTrainStatus="Esteira não encontrada"
+        return
+    end
+
+    local target=treadmillTarget(belt)
+    if not onTreadmill(root,belt) then
+        State.AutoTrainStatus="Indo para esteira"
+        pcall(function()
+            hum.PlatformStand=false
+            hum.Sit=false
+            hum:MoveTo(target)
+        end)
+        return
+    end
+
+    stopAutoTrainMovement()
+    State.AutoTrainStatus="Treinando"
+
+    if now-(State.AutoTrainLastWear or 0)>=AUTO_TRAIN_WEAR_INTERVAL then
+        State.AutoTrainLastWear=now
+        local ok,why=askWearStill()
+        if ok then
+            State.AutoTrainStatus="Treinando"
+        else
+            -- Remaining physically on the treadmill still lets the next tick retry.
+            State.AutoTrainStatus="Na esteira • sincronizando"
+        end
+    end
+end
+
 local refreshQueued=false
 local function queueRefresh()
     if refreshQueued then return end
@@ -1118,6 +1317,17 @@ local function makeMainToggle(parent,label,y,key)
             refreshPrompts()
         elseif key=="InstantHit" then
             if CONFIG.InstantHit then refreshBats() else restoreBats() end
+        elseif key=="AutoTrain" then
+            if CONFIG.AutoTrain then
+                State.AutoTrainStatus="Ativando"
+                State.AutoTrainLastWear=0
+                State.AutoTrainBelt=nil
+                State.AutoTrainBeltAt=0
+            else
+                State.AutoTrainStatus="Desativado"
+                stopAutoTrainMovement()
+            end
+            refreshAutoTrainStatus()
         end
         refreshStatus()
     end)
@@ -1203,7 +1413,7 @@ mainPage.BackgroundTransparency=1
 mainPage.BorderSizePixel=0
 mainPage.Position=UDim2.fromOffset(8,8)
 mainPage.Size=UDim2.new(1,-16,1,-16)
-mainPage.CanvasSize=UDim2.fromOffset(0,166)
+mainPage.CanvasSize=UDim2.fromOffset(0,222)
 mainPage.ScrollBarThickness=3
 mainPage.ScrollBarImageColor3=Color3.fromRGB(94,139,223)
 mainPage.Parent=contentHost
@@ -1222,7 +1432,11 @@ filterPage.Parent=contentHost
 espToggleButton=makeMainToggle(mainPage,"ESP • Ovos",0,"EggESP")
 promptToggleButton=makeMainToggle(mainPage,"Instant Prompt",38,"InstantPrompt")
 hitToggleButton=makeMainToggle(mainPage,"Instant Hit • Bat",76,"InstantHit")
-local refreshButton=mkButton(mainPage,"Atualizar ovos",UDim2.fromOffset(0,114),UDim2.new(1,0,0,32))
+autoTrainToggleButton=makeMainToggle(mainPage,"Auto Train • Esteira",114,"AutoTrain")
+autoTrainStatusLabel=mkLabel(mainPage,"Inicializando Auto Train...",UDim2.fromOffset(4,150),UDim2.new(1,-8,0,24),8)
+autoTrainStatusLabel.TextXAlignment=Enum.TextXAlignment.Center
+autoTrainStatusLabel.TextColor3=Color3.fromRGB(139,164,207)
+local refreshButton=mkButton(mainPage,"Atualizar ovos",UDim2.fromOffset(0,180),UDim2.new(1,0,0,32))
 
 local filterY=0
 mkLabel(filterPage,"Raridade mínima",UDim2.fromOffset(0,filterY),UDim2.new(.45,0,0,28),9)
@@ -1576,6 +1790,12 @@ end)
 connect(LP.CharacterAdded,function(char)
     State.CarryMultiplier=1
     State.LastCarryUid=nil
+    State.AutoTrainLastWear=0
+    State.AutoTrainLastPower=nil
+    State.AutoTrainLastPowerAt=0
+    State.AutoTrainBelt=nil
+    State.AutoTrainBeltAt=0
+    if CONFIG.AutoTrain then State.AutoTrainStatus="Aguardando personagem" end
     connect(char.ChildAdded,function(tool)
         if tool:IsA("Tool") then task.defer(function() patchBat(tool) end) end
     end)
@@ -1602,6 +1822,7 @@ local function cleanup()
         if prompt and prompt.Parent then pcall(function() prompt.HoldDuration=original end) end
     end
     restoreBats()
+    stopAutoTrainMovement()
     for _,c in ipairs(State.RemoteConnections) do disconnect(c) end
     for _,c in ipairs(State.Connections) do disconnect(c) end
     _G.PSICO_ROUBE_MENU_CLEANUP=nil
@@ -1616,6 +1837,8 @@ refreshBats()
 updateToggleVisual(espToggleButton,CONFIG.EggESP)
 updateToggleVisual(promptToggleButton,CONFIG.InstantPrompt)
 updateToggleVisual(hitToggleButton,CONFIG.InstantHit)
+updateToggleVisual(autoTrainToggleButton,CONFIG.AutoTrain)
+refreshAutoTrainStatus()
 
 task.defer(function()
     task.wait(.4)
@@ -1627,6 +1850,8 @@ task.defer(function()
         task.wait(.65)
         if CONFIG.EggESP then refreshESP() end
         if CONFIG.InstantHit then refreshBats() end
+        if CONFIG.AutoTrain then autoTrainTick() end
+        refreshAutoTrainStatus()
         refreshStatus()
         refreshLiveInfo()
     end

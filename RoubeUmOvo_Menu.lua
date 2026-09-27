@@ -110,6 +110,23 @@ local function finite(v)
     return type(v)=="number" and v==v and v~=math.huge and v~=-math.huge
 end
 
+-- Use the displayed rarity name as the canonical filter rank.
+-- Some current asset configs do not expose a usable RarityNumber, which
+-- previously made every egg rank as 0 and caused any rarity filter to hide all ESP.
+local function rarityRank(name,raw)
+    local key=normalize(name)
+    if key~="" then
+        for i,rarity in ipairs(RARITY_ORDER) do
+            if normalize(rarity)==key then return i end
+        end
+    end
+    local n=tonumber(raw)
+    if finite(n) and n>=1 and n<=#RARITY_ORDER then
+        return math.floor(n+0.5)
+    end
+    return 0
+end
+
 local function connect(signal,fn,bucket)
     local c=signal:Connect(fn)
     table.insert(bucket or State.Connections,c)
@@ -250,11 +267,12 @@ end
 
 local function indexEntry(key,cfg)
     if typeof(cfg)~="table" or typeof(cfg.Rarity)~="table" then return false end
+    local rarityName=cfg.Rarity.DisplayName or cfg.Rarity._id
     local entry={
         Key=safeString(key),
         PetName=cfg.DisplayName or safeString(key),
-        Rarity=cfg.Rarity.DisplayName or cfg.Rarity._id,
-        RarityNumber=cfg.Rarity.RarityNumber,
+        Rarity=rarityName,
+        RarityNumber=rarityRank(rarityName,cfg.Rarity.RarityNumber),
         RarityColor=cfg.Rarity.Color,
         EarningRate=tonumber(cfg.EarningRate),
     }
@@ -391,6 +409,7 @@ local function enrichRecord(record)
     local weight,wok=callTableFn(EggRecords,"WeightKg",record)
     local weightLabel,lok=callTableFn(EggRecords,"WeightLabel",record)
     local sell,sok=callTableFn(EggRecords,"SellPrice",record)
+    local rarityName=cfg and cfg.Rarity or record.Rarity
     State.Eggs[record.Uid]={
         Uid=record.Uid,
         State=record.State,
@@ -399,8 +418,8 @@ local function enrichRecord(record)
         Mutations=copyMutations(record.Mutations),
         HasParasite=record.HasParasite==true,
         PetName=cfg and cfg.PetName or record.AssetCategory,
-        Rarity=cfg and cfg.Rarity or record.Rarity,
-        RarityNumber=cfg and cfg.RarityNumber or nil,
+        Rarity=rarityName,
+        RarityNumber=rarityRank(rarityName,cfg and cfg.RarityNumber or record.RarityNumber),
         RarityColor=cfg and cfg.RarityColor or nil,
         EarningsPerSecond=resolveEarnings(record,cfg),
         WeightKg=(wok and finite(tonumber(weight))) and tonumber(weight) or nil,
@@ -675,7 +694,7 @@ end
 
 local function eggPasses(egg)
     if not CONFIG.EggESP then return false end
-    if (tonumber(egg.RarityNumber) or 0)<CONFIG.MinRarity then return false end
+    if rarityRank(egg.Rarity,egg.RarityNumber)<CONFIG.MinRarity then return false end
     if (tonumber(egg.EarningsPerSecond) or 0)<CONFIG.MinEarnings then return false end
     if (tonumber(egg.SellPrice) or 0)<CONFIG.MinSellPrice then return false end
     if CONFIG.SelectedPet~="" then

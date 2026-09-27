@@ -10,7 +10,6 @@ end
 
 run('RoubeUmOvo_Menu.lua')
 run('InventoryEggPanel_V5.lua')
-run('EventAutoFarm.lua')
 
 task.defer(function()
     task.wait(.2)
@@ -24,7 +23,7 @@ task.defer(function()
             if m then
                 for _,d in ipairs(m:GetDescendants())do
                     if d:IsA('TextLabel')and d.Text:find('V8.',1,true)==1 then
-                        d.Text='V8.7.4 • EVENT FARM TEST'
+                        d.Text='V8.7.4 • INVENTORY COMPACT'
                         return
                     end
                 end

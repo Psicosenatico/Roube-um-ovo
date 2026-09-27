@@ -413,6 +413,75 @@ local function readOwnedEggs()
     return {}, 'none'
 end
 
+local freshOwnedCache = nil
+local freshOwnedAt = 0
+local FRESH_OWNED_INTERVAL = 1.25
+
+-- Inventory cards need a server-refreshed ownership snapshot.
+-- ReadOwnerEggs can temporarily retain a consumed egg after it is handed to
+-- the mutation flow; SyncOwnedEggs returns the fresh owner packets and also
+-- refreshes EggState. Keep this path separate from Base ESP so we do not add
+-- unnecessary sync traffic to placed-egg rendering.
+local function syncOwnedEggsFresh(force)
+    if type(EggState) ~= 'table' or type(EggState.SyncOwnedEggs) ~= 'function' then
+        return nil, false
+    end
+
+    local now = os.clock()
+    if not force and freshOwnedCache ~= nil and now - freshOwnedAt < FRESH_OWNED_INTERVAL then
+        return freshOwnedCache, true
+    end
+
+    local ok, snapshot = pcall(EggState.SyncOwnedEggs)
+    if not ok then
+        ok, snapshot = pcall(EggState.SyncOwnedEggs, EggState)
+    end
+    if not ok or type(snapshot) ~= 'table' then
+        return nil, false
+    end
+
+    -- Current builds return owner packets:
+    -- { {OwnerUserId = ..., Records = {[uid] = record}}, ... }
+    local sawOwnerPacket = false
+    for _, packet in pairs(snapshot) do
+        if type(packet) == 'table' and (packet.OwnerUserId ~= nil or packet.Records ~= nil) then
+            sawOwnerPacket = true
+            if tonumber(packet.OwnerUserId) == LP.UserId and type(packet.Records) == 'table' then
+                freshOwnedCache = packet.Records
+                freshOwnedAt = now
+                return freshOwnedCache, true
+            end
+        end
+    end
+
+    -- Some builds may return one owner packet instead of an array.
+    if (snapshot.OwnerUserId ~= nil or snapshot.Records ~= nil) then
+        sawOwnerPacket = true
+        if tonumber(snapshot.OwnerUserId) == LP.UserId and type(snapshot.Records) == 'table' then
+            freshOwnedCache = snapshot.Records
+            freshOwnedAt = now
+            return freshOwnedCache, true
+        end
+    end
+
+    -- A successful packet snapshot with no entry for us means zero owned eggs.
+    if sawOwnerPacket then
+        freshOwnedCache = {}
+        freshOwnedAt = now
+        return freshOwnedCache, true
+    end
+
+    return nil, false
+end
+
+local function readInventoryEggs(forceSync)
+    local fresh, ok = syncOwnedEggsFresh(forceSync == true)
+    if ok then
+        return fresh, 'SyncOwnedEggs'
+    end
+    return readOwnedEggs()
+end
+
 local function cat(r)
     return rv(r, 'AssetCategory') or rv(r, 'Category') or rv(r, 'Name')
 end
@@ -514,10 +583,12 @@ local function inCharacterUID(uid)
 end
 
 local function equipRecord(key, rec)
-    local liveInv = readOwnedEggs()
+    -- Force a fresh ownership check before equipping so a UID consumed by
+    -- mutation is rejected locally instead of reaching AskWearTool as "Egg not found".
+    local liveInv = readInventoryEggs(true)
     local liveRec = type(liveInv) == 'table' and (liveInv[key] or liveInv[tostring(key)]) or nil
     if liveRec == nil then
-        return false, 'Este ovo não está mais disponível no inventário'
+        return false, 'Este ovo saiu do inventário (mutação/remoção)'
     end
     if isPlaced(liveRec) then
         return false, 'Este ovo já está colocado na base'
@@ -1089,7 +1160,7 @@ end
 local function read()
     rows = {}
     inventoryTotal = 0
-    local inv = readOwnedEggs()
+    local inv = readInventoryEggs(false)
     if type(inv) ~= 'table' then return end
 
     for key, r in pairs(inv) do
@@ -1317,7 +1388,7 @@ refreshBaseControls()
 
 local placementSignature = ''
 local function inventorySignature()
-    local inv = readOwnedEggs()
+    local inv = readInventoryEggs(false)
     if type(inv) ~= 'table' then return '' end
     local keys = {}
     for key, rec in pairs(inv) do

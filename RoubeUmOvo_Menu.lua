@@ -20,6 +20,7 @@ local Workspace=game:GetService("Workspace")
 local ReplicatedStorage=game:GetService("ReplicatedStorage")
 local CoreGui=game:GetService("CoreGui")
 local UIS=game:GetService("UserInputService")
+local LocalizationService=game:GetService("LocalizationService")
 local LP=Players.LocalPlayer
 
 local CONFIG={
@@ -97,6 +98,8 @@ local TreadmillUtil
 local SpeedPowerProjection
 local PlotState
 local SharedRemotes
+local PetTranslator
+local PetLocalizedCache={}
 
 local gui,mainFrame,uiScale,floatButton
 local statusLabel,liveInfoLabel
@@ -116,6 +119,68 @@ end
 
 local function normalize(v)
     return lower(v):gsub("[%s_%-%.:/%[%]%(%)']","")
+end
+
+-- Accent-insensitive text used only by the pet picker search.
+-- This lets "passaro" match "Pássaro", for example.
+local SEARCH_ACCENTS={
+    ["á"]="a",["à"]="a",["â"]="a",["ã"]="a",["ä"]="a",
+    ["Á"]="a",["À"]="a",["Â"]="a",["Ã"]="a",["Ä"]="a",
+    ["é"]="e",["è"]="e",["ê"]="e",["ë"]="e",
+    ["É"]="e",["È"]="e",["Ê"]="e",["Ë"]="e",
+    ["í"]="i",["ì"]="i",["î"]="i",["ï"]="i",
+    ["Í"]="i",["Ì"]="i",["Î"]="i",["Ï"]="i",
+    ["ó"]="o",["ò"]="o",["ô"]="o",["õ"]="o",["ö"]="o",
+    ["Ó"]="o",["Ò"]="o",["Ô"]="o",["Õ"]="o",["Ö"]="o",
+    ["ú"]="u",["ù"]="u",["û"]="u",["ü"]="u",
+    ["Ú"]="u",["Ù"]="u",["Û"]="u",["Ü"]="u",
+    ["ç"]="c",["Ç"]="c",
+}
+
+local function searchText(v)
+    local s=safeString(v or "")
+    for from,to in pairs(SEARCH_ACCENTS) do s=s:gsub(from,to) end
+    return string.lower(s)
+end
+
+local function resolvePetTranslator()
+    if PetTranslator then return PetTranslator end
+
+    -- Force Brazilian Portuguese so the picker matches the names shown by
+    -- the game's Portuguese localization, regardless of executor UI locale.
+    local ok,tr=pcall(function()
+        return LocalizationService:GetTranslatorForLocaleAsync("pt-br")
+    end)
+    if ok and tr then
+        PetTranslator=tr
+        return PetTranslator
+    end
+
+    -- Compatibility fallback: use Roblox's translator for the local player.
+    ok,tr=pcall(function()
+        return LocalizationService:GetTranslatorForPlayerAsync(LP)
+    end)
+    if ok and tr then PetTranslator=tr end
+    return PetTranslator
+end
+
+local function localizedPetName(source)
+    source=safeString(source or "")
+    if source=="" then return source end
+    if PetLocalizedCache[source] then return PetLocalizedCache[source] end
+
+    local translated=source
+    local tr=resolvePetTranslator()
+    if tr then
+        local context=LP:FindFirstChildOfClass("PlayerGui") or game
+        local ok,result=pcall(function()
+            return tr:Translate(context,source)
+        end)
+        if ok and type(result)=="string" and result~="" then translated=result end
+    end
+
+    PetLocalizedCache[source]=translated
+    return translated
 end
 
 local function finite(v)
@@ -282,15 +347,17 @@ end
 local function indexEntry(key,cfg)
     if typeof(cfg)~="table" or typeof(cfg.Rarity)~="table" then return false end
     local rarityName=cfg.Rarity.DisplayName or cfg.Rarity._id
+    local petName=cfg.DisplayName or safeString(key)
     local entry={
         Key=safeString(key),
-        PetName=cfg.DisplayName or safeString(key),
+        PetName=petName,
+        PetNameLocalized=localizedPetName(petName),
         Rarity=rarityName,
         RarityNumber=rarityRank(rarityName,cfg.Rarity.RarityNumber),
         RarityColor=cfg.Rarity.Color,
         EarningRate=tonumber(cfg.EarningRate),
     }
-    for _,name in ipairs({entry.Key,entry.PetName}) do
+    for _,name in ipairs({entry.Key,entry.PetName,entry.PetNameLocalized}) do
         if type(name)=="string" and name~="" then State.CatalogIndex[normalize(name)]=entry end
     end
     if typeof(cfg.Egg)=="table" and type(cfg.Egg.DisplayName)=="string" then
@@ -317,7 +384,9 @@ local function buildCatalog()
     end
     table.sort(State.CatalogEntries,function(a,b)
         local ar,br=tonumber(a.RarityNumber) or 999,tonumber(b.RarityNumber) or 999
-        if ar==br then return safeString(a.PetName)<safeString(b.PetName) end
+        if ar==br then
+            return searchText(a.PetNameLocalized or a.PetName)<searchText(b.PetNameLocalized or b.PetName)
+        end
         return ar<br
     end)
     State.Stats.CatalogPets=found
@@ -1561,7 +1630,9 @@ local function catalogForPicker()
             out[#out+1]=entry
         end
     end
-    table.sort(out,function(a,b) return lower(a.PetName)<lower(b.PetName) end)
+    table.sort(out,function(a,b)
+        return searchText(a.PetNameLocalized or a.PetName)<searchText(b.PetNameLocalized or b.PetName)
+    end)
     return out
 end
 
@@ -1580,7 +1651,7 @@ local function buildPetRows(query)
         if child:IsA("GuiObject") then child:Destroy() end
     end
     local y=0
-    local q=lower(query or "")
+    local q=searchText(query or "")
     local all=mkButton(petList,"Todos os pets",UDim2.fromOffset(0,y),UDim2.new(1,-4,0,28))
     all.TextXAlignment=Enum.TextXAlignment.Left
     all.ZIndex=32
@@ -1593,15 +1664,19 @@ local function buildPetRows(query)
     end)
     y=y+32
     for _,entry in ipairs(catalogForPicker()) do
-        local name=safeString(entry.PetName)
+        local canonical=safeString(entry.PetName)
+        local name=safeString(entry.PetNameLocalized or localizedPetName(canonical))
         local rarity=safeString(entry.Rarity or "?")
-        if q=="" or lower(name):find(q,1,true) or lower(rarity):find(q,1,true) then
+        local localizedSearch=searchText(name)
+        local canonicalSearch=searchText(canonical)
+        if q=="" or localizedSearch:find(q,1,true) or canonicalSearch:find(q,1,true) or searchText(rarity):find(q,1,true) then
             local row=mkButton(petList,name.."  •  "..rarity,UDim2.fromOffset(0,y),UDim2.new(1,-4,0,28))
             row.TextXAlignment=Enum.TextXAlignment.Left
             row.ZIndex=32
             row.TextColor3=rarityFallbackColor(rarity)
             connect(row.MouseButton1Click,function()
-                CONFIG.SelectedPet=name
+                -- Store the canonical game name for filtering, but show Portuguese.
+                CONFIG.SelectedPet=canonical
                 petButton.Text=name
                 closePetModal()
                 refreshESP()

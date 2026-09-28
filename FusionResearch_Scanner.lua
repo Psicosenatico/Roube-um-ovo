@@ -23,6 +23,7 @@ local S={
     lastReady=nil,
     lastSlotSnapshot=nil,
     lastSlotAt=0,
+    lastObservedSlotSignature="",
     cycleInventoryBefore=nil,
     cycleStartedAt=0,
     lastInventorySnapshot=nil,
@@ -330,7 +331,18 @@ local function captureFusionState(data,source)
     if n>0 then
         S.lastSlotSnapshot=rows
         S.lastSlotAt=nowClock
-        event("SlotState",{source=source,count=n,inputs=rows})
+        local observedSig=signature(rows)
+        if observedSig~=S.lastObservedSlotSignature then
+            S.lastObservedSlotSignature=observedSig
+            event("SlotState",{source=source,count=n,inputs=rows})
+            updateStatus("Entradas observadas: "..tostring(n).."/3")
+        end
+    elseif S.lastObservedSlotSignature~="" and nowClock-(S.lastSlotAt or 0)>20 then
+        -- User likely cancelled/ejected without fusing; discard the stale cycle.
+        S.lastObservedSlotSignature=""
+        S.lastSlotSnapshot=nil
+        S.cycleInventoryBefore=nil
+        S.cycleStartedAt=0
     end
 
     if n==3 then
@@ -409,11 +421,7 @@ local function recordReward(reward,source)
         inputs=recovered,
         inputCaptureMethod=(#exactInputs==3 and "FusionSlots3") or (#removed>=3 and "InventoryDiff") or (#recentSlots>0 and "PartialSlots") or "none",
         inputSignature=#recovered>0 and signature(recovered) or nil,
-        fusePrice=(before and before.fusePrice) or (#recovered==3 and fusePrice(recovered,S.cycleInventoryBefore and {Inventory=(function()
-            local inv={}
-            for uid,row in pairs(S.cycleInventoryBefore) do inv[uid]=row.raw or row end
-            return inv
-        end)()} or data) or nil),
+        fusePrice=before and before.fusePrice or nil,
         moneyBefore=before and before.moneyBefore or nil,
         moneyAfter=data and tonumber(data.Money) or nil,
         reward=primitive(reward),
@@ -435,6 +443,7 @@ local function recordReward(reward,source)
     S.lastReady=nil
     S.lastSlotSnapshot=nil
     S.lastSlotAt=0
+    S.lastObservedSlotSignature=""
     S.cycleInventoryBefore=nil
     S.cycleStartedAt=0
 end
@@ -663,6 +672,7 @@ mkButton("LIMPAR",.57,.20,function()
     S.lastReady=nil
     S.lastSlotSnapshot=nil
     S.lastSlotAt=0
+    S.lastObservedSlotSignature=""
     S.cycleInventoryBefore=nil
     S.cycleStartedAt=0
     S.lastInventorySnapshot=nil

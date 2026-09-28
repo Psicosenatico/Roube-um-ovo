@@ -1,7 +1,7 @@
--- PSICOSENATICO | Fusion Research Scanner V1.1
+-- PSICOSENATICO | Fusion Research Scanner V1.2
 -- Observa fusões MANUAIS e registra os 3 pets de entrada + recompensa gerada.
 -- Não inicia fusão, não carrega/ejecta pets e não chama BeginFuse/FinishReveal.
--- V1.1: captura incremental de FusionSlots + sinais do Save + recuperação por diff do Inventory.
+-- V1.2: decodifica Save.Inventory com Shared.Util.AssetItems antes de resolver FusionSlots.
 
 if _G.PSICO_FUSION_SCAN_CLEANUP then pcall(_G.PSICO_FUSION_SCAN_CLEANUP) end
 
@@ -53,6 +53,7 @@ local Save=req("Shared.Save")
 local Assets=req("Data.Assets")
 local AssetEarnings=req("Shared.Util.AssetEarnings")
 local FuseKernel=req("Shared.Util.FuseKernel")
+local AssetItems=req("Shared.Util.AssetItems")
 local FuseMachineSignals=req("Client.FuseMachineSignals")
 local AssetSizeClassification=req("Client.Util.AssetSizeClassification")
 
@@ -61,6 +62,7 @@ S.modules={
     Assets=type(Assets)=="table",
     AssetEarnings=type(AssetEarnings)=="table",
     FuseKernel=type(FuseKernel)=="table",
+    AssetItems=type(AssetItems)=="table",
     FuseMachineSignals=type(FuseMachineSignals)=="table",
     AssetSizeClassification=type(AssetSizeClassification)=="table",
 }
@@ -155,6 +157,15 @@ local function sizeLabel(scale)
     return nil
 end
 
+local function decodeInventoryItem(raw)
+    if type(raw)=="table" then return raw end
+    if raw==nil or type(AssetItems)~="table" or type(AssetItems.Decode)~="function" then return nil end
+
+    local ok,item=pcall(AssetItems.Decode,raw)
+    if not ok then ok,item=pcall(AssetItems.Decode,AssetItems,raw) end
+    return ok and type(item)=="table" and item or nil
+end
+
 local function itemRow(uid,item)
     if type(item)~="table" then return {uid=tostring(uid),missing=true} end
     local category=item.Category or item.AssetCategory
@@ -189,7 +200,8 @@ local function slotRows(data)
         return tostring(a.k)<tostring(b.k)
     end)
     for _,slot in ipairs(ordered) do
-        rows[#rows+1]=itemRow(slot.uid,inv[slot.uid])
+        local raw=inv[slot.uid] or inv[tostring(slot.uid)] or inv[tonumber(slot.uid)]
+        rows[#rows+1]=itemRow(slot.uid,decodeInventoryItem(raw))
     end
     return rows,#rows
 end
@@ -198,8 +210,9 @@ local function inventorySnapshot(data)
     if type(data)~="table" then return {} end
     local inv=data.Inventory or data.AssetInventory or data.PetInventory or {}
     local out={}
-    for uid,item in pairs(inv) do
-        if type(item)=="table" then out[tostring(uid)]=itemRow(uid,item) end
+    for uid,raw in pairs(inv) do
+        local item=decodeInventoryItem(raw)
+        if item then out[tostring(uid)]=itemRow(uid,item) end
     end
     return out
 end
@@ -243,10 +256,12 @@ end
 local function fusePrice(rows,data)
     if type(FuseKernel)~="table" or type(FuseKernel.PriceFor)~="function" then return nil end
     data=data or saveData()
-    local inv=data and (data.Inventory or data.PetInventory) or {}
+    local inv=data and (data.Inventory or data.AssetInventory or data.PetInventory) or {}
     local items={}
     for _,r in ipairs(rows or {}) do
-        if inv[r.uid] then items[#items+1]=inv[r.uid] end
+        local raw=inv[r.uid] or inv[tostring(r.uid)] or inv[tonumber(r.uid)]
+        local item=decodeInventoryItem(raw)
+        if item then items[#items+1]=item end
     end
     if #items~=3 then return nil end
     local ok,v=pcall(FuseKernel.PriceFor,items)
@@ -559,7 +574,7 @@ local title=Instance.new("TextLabel")
 title.BackgroundTransparency=1
 title.Size=UDim2.new(1,-56,1,0)
 title.Font=Enum.Font.GothamBold
-title.Text="FUSION RESEARCH SCANNER • V1.1"
+title.Text="FUSION RESEARCH SCANNER • V1.2"
 title.TextSize=21
 title.TextColor3=Color3.new(1,1,1)
 title.TextXAlignment=Enum.TextXAlignment.Left
@@ -641,7 +656,7 @@ end)
 
 mkButton("EXPORTAR JSON",.23,.34,function()
     local payload={
-        scanner="Psico Fusion Research Scanner V1.1",
+        scanner="Psico Fusion Research Scanner V1.2",
         placeId=game.PlaceId,
         gameId=game.GameId,
         jobId=game.JobId,

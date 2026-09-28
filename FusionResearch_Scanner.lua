@@ -21,6 +21,7 @@ local S={
     events={},
     lastReady=nil,
     lastRewardKey=nil,
+    lastRewardAt=0,
     modules={},
 }
 
@@ -167,7 +168,7 @@ end
 
 local function slotRows(data)
     if type(data)~="table" then return {},0 end
-    local inv=data.Inventory or data.PetInventory or {}
+    local inv=data.Inventory or data.AssetInventory or data.PetInventory or {}
     local slots=data.FusionSlots or {}
     local rows={}
     for _,uid in ipairs(slots) do
@@ -279,19 +280,22 @@ end
 
 local function rewardKey(reward)
     if type(reward)~="table" then return tostring(reward) end
-    return table.concat({
+    local encoded
+    pcall(function() encoded=Http:JSONEncode(primitive(reward)) end)
+    return encoded or table.concat({
         tostring(reward.AssetCategory or reward.Category or "?"),
         tostring(reward.AssetScale or reward.Scale or "?"),
         tostring(reward.Uid or reward.UID or ""),
-        tostring(Workspace:GetServerTimeNow()),
     },"|")
 end
 
 local function recordReward(reward,source)
     if not S.enabled or type(reward)~="table" then return end
     local key=rewardKey(reward)
-    if S.lastRewardKey==key then return end
+    local nowClock=os.clock()
+    if S.lastRewardKey==key and nowClock-(S.lastRewardAt or 0)<3 then return end
     S.lastRewardKey=key
+    S.lastRewardAt=nowClock
 
     local data=saveData()
     local before=S.lastReady
@@ -514,6 +518,7 @@ mkButton("LIMPAR",.57,.20,function()
     S.events={}
     S.lastReady=nil
     S.lastRewardKey=nil
+    S.lastRewardAt=0
     updateStatus("Amostras limpas.")
 end)
 

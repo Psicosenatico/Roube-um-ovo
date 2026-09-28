@@ -1,6 +1,7 @@
--- PSICOSENATICO | Fusion Research Scanner V1
+-- PSICOSENATICO | Fusion Research Scanner V1.1
 -- Observa fusões MANUAIS e registra os 3 pets de entrada + recompensa gerada.
 -- Não inicia fusão, não carrega/ejecta pets e não chama BeginFuse/FinishReveal.
+-- V1.1: captura incremental de FusionSlots + sinais do Save + recuperação por diff do Inventory.
 
 if _G.PSICO_FUSION_SCAN_CLEANUP then pcall(_G.PSICO_FUSION_SCAN_CLEANUP) end
 
@@ -20,6 +21,12 @@ local S={
     samples={},
     events={},
     lastReady=nil,
+    lastSlotSnapshot=nil,
+    lastSlotAt=0,
+    cycleInventoryBefore=nil,
+    cycleStartedAt=0,
+    lastInventorySnapshot=nil,
+    lastInventoryAt=0,
     lastRewardKey=nil,
     lastRewardAt=0,
     modules={},
@@ -171,10 +178,56 @@ local function slotRows(data)
     local inv=data.Inventory or data.AssetInventory or data.PetInventory or {}
     local slots=data.FusionSlots or {}
     local rows={}
-    for _,uid in ipairs(slots) do
-        if uid then rows[#rows+1]=itemRow(uid,inv[uid]) end
+    local ordered={}
+    for k,uid in pairs(slots) do
+        if uid then ordered[#ordered+1]={k=k,uid=uid} end
+    end
+    table.sort(ordered,function(a,b)
+        local an,bn=tonumber(a.k),tonumber(b.k)
+        if an and bn then return an<bn end
+        return tostring(a.k)<tostring(b.k)
+    end)
+    for _,slot in ipairs(ordered) do
+        rows[#rows+1]=itemRow(slot.uid,inv[slot.uid])
     end
     return rows,#rows
+end
+
+local function inventorySnapshot(data)
+    if type(data)~="table" then return {} end
+    local inv=data.Inventory or data.AssetInventory or data.PetInventory or {}
+    local out={}
+    for uid,item in pairs(inv) do
+        if type(item)=="table" then out[tostring(uid)]=itemRow(uid,item) end
+    end
+    return out
+end
+
+local function mergeInputRows(...)
+    local out,seen={},{}
+    for i=1,select("#",...) do
+        local rows=select(i,...)
+        for _,r in ipairs(type(rows)=="table" and rows or {}) do
+            local uid=tostring(r.uid or "")
+            if uid~="" and not seen[uid] then
+                seen[uid]=true
+                out[#out+1]=r
+            end
+        end
+    end
+    return out
+end
+
+local function removedInventoryRows(before,data)
+    if type(before)~="table" or type(data)~="table" then return {} end
+    local inv=data.Inventory or data.AssetInventory or data.PetInventory or {}
+    local removed={}
+    for uid,row in pairs(before) do
+        if inv[uid]==nil and inv[tonumber(uid)]==nil then
+            removed[#removed+1]=row
+        end
+    end
+    return removed
 end
 
 local function signature(rows)
@@ -260,22 +313,46 @@ local function event(kind,data)
     }
 end
 
-local function captureReady(data)
+local function captureFusionState(data,source)
+    if type(data)~="table" then return end
     local rows,n=slotRows(data)
-    if n~=3 then return end
-    local sig=signature(rows)
-    if S.lastReady and S.lastReady.signature==sig then return end
-    S.lastReady={
-        unix=os.time(),
-        serverTime=Workspace:GetServerTimeNow(),
-        signature=sig,
-        inputs=rows,
-        fusePrice=fusePrice(rows,data),
-        moneyBefore=tonumber(data.Money),
-        fusionLocked=data.FusionLocked,
-    }
-    event("Ready3",S.lastReady)
-    updateStatus("3 pets capturados; faça a fusão normalmente.")
+    local nowClock=os.clock()
+
+    -- Keep a pre-fusion copy of Inventory from the first visible loaded slot.
+    -- If the 3rd slot exists only for one server update, the three consumed UIDs
+    -- can still be recovered by comparing this snapshot against Inventory at reward time.
+    if n>0 and not S.cycleInventoryBefore then
+        S.cycleInventoryBefore=inventorySnapshot(data)
+        S.cycleStartedAt=nowClock
+        event("FusionCycleStart",{source=source,count=n,inputs=rows})
+    end
+
+    if n>0 then
+        S.lastSlotSnapshot=rows
+        S.lastSlotAt=nowClock
+        event("SlotState",{source=source,count=n,inputs=rows})
+    end
+
+    if n==3 then
+        local sig=signature(rows)
+        if not (S.lastReady and S.lastReady.signature==sig) then
+            S.lastReady={
+                unix=os.time(),
+                serverTime=Workspace:GetServerTimeNow(),
+                signature=sig,
+                inputs=rows,
+                fusePrice=fusePrice(rows,data),
+                moneyBefore=tonumber(data.Money),
+                fusionLocked=data.FusionLocked,
+                captureSource=source,
+            }
+            event("Ready3",S.lastReady)
+            updateStatus("3 pets capturados; faça a fusão normalmente.")
+        end
+    end
+
+    S.lastInventorySnapshot=inventorySnapshot(data)
+    S.lastInventoryAt=nowClock
 end
 
 local function rewardKey(reward)
@@ -299,14 +376,44 @@ local function recordReward(reward,source)
 
     local data=saveData()
     local before=S.lastReady
+
+    -- Prefer the exact 3-slot snapshot. If the machine began immediately after
+    -- loading slot 3, recover consumed pets from the pre-cycle Inventory diff and
+    -- merge with any 1/2-slot snapshot we did observe.
+    local exactInputs=before and before.inputs or {}
+    local recentSlots=(os.clock()-(S.lastSlotAt or 0)<=8) and S.lastSlotSnapshot or {}
+    local removed=removedInventoryRows(S.cycleInventoryBefore,data or {})
+    local recovered=mergeInputRows(exactInputs,recentSlots,removed)
+    if #recovered>3 and #exactInputs~=3 then
+        -- Fusion consumes exactly 3 same-category pets. Prefer a category that has
+        -- at least 3 removed/recent rows, then keep the first three in slot/diff order.
+        local groups={}
+        for _,r in ipairs(recovered) do
+            local k=tostring(r.category or "?")
+            groups[k]=groups[k] or {}
+            groups[k][#groups[k]+1]=r
+        end
+        for _,g in pairs(groups) do
+            if #g>=3 then recovered={g[1],g[2],g[3]}; break end
+        end
+    end
+    if #recovered>3 then
+        recovered={recovered[1],recovered[2],recovered[3]}
+    end
+
     local sample={
         index=#S.samples+1,
         unix=os.time(),
         serverTime=Workspace:GetServerTimeNow(),
         source=source,
-        inputs=before and before.inputs or {},
-        inputSignature=before and before.signature or nil,
-        fusePrice=before and before.fusePrice or nil,
+        inputs=recovered,
+        inputCaptureMethod=(#exactInputs==3 and "FusionSlots3") or (#removed>=3 and "InventoryDiff") or (#recentSlots>0 and "PartialSlots") or "none",
+        inputSignature=#recovered>0 and signature(recovered) or nil,
+        fusePrice=(before and before.fusePrice) or (#recovered==3 and fusePrice(recovered,S.cycleInventoryBefore and {Inventory=(function()
+            local inv={}
+            for uid,row in pairs(S.cycleInventoryBefore) do inv[uid]=row.raw or row end
+            return inv
+        end)()} or data) or nil),
         moneyBefore=before and before.moneyBefore or nil,
         moneyAfter=data and tonumber(data.Money) or nil,
         reward=primitive(reward),
@@ -324,8 +431,12 @@ local function recordReward(reward,source)
     end
     S.samples[#S.samples+1]=sample
     event("FuseReward",sample)
-    updateStatus("Amostra #"..sample.index.." registrada automaticamente.")
+    updateStatus("Amostra #"..sample.index.." registrada • inputs "..tostring(#sample.inputs).."/3 ("..sample.inputCaptureMethod..").")
     S.lastReady=nil
+    S.lastSlotSnapshot=nil
+    S.lastSlotAt=0
+    S.cycleInventoryBefore=nil
+    S.cycleStartedAt=0
 end
 
 -- Primary: official client signal fired when the server has chosen the fuse reward.
@@ -341,15 +452,48 @@ if type(FuseMachineSignals)=="table" then
     end
 end
 
--- Poll Save as both input capture and fallback for clients where the signal wrapper differs.
+-- Event-driven Save capture. This is important because some game builds start
+-- fusion immediately when slot 3 is inserted, making a polling-only scanner miss it.
+if type(Save)=="table" and type(Save.FieldSignal)=="function" then
+    local ok,sig=pcall(Save.FieldSignal,"FusionSlots")
+    if not ok then ok,sig=pcall(Save.FieldSignal,Save,"FusionSlots") end
+    if ok and sig and type(sig.Connect)=="function" then
+        local ok2,c=pcall(function()
+            return sig:Connect(function()
+                if S.enabled then
+                    local data=saveData()
+                    if data then captureFusionState(data,"Save.FieldSignal(FusionSlots)") end
+                end
+            end)
+        end)
+        if ok2 and c then C[#C+1]=c; S.modules.FusionSlotSignal=true end
+    end
+end
+
+if type(Save)=="table" and type(Save.WatchFields)=="function" then
+    local fields={"FusionSlots","FusionLocked","FusionEggReward","Inventory"}
+    local callback=function()
+        if not S.enabled then return end
+        local data=saveData()
+        if data then captureFusionState(data,"Save.WatchFields") end
+    end
+    local ok,c=pcall(Save.WatchFields,fields,callback)
+    if not ok then ok,c=pcall(Save.WatchFields,Save,fields,callback) end
+    if ok then
+        S.modules.SaveWatchFields=true
+        if c and type(c.Disconnect)=="function" then C[#C+1]=c end
+    end
+end
+
+-- Fast polling remains as a compatibility fallback.
 task.spawn(function()
     local lastRewardRef=nil
     while S.enabled or (_G.PSICO_FUSION_SCAN_CLEANUP~=nil) do
-        task.wait(.18)
+        task.wait(.05)
         if not _G.PSICO_FUSION_SCAN_CLEANUP then break end
         local data=saveData()
         if data then
-            captureReady(data)
+            captureFusionState(data,"poll")
             local reward=data.FusionEggReward
             if reward and reward~=false and type(reward)=="table" then
                 local encoded
@@ -406,7 +550,7 @@ local title=Instance.new("TextLabel")
 title.BackgroundTransparency=1
 title.Size=UDim2.new(1,-56,1,0)
 title.Font=Enum.Font.GothamBold
-title.Text="FUSION RESEARCH SCANNER • V1"
+title.Text="FUSION RESEARCH SCANNER • V1.1"
 title.TextSize=21
 title.TextColor3=Color3.new(1,1,1)
 title.TextXAlignment=Enum.TextXAlignment.Left
@@ -488,7 +632,7 @@ end)
 
 mkButton("EXPORTAR JSON",.23,.34,function()
     local payload={
-        scanner="Psico Fusion Research Scanner V1",
+        scanner="Psico Fusion Research Scanner V1.1",
         placeId=game.PlaceId,
         gameId=game.GameId,
         jobId=game.JobId,
@@ -517,6 +661,12 @@ mkButton("LIMPAR",.57,.20,function()
     S.samples={}
     S.events={}
     S.lastReady=nil
+    S.lastSlotSnapshot=nil
+    S.lastSlotAt=0
+    S.cycleInventoryBefore=nil
+    S.cycleStartedAt=0
+    S.lastInventorySnapshot=nil
+    S.lastInventoryAt=0
     S.lastRewardKey=nil
     S.lastRewardAt=0
     updateStatus("Amostras limpas.")

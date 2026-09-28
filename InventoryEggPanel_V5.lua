@@ -60,6 +60,7 @@ local Players = game:GetService('Players')
 local RS = game:GetService('ReplicatedStorage')
 local CoreGui = game:GetService('CoreGui')
 local Workspace = game:GetService('Workspace')
+local LocalizationService = game:GetService('LocalizationService')
 local LP = Players.LocalPlayer
 
 local conns = {}
@@ -92,6 +93,10 @@ local Save = req('Shared.Save') or req('Data.Save')
 local EggState = req('Client.EggState')
 local ER = req('Shared.Util.EggRecords')
 local AssetEarnings = req('Shared.Util.AssetEarnings')
+local AssetItems = req('Shared.Util.AssetItems')
+local FuseKernel = req('Shared.Util.FuseKernel')
+local FuseMachineSignals = req('Client.FuseMachineSignals')
+local FuseMachineTypes = req('Shared.Types.FuseMachine')
 local Assets = req('Data.Assets')
 local Networking = RS:FindFirstChild('Packages') and RS.Packages:FindFirstChild('Networking')
 local AskWearTool = Networking and Networking:FindFirstChild('RF/EggWorld/AskWearTool')
@@ -210,6 +215,13 @@ local baseTab = button(
     'ESP BASE',
     UDim2.new(tab.Position.X.Scale, tab.Position.X.Offset, tab.Position.Y.Scale, tab.Position.Y.Offset + tab.Size.Y.Offset + gap),
     tab.Size
+)
+
+local fusionTab = button(
+    sidebar,
+    'FUSÃO PREDICT',
+    UDim2.new(baseTab.Position.X.Scale, baseTab.Position.X.Offset, baseTab.Position.Y.Scale, baseTab.Position.Y.Offset + baseTab.Size.Y.Offset + gap),
+    baseTab.Size
 )
 
 local page = Instance.new('Frame')
@@ -1130,6 +1142,380 @@ local function refreshBaseEsp()
     end
 end
 
+
+-- ============================================================================
+-- FUSÃO PREDICT
+-- The server chooses the exact fusion reward when BeginFuse starts. We never
+-- invoke BeginFuse/FinishReveal here: this module only watches the game's own
+-- FusionSlots/FusionEggReward/FuseStarted state and exposes the confirmed result
+-- immediately, before the normal reveal animation finishes.
+-- ============================================================================
+
+local fusionPage = Instance.new('Frame')
+fusionPage.Name = 'FusionPredictPageV5'
+fusionPage.BackgroundTransparency = 1
+fusionPage.Position = mainPage.Position
+fusionPage.Size = mainPage.Size
+fusionPage.AnchorPoint = mainPage.AnchorPoint
+fusionPage.Visible = false
+fusionPage.Parent = host
+
+local fusionTitle = label(fusionPage, 'PREDICT DE FUSÃO', UDim2.fromOffset(8, 2), UDim2.new(1, -16, 0, 26), 13)
+fusionTitle.Font = Enum.Font.GothamBold
+fusionTitle.TextColor3 = Color3.fromRGB(242, 246, 255)
+fusionTitle.TextXAlignment = Enum.TextXAlignment.Center
+
+local fusionHint = label(
+    fusionPage,
+    'Carregue 3 pets iguais. O resultado exato aparece quando o servidor confirmar a fusão.',
+    UDim2.fromOffset(14, 31),
+    UDim2.new(1, -28, 0, 34),
+    8
+)
+fusionHint.TextWrapped = true
+fusionHint.TextXAlignment = Enum.TextXAlignment.Center
+fusionHint.TextYAlignment = Enum.TextYAlignment.Top
+fusionHint.TextColor3 = Color3.fromRGB(139, 164, 207)
+
+local fusionSlotsLabel = label(fusionPage, 'Slots: 0/3 • aguardando pets', UDim2.fromOffset(12, 68), UDim2.new(1, -24, 0, 20), 9)
+fusionSlotsLabel.Font = Enum.Font.GothamMedium
+fusionSlotsLabel.TextXAlignment = Enum.TextXAlignment.Center
+
+local fusionInputsLabel = label(fusionPage, 'Entradas: —', UDim2.fromOffset(18, 94), UDim2.new(1, -36, 0, 100), 8)
+fusionInputsLabel.TextWrapped = true
+fusionInputsLabel.TextYAlignment = Enum.TextYAlignment.Top
+
+local fusionDivider = Instance.new('Frame')
+fusionDivider.BackgroundColor3 = Color3.fromRGB(42, 57, 82)
+fusionDivider.BorderSizePixel = 0
+fusionDivider.Position = UDim2.fromOffset(14, 199)
+fusionDivider.Size = UDim2.new(1, -28, 0, 1)
+fusionDivider.Parent = fusionPage
+
+local fusionVerdict = label(fusionPage, 'RESULTADO: aguardando fusão', UDim2.fromOffset(12, 210), UDim2.new(1, -24, 0, 28), 12)
+fusionVerdict.Font = Enum.Font.GothamBold
+fusionVerdict.TextXAlignment = Enum.TextXAlignment.Center
+fusionVerdict.TextColor3 = Color3.fromRGB(170, 184, 210)
+
+local fusionResultLabel = label(fusionPage, 'Nenhuma fusão confirmada nesta sessão.', UDim2.fromOffset(18, 244), UDim2.new(1, -36, 0, 116), 9)
+fusionResultLabel.TextWrapped = true
+fusionResultLabel.TextYAlignment = Enum.TextYAlignment.Top
+fusionResultLabel.TextXAlignment = Enum.TextXAlignment.Center
+
+local fusionFoot = label(
+    fusionPage,
+    'BOM/NEUTRO/RUIM compara o $/s final com o melhor dos 3 pets. A soma dos 3 também é mostrada.',
+    UDim2.fromOffset(16, 363),
+    UDim2.new(1, -32, 0, 42),
+    7
+)
+fusionFoot.TextWrapped = true
+fusionFoot.TextXAlignment = Enum.TextXAlignment.Center
+fusionFoot.TextYAlignment = Enum.TextYAlignment.Top
+fusionFoot.TextColor3 = Color3.fromRGB(139, 151, 177)
+
+local FUSION = {
+    Inputs = {},
+    PendingReward = nil,
+    LastResult = nil,
+    SignalVersion = 0,
+    ProcessedSignalVersion = 0,
+    SaveRewardRef = nil,
+}
+
+local ptTranslator
+local localizedFusionNames = {}
+
+local function fusionPtName(source)
+    source = tostring(source or '')
+    if source == '' then return source end
+    if localizedFusionNames[source] then return localizedFusionNames[source] end
+
+    if ptTranslator == nil then
+        local ok, tr = pcall(function()
+            return LocalizationService:GetTranslatorForLocaleAsync('pt-br')
+        end)
+        ptTranslator = ok and tr or false
+    end
+
+    local translated = source
+    if ptTranslator and ptTranslator ~= false then
+        local ok, value = pcall(function()
+            return ptTranslator:Translate(LP:FindFirstChildOfClass('PlayerGui') or game, source)
+        end)
+        if ok and type(value) == 'string' and value ~= '' then
+            translated = value
+        end
+    end
+
+    localizedFusionNames[source] = translated
+    return translated
+end
+
+local function fusionDecodeItem(raw)
+    if type(raw) ~= 'table' then return nil end
+    if type(AssetItems) == 'table' and type(AssetItems.Decode) == 'function' then
+        local decoded = call(AssetItems, 'Decode', raw)
+        if type(decoded) == 'table' then return decoded end
+    end
+    if raw.Category or raw.AssetCategory then return raw end
+    return nil
+end
+
+local function fusionRate(item)
+    if type(item) ~= 'table' or type(AssetEarnings) ~= 'table' then return nil end
+
+    local rate = tonumber(call(AssetEarnings, 'CatalogRatePerSecond', item))
+    if rate and rate >= 0 then return rate end
+
+    local probe = {
+        Category = item.Category or item.AssetCategory,
+        Scale = item.Scale or item.AssetScale,
+        Mutations = item.Mutations or {},
+        BaseMutation = item.BaseMutation,
+        Personality = item.Personality or item.AssetPersonality,
+    }
+    rate = tonumber(call(AssetEarnings, 'MutationOnlyRatePerSecond', probe))
+    if rate and rate >= 0 then return rate end
+
+    local cfg = catalog(probe.Category)
+    local base = cfg and tonumber(cfg.EarningRate)
+    local scale = tonumber(probe.Scale) or 1
+    return base and base * scale or nil
+end
+
+local function fusionPetInfo(uid, raw)
+    local item = fusionDecodeItem(raw)
+    if type(item) ~= 'table' then return nil end
+    local category = item.Category or item.AssetCategory
+    local cfg = catalog(category)
+    local canonical = tostring((cfg and cfg.DisplayName) or item.DisplayName or category or '?')
+    return {
+        Uid = tostring(uid or ''),
+        Item = item,
+        Category = category,
+        Name = fusionPtName(canonical),
+        Scale = tonumber(item.Scale or item.AssetScale) or 1,
+        Rate = fusionRate(item),
+        Mutations = type(item.Mutations) == 'table' and item.Mutations or {},
+    }
+end
+
+local function fusionSave()
+    local data = Save and call(Save, 'Get')
+    return type(data) == 'table' and data or nil
+end
+
+local function captureFusionInputs(saveData)
+    saveData = saveData or fusionSave()
+    if not saveData then return {} end
+
+    local inventory = type(saveData.Inventory) == 'table' and saveData.Inventory or {}
+    local slots = type(saveData.FusionSlots) == 'table' and saveData.FusionSlots or {}
+    local inputs = {}
+
+    for _, uid in pairs(slots) do
+        if uid then
+            local info = fusionPetInfo(uid, inventory[uid])
+            if info then inputs[#inputs + 1] = info end
+        end
+    end
+
+    if #inputs > 0 then
+        FUSION.Inputs = inputs
+    end
+    return inputs
+end
+
+local function fusionPrice(inputs)
+    if #inputs < 3 or type(FuseKernel) ~= 'table' or type(FuseKernel.PriceFor) ~= 'function' then
+        return nil
+    end
+    local items = {inputs[1].Item, inputs[2].Item, inputs[3].Item}
+    local ok, value = pcall(FuseKernel.PriceFor, items)
+    if not ok then
+        ok, value = pcall(FuseKernel.PriceFor, FuseKernel, items)
+    end
+    value = tonumber(value)
+    return ok and value or nil
+end
+
+local function decodeFusionReward(reward)
+    if type(reward) ~= 'table' then return nil end
+    local data = reward
+
+    if not (data.AssetCategory or data.Category)
+        and type(FuseMachineTypes) == 'table'
+        and type(FuseMachineTypes.FuseResult) == 'function' then
+        local decoded = call(FuseMachineTypes, 'FuseResult', reward)
+        if type(decoded) == 'table' then
+            data = decoded
+        end
+    end
+
+    local category = data.AssetCategory or data.Category
+    if not category then return nil end
+
+    local cfg = catalog(category)
+    local canonical = tostring((cfg and cfg.DisplayName) or category)
+    local rarity = cfg and cfg.Rarity
+    if type(rarity) == 'table' then
+        rarity = rarity.DisplayName or rarity._id
+    end
+
+    local probe = {
+        Category = category,
+        Scale = tonumber(data.AssetScale or data.Scale) or 1,
+        Mutations = data.Mutations or {},
+        BaseMutation = data.BaseMutation,
+        Personality = data.AssetPersonality or data.Personality,
+    }
+
+    return {
+        Category = category,
+        Name = fusionPtName(canonical),
+        Rarity = tostring(rarity or data.Rarity or '?'),
+        Scale = probe.Scale,
+        Rate = fusionRate(probe),
+        Mutations = probe.Mutations,
+    }
+end
+
+local function fusionPct(nowValue, oldValue)
+    nowValue, oldValue = tonumber(nowValue), tonumber(oldValue)
+    if not nowValue or not oldValue or oldValue <= 0 then return nil end
+    return (nowValue / oldValue - 1) * 100
+end
+
+local function fusionMutationText(mutations)
+    if type(mutations) ~= 'table' then return '' end
+    local out = {}
+    for _, value in pairs(mutations) do
+        local name = type(value) == 'table' and (value.DisplayName or value._id or value.Name) or value
+        if name ~= nil then out[#out + 1] = tostring(name) end
+    end
+    table.sort(out)
+    return table.concat(out, '+')
+end
+
+local function classifyFusion(result, inputs)
+    local best, sum, count = 0, 0, 0
+    for _, input in ipairs(inputs or {}) do
+        local rate = tonumber(input.Rate)
+        if rate then
+            best = math.max(best, rate)
+            sum = sum + rate
+            count = count + 1
+        end
+    end
+
+    local output = tonumber(result and result.Rate)
+    if not output or count == 0 or best <= 0 then
+        return 'CONFIRMADO', Color3.fromRGB(94, 139, 223), nil, nil
+    end
+
+    local vsBest = fusionPct(output, best)
+    local vsSum = sum > 0 and fusionPct(output, sum) or nil
+
+    if vsBest and vsBest >= 5 then
+        return 'BOM', Color3.fromRGB(88, 214, 141), vsBest, vsSum
+    elseif vsBest and vsBest <= -5 then
+        return 'RUIM', Color3.fromRGB(255, 105, 105), vsBest, vsSum
+    end
+    return 'NEUTRO', Color3.fromRGB(244, 201, 93), vsBest, vsSum
+end
+
+local function acceptFusionReward(reward)
+    local result = decodeFusionReward(reward)
+    if not result then return false end
+
+    local inputs = {}
+    for i, input in ipairs(FUSION.Inputs or {}) do
+        inputs[i] = input
+    end
+    result.Inputs = inputs
+    result.At = os.clock()
+    FUSION.LastResult = result
+    return true
+end
+
+local function refreshFusionPage()
+    local data = fusionSave()
+    local current = captureFusionInputs(data)
+    if #current == 0 then current = FUSION.Inputs end
+
+    local filled = 0
+    if data and type(data.FusionSlots) == 'table' then
+        for _, uid in pairs(data.FusionSlots) do
+            if uid then filled = filled + 1 end
+        end
+    end
+
+    fusionSlotsLabel.Text = ('Slots: %d/3 • %s'):format(
+        math.min(filled, 3),
+        filled >= 3 and 'pronto para fundir' or 'carregue 3 pets iguais'
+    )
+
+    if #current > 0 then
+        local lines = {}
+        local count = math.min(3, #current)
+        local meanScale = 0
+
+        for i = 1, count do
+            local p = current[i]
+            meanScale = meanScale + (tonumber(p.Scale) or 1)
+            lines[#lines + 1] = ('%d. %s • %.2fx • $%s/s'):format(
+                i, p.Name, p.Scale or 1, compact(p.Rate)
+            )
+        end
+
+        if count > 0 then meanScale = meanScale / count end
+        local price = fusionPrice(current)
+        lines[#lines + 1] = ('Escala média: %.2fx%s'):format(
+            meanScale,
+            price and (' • custo $' .. compact(price)) or ''
+        )
+        fusionInputsLabel.Text = table.concat(lines, '\n')
+    else
+        fusionInputsLabel.Text = 'Entradas: —'
+    end
+
+    local result = FUSION.LastResult
+    if not result then
+        fusionVerdict.Text = 'RESULTADO: aguardando fusão'
+        fusionVerdict.TextColor3 = Color3.fromRGB(170, 184, 210)
+        fusionResultLabel.Text = 'Nenhuma fusão confirmada nesta sessão.'
+        return
+    end
+
+    local verdict, color, vsBest, vsSum = classifyFusion(result, result.Inputs or current)
+    fusionVerdict.Text = 'RESULTADO: ' .. verdict
+    fusionVerdict.TextColor3 = color
+    fusionTab.Text = 'FUSÃO: ' .. verdict
+
+    local parts = {
+        ('%s • %s'):format(result.Name or '?', result.Rarity or '?'),
+        ('Escala %.2fx • $%s/s'):format(result.Scale or 1, compact(result.Rate)),
+    }
+
+    local mutation = fusionMutationText(result.Mutations)
+    if mutation ~= '' then parts[#parts + 1] = 'Mutação: ' .. mutation end
+    if vsBest then parts[#parts + 1] = ('vs melhor entrada: %+.1f%%'):format(vsBest) end
+    if vsSum then parts[#parts + 1] = ('vs soma dos 3: %+.1f%%'):format(vsSum) end
+    parts[#parts + 1] = 'Resultado já confirmado pelo servidor.'
+
+    fusionResultLabel.Text = table.concat(parts, '\n')
+end
+
+if type(FuseMachineSignals) == 'table'
+    and FuseMachineSignals.FuseStarted
+    and type(FuseMachineSignals.FuseStarted.Connect) == 'function' then
+    conn(FuseMachineSignals.FuseStarted, function(reward)
+        FUSION.PendingReward = reward
+        FUSION.SignalVersion = FUSION.SignalVersion + 1
+    end)
+end
+
 local rows = {}
 local inventoryTotal = 0
 local cachedCapacity = nil
@@ -1265,6 +1651,7 @@ local function show()
     page.Visible = true
     tab.BackgroundColor3 = Color3.fromRGB(42, 91, 190)
     baseTab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
+    fusionTab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
     render()
 end
 
@@ -1278,10 +1665,24 @@ local function showBasePage()
     basePage.Visible = true
     tab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
     baseTab.BackgroundColor3 = Color3.fromRGB(42, 91, 190)
+    fusionTab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
     refreshBaseEsp()
 end
 
 conn(baseTab.Activated, showBasePage)
+
+local function showFusionPage()
+    for _, x in ipairs(host:GetChildren()) do
+        if x:IsA('GuiObject') then x.Visible = (x == fusionPage) end
+    end
+    fusionPage.Visible = true
+    tab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
+    baseTab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
+    fusionTab.BackgroundColor3 = Color3.fromRGB(42, 91, 190)
+    refreshFusionPage()
+end
+
+conn(fusionTab.Activated, showFusionPage)
 
 local function refreshBaseControls()
     baseRarityButton.Text = BASE.MinRarity == 0 and 'Todas' or ({'Common','Uncommon','Rare','Epic','Legendary','Mythic','Cosmic','Secret','Eternal','Divine'})[BASE.MinRarity]
@@ -1402,7 +1803,30 @@ end
 
 task.spawn(function()
     while page.Parent do
-        task.wait(.75)
+        task.wait(.25)
+
+        local saveData = fusionSave()
+        captureFusionInputs(saveData)
+
+        if FUSION.SignalVersion ~= FUSION.ProcessedSignalVersion and FUSION.PendingReward then
+            FUSION.ProcessedSignalVersion = FUSION.SignalVersion
+            acceptFusionReward(FUSION.PendingReward)
+            FUSION.PendingReward = nil
+        end
+
+        -- Fallback if the signal was missed: Save exposes the same confirmed reward.
+        local reward = saveData and saveData.FusionEggReward
+        if type(reward) == 'table' then
+            if reward ~= FUSION.SaveRewardRef then
+                FUSION.SaveRewardRef = reward
+                acceptFusionReward(reward)
+            end
+        else
+            FUSION.SaveRewardRef = nil
+        end
+
+        if fusionPage.Visible then refreshFusionPage() end
+
         if page.Visible then
             local sig = inventorySignature()
             if placementSignature ~= '' and sig ~= placementSignature then
@@ -1410,6 +1834,7 @@ task.spawn(function()
             end
             placementSignature = sig
         end
+
         if baseEspEnabled then
             refreshBaseEsp()
         end
@@ -1442,19 +1867,23 @@ end)
 conn(fun.Activated, function()
     page.Visible = false
     basePage.Visible = false
+    fusionPage.Visible = false
     mainPage.Visible = true
     filterPage.Visible = false
     tab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
     baseTab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
+    fusionTab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
 end)
 
 conn(filters.Activated, function()
     page.Visible = false
     basePage.Visible = false
+    fusionPage.Visible = false
     mainPage.Visible = false
     filterPage.Visible = true
     tab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
     baseTab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
+    fusionTab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
 end)
 
 _G.PSICO_INVENTORY_PANEL_CLEANUP = function()
@@ -1467,6 +1896,8 @@ _G.PSICO_INVENTORY_PANEL_CLEANUP = function()
     end
     pcall(function() page:Destroy() end)
     pcall(function() basePage:Destroy() end)
+    pcall(function() fusionPage:Destroy() end)
     pcall(function() tab:Destroy() end)
     pcall(function() baseTab:Destroy() end)
+    pcall(function() fusionTab:Destroy() end)
 end

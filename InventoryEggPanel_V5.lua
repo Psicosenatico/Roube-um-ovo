@@ -1151,13 +1151,17 @@ end
 -- immediately, before the normal reveal animation finishes.
 -- ============================================================================
 
-local fusionPage = Instance.new('Frame')
+local fusionPage = Instance.new('ScrollingFrame')
 fusionPage.Name = 'FusionPredictPageV5'
 fusionPage.BackgroundTransparency = 1
+fusionPage.BorderSizePixel = 0
 fusionPage.Position = mainPage.Position
 fusionPage.Size = mainPage.Size
 fusionPage.AnchorPoint = mainPage.AnchorPoint
 fusionPage.Visible = false
+fusionPage.ScrollBarThickness = 3
+fusionPage.ScrollBarImageColor3 = Color3.fromRGB(94, 139, 223)
+fusionPage.CanvasSize = UDim2.fromOffset(0, 300)
 fusionPage.Parent = host
 
 local fusionTitle = label(fusionPage, 'PREDICT DE FUSÃO', UDim2.fromOffset(8, 2), UDim2.new(1, -16, 0, 26), 13)
@@ -1167,9 +1171,9 @@ fusionTitle.TextXAlignment = Enum.TextXAlignment.Center
 
 local fusionHint = label(
     fusionPage,
-    'Carregue 3 pets iguais. O resultado exato aparece quando o servidor confirmar a fusão.',
-    UDim2.fromOffset(14, 31),
-    UDim2.new(1, -28, 0, 34),
+    'O servidor sorteia o resultado ao iniciar a fusão. Assim que ele confirmar, mostramos o ovo final antes da animação terminar.',
+    UDim2.fromOffset(14, 29),
+    UDim2.new(1, -28, 0, 42),
     8
 )
 fusionHint.TextWrapped = true
@@ -1177,36 +1181,36 @@ fusionHint.TextXAlignment = Enum.TextXAlignment.Center
 fusionHint.TextYAlignment = Enum.TextYAlignment.Top
 fusionHint.TextColor3 = Color3.fromRGB(139, 164, 207)
 
-local fusionSlotsLabel = label(fusionPage, 'Slots: 0/3 • aguardando pets', UDim2.fromOffset(12, 68), UDim2.new(1, -24, 0, 20), 9)
+local fusionSlotsLabel = label(fusionPage, 'Slots: 0/3 • aguardando pets', UDim2.fromOffset(12, 72), UDim2.new(1, -24, 0, 20), 9)
 fusionSlotsLabel.Font = Enum.Font.GothamMedium
 fusionSlotsLabel.TextXAlignment = Enum.TextXAlignment.Center
 
-local fusionInputsLabel = label(fusionPage, 'Entradas: —', UDim2.fromOffset(18, 94), UDim2.new(1, -36, 0, 100), 8)
+local fusionInputsLabel = label(fusionPage, 'Entradas: —', UDim2.fromOffset(18, 96), UDim2.new(1, -36, 0, 68), 8)
 fusionInputsLabel.TextWrapped = true
 fusionInputsLabel.TextYAlignment = Enum.TextYAlignment.Top
 
 local fusionDivider = Instance.new('Frame')
 fusionDivider.BackgroundColor3 = Color3.fromRGB(42, 57, 82)
 fusionDivider.BorderSizePixel = 0
-fusionDivider.Position = UDim2.fromOffset(14, 199)
+fusionDivider.Position = UDim2.fromOffset(14, 169)
 fusionDivider.Size = UDim2.new(1, -28, 0, 1)
 fusionDivider.Parent = fusionPage
 
-local fusionVerdict = label(fusionPage, 'RESULTADO: aguardando fusão', UDim2.fromOffset(12, 210), UDim2.new(1, -24, 0, 28), 12)
+local fusionVerdict = label(fusionPage, 'RESULTADO: aguardando fusão', UDim2.fromOffset(12, 178), UDim2.new(1, -24, 0, 28), 12)
 fusionVerdict.Font = Enum.Font.GothamBold
 fusionVerdict.TextXAlignment = Enum.TextXAlignment.Center
 fusionVerdict.TextColor3 = Color3.fromRGB(170, 184, 210)
 
-local fusionResultLabel = label(fusionPage, 'Nenhuma fusão confirmada nesta sessão.', UDim2.fromOffset(18, 244), UDim2.new(1, -36, 0, 116), 9)
+local fusionResultLabel = label(fusionPage, 'Nenhuma fusão confirmada nesta sessão.', UDim2.fromOffset(18, 210), UDim2.new(1, -36, 0, 72), 9)
 fusionResultLabel.TextWrapped = true
 fusionResultLabel.TextYAlignment = Enum.TextYAlignment.Top
 fusionResultLabel.TextXAlignment = Enum.TextXAlignment.Center
 
 local fusionFoot = label(
     fusionPage,
-    'BOM/NEUTRO/RUIM compara o $/s final com o melhor dos 3 pets. A soma dos 3 também é mostrada.',
-    UDim2.fromOffset(16, 363),
-    UDim2.new(1, -32, 0, 42),
+    'BOM/NEUTRO/RUIM compara o $/s final com o melhor pet usado. Também mostramos a diferença contra a soma dos 3.',
+    UDim2.fromOffset(16, 282),
+    UDim2.new(1, -32, 0, 34),
     7
 )
 fusionFoot.TextWrapped = true
@@ -1221,6 +1225,7 @@ local FUSION = {
     SignalVersion = 0,
     ProcessedSignalVersion = 0,
     SaveRewardRef = nil,
+    ActiveSlotSignature = '',
 }
 
 local ptTranslator
@@ -1306,6 +1311,16 @@ local function fusionSave()
     return type(data) == 'table' and data or nil
 end
 
+local function fusionSlotSignature(saveData)
+    if type(saveData) ~= 'table' or type(saveData.FusionSlots) ~= 'table' then return '' end
+    local ids = {}
+    for _, uid in pairs(saveData.FusionSlots) do
+        if uid then ids[#ids + 1] = tostring(uid) end
+    end
+    table.sort(ids)
+    return table.concat(ids, '|')
+end
+
 local function captureFusionInputs(saveData)
     saveData = saveData or fusionSave()
     if not saveData then return {} end
@@ -1319,6 +1334,13 @@ local function captureFusionInputs(saveData)
             local info = fusionPetInfo(uid, inventory[uid])
             if info then inputs[#inputs + 1] = info end
         end
+    end
+
+    local sig = fusionSlotSignature(saveData)
+    if sig ~= '' and sig ~= FUSION.ActiveSlotSignature then
+        FUSION.ActiveSlotSignature = sig
+        FUSION.LastResult = nil
+        fusionTab.Text = 'FUSÃO PREDICT'
     end
 
     if #inputs > 0 then
@@ -1494,8 +1516,8 @@ local function refreshFusionPage()
     fusionTab.Text = 'FUSÃO: ' .. verdict
 
     local parts = {
-        ('%s • %s'):format(result.Name or '?', result.Rarity or '?'),
-        ('Escala %.2fx • $%s/s'):format(result.Scale or 1, compact(result.Rate)),
+        ('Vai sair: %s • %s'):format(result.Name or '?', result.Rarity or '?'),
+        ('$%s/s • escala %.2fx'):format(compact(result.Rate), result.Scale or 1),
     }
 
     local mutation = fusionMutationText(result.Mutations)

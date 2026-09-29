@@ -908,11 +908,11 @@ local function probeBandWeightBias(snap)
     local report={
         available=type(fn)=="function",
         arity=3,
-        inferredSignature="BandWeightBias(bandStart, bandEnd, referenceScale)",
+        inferredSignature="BandWeightBias(scaleTable, bandStart, bandEnd)",
         signatureEvidence={
-            "Runtime assertions mention a scale band start/end.",
-            "V2.3 calls with input scales in unsorted order failed when arg2 < arg1.",
-            "V2.4 tests only positive bandStart <= bandEnd pairs and varies arg3 separately.",
+            "V2.4 showed argument 1 expects a table.",
+            "Arguments 2 and 3 are tested as ordered positive band bounds.",
+            "V2.5 uses the three pet Scales as the first argument.",
         },
         references={},
         validationCalls={},
@@ -928,12 +928,7 @@ local function probeBandWeightBias(snap)
     local geo=(math.max(scales[1]*scales[2]*scales[3],1e-12))^(1/3)
 
     local refs={
-        {name="inputMin",value=minScale},
-        {name="inputMedian",value=median},
-        {name="inputMean",value=mean},
-        {name="inputGeometricMean",value=geo},
-        {name="inputMax",value=maxScale},
-        {name="unitScale",value=1},
+        {name="inputScales",value=scales},
     }
 
     local low=math.max(.05,math.min(minScale*.55,.55))
@@ -946,10 +941,10 @@ local function probeBandWeightBias(snap)
     end
 
     -- Explicitly confirm the first two numeric arguments behave as band bounds.
-    local validOk,validRes,validErr=directNumericCall(fn,{.8,1.2,mean})
-    report.validationCalls.validBand={args={.8,1.2,mean},ok=validOk,result=validRes,error=validErr}
-    local reversedOk,reversedRes,reversedErr=directNumericCall(fn,{1.2,.8,mean})
-    report.validationCalls.reversedBand={args={1.2,.8,mean},ok=reversedOk,result=reversedRes,error=reversedErr}
+    local validOk,validRes,validErr=directNumericCall(fn,{scales,.8,1.2})
+    report.validationCalls.validBand={argsSummary={scaleTable=scales,bandStart=.8,bandEnd=1.2},ok=validOk,result=validRes,error=validErr}
+    local reversedOk,reversedRes,reversedErr=directNumericCall(fn,{scales,1.2,.8})
+    report.validationCalls.reversedBand={argsSummary={scaleTable=scales,bandStart=1.2,bandEnd=.8},ok=reversedOk,result=reversedRes,error=reversedErr}
 
     for _,ref in ipairs(refs) do
         local rows={}
@@ -957,7 +952,7 @@ local function probeBandWeightBias(snap)
         for b=1,#clean-1 do
             local a,z=clean[b],clean[b+1]
             if z>=a then
-                local ok,value,err=directNumericCall(fn,{a,z,ref.value})
+                local ok,value,err=directNumericCall(fn,{scales,a,z})
                 rows[#rows+1]={
                     bandStart=a,
                     bandEnd=z,
@@ -975,7 +970,7 @@ local function probeBandWeightBias(snap)
         end
         report.references[#report.references+1]={
             referenceName=ref.name,
-            referenceScale=ref.value,
+            scaleTable=ref.value,
             bands=rows,
             totalPositiveWeight=total,
         }

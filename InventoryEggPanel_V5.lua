@@ -2064,6 +2064,8 @@ local function read()
             local sell = tonumber(call(ER, 'SellPrice', r))
             local w = tonumber(call(ER, 'WeightKg', r))
             local wl = call(ER, 'WeightLabel', r)
+            local muts = recordMutations(r)
+            local mutText = #muts > 0 and table.concat(muts, ' + ') or 'sem mutação'
             local tool = eggToolForUID(key)
             local img = toolImage(tool) or tableImage(r, 0, {}) or tableImage(cfg, 0, {})
             rows[#rows + 1] = {
@@ -2075,6 +2077,8 @@ local function read()
                 sell = sell,
                 w = w,
                 wl = wl,
+                muts = muts,
+                mutText = mutText,
                 tool = tool,
                 img = img
             }
@@ -2108,7 +2112,7 @@ local function render()
         card.Text = ''
         card.BackgroundColor3 = Color3.fromRGB(25, 34, 50)
         card.BorderSizePixel = 0
-        card.Size = UDim2.new(1, -4, 0, 60)
+        card.Size = UDim2.new(1, -4, 0, 74)
         card.LayoutOrder = i
         card.Parent = list
         round(card, 9)
@@ -2122,20 +2126,22 @@ local function render()
         local im = Instance.new('ImageLabel')
         im.BackgroundColor3 = Color3.fromRGB(17, 24, 37)
         im.BorderSizePixel = 0
-        im.Position = UDim2.new(0, 5, 0, 5)
-        im.Size = UDim2.new(0, 50, 0, 50)
+        im.Position = UDim2.new(0, 5, 0, 7)
+        im.Size = UDim2.new(0, 60, 0, 60)
         im.ScaleType = Enum.ScaleType.Fit
         im.Image = e.img or ''
         im.Parent = card
         round(im, 7)
 
         local title = 'Ovo ' .. tostring(e.wl or (e.w and (compact(e.w) .. 'Kg') or '?'))
-        local t = label(card, title, UDim2.new(0, 62, 0, 5), UDim2.new(1, -68, 0, 18), 10)
+        local t = label(card, title, UDim2.new(0, 72, 0, 5), UDim2.new(1, -78, 0, 18), 10)
         t.Font = Enum.Font.GothamBold
         t.TextColor3 = cardColor
 
-        label(card, e.rar .. ' • Conteúdo: ' .. e.c, UDim2.new(0, 62, 0, 24), UDim2.new(1, -68, 0, 15), 8)
-        label(card, '$' .. compact(e.earn) .. '/s • Valor $' .. compact(e.sell), UDim2.new(0, 62, 0, 41), UDim2.new(1, -68, 0, 14), 7)
+        label(card, e.rar .. ' • Conteúdo: ' .. e.c, UDim2.new(0, 72, 0, 23), UDim2.new(1, -78, 0, 14), 8)
+        local mut = label(card, 'Mutação: ' .. tostring(e.mutText or 'sem mutação'), UDim2.new(0, 72, 0, 39), UDim2.new(1, -78, 0, 13), 7)
+        mut.TextColor3 = (e.muts and #e.muts > 0) and Color3.fromRGB(244, 201, 93) or Color3.fromRGB(170, 184, 210)
+        label(card, '$' .. compact(e.earn) .. '/s • Valor $' .. compact(e.sell), UDim2.new(0, 72, 0, 55), UDim2.new(1, -78, 0, 13), 7)
 
         conn(card.Activated, function()
             status.Text = 'Equipando ' .. title .. '...'

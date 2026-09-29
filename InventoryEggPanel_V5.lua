@@ -97,6 +97,7 @@ local AssetItems = req('Shared.Util.AssetItems')
 local FuseKernel = req('Shared.Util.FuseKernel')
 local FuseMachineSignals = req('Client.FuseMachineSignals')
 local FuseMachineTypes = req('Shared.Types.FuseMachine')
+local SharedRemotes = req('Shared.Remotes')
 local Assets = req('Data.Assets')
 local Networking = RS:FindFirstChild('Packages') and RS.Packages:FindFirstChild('Networking')
 local AskWearTool = Networking and Networking:FindFirstChild('RF/EggWorld/AskWearTool')
@@ -1144,11 +1145,10 @@ end
 
 
 -- ============================================================================
--- FUSÃO PREDICT
--- The server chooses the exact fusion reward when BeginFuse starts. We never
--- invoke BeginFuse/FinishReveal here: this module only watches the game's own
--- FusionSlots/FusionEggReward/FuseStarted state and exposes the confirmed result
--- immediately, before the normal reveal animation finishes.
+-- FUSÃO / PREDICT
+-- Select 3 eligible pets directly from the inventory, review the exact fusion
+-- cost, then explicitly confirm. Nothing is fused merely by selecting pet #3.
+-- The same page keeps the existing server-confirmed result / predict display.
 -- ============================================================================
 
 local fusionPage = Instance.new('ScrollingFrame')
@@ -1161,56 +1161,76 @@ fusionPage.AnchorPoint = mainPage.AnchorPoint
 fusionPage.Visible = false
 fusionPage.ScrollBarThickness = 3
 fusionPage.ScrollBarImageColor3 = Color3.fromRGB(94, 139, 223)
-fusionPage.CanvasSize = UDim2.fromOffset(0, 300)
+fusionPage.CanvasSize = UDim2.fromOffset(0, 570)
 fusionPage.Parent = host
 
-local fusionTitle = label(fusionPage, 'PREDICT DE FUSÃO', UDim2.fromOffset(8, 2), UDim2.new(1, -16, 0, 26), 13)
+local fusionTitle = label(fusionPage, 'FUSÃO DE PETS', UDim2.fromOffset(8, 2), UDim2.new(1, -16, 0, 24), 12)
 fusionTitle.Font = Enum.Font.GothamBold
 fusionTitle.TextColor3 = Color3.fromRGB(242, 246, 255)
 fusionTitle.TextXAlignment = Enum.TextXAlignment.Center
 
 local fusionHint = label(
     fusionPage,
-    'O servidor sorteia o resultado ao iniciar a fusão. Assim que ele confirmar, mostramos o ovo final antes da animação terminar.',
-    UDim2.fromOffset(14, 29),
-    UDim2.new(1, -28, 0, 42),
-    8
+    'Selecione 3 pets iguais. A fusão só acontece depois de tocar em CONFIRMAR.',
+    UDim2.fromOffset(10, 27),
+    UDim2.new(1, -20, 0, 28),
+    7
 )
 fusionHint.TextWrapped = true
 fusionHint.TextXAlignment = Enum.TextXAlignment.Center
 fusionHint.TextYAlignment = Enum.TextYAlignment.Top
 fusionHint.TextColor3 = Color3.fromRGB(139, 164, 207)
 
-local fusionSlotsLabel = label(fusionPage, 'Slots: 0/3 • aguardando pets', UDim2.fromOffset(12, 72), UDim2.new(1, -24, 0, 20), 9)
+local fusionSortButton = button(fusionPage, 'Ordenar: Mutação + $/s', UDim2.fromOffset(8, 58), UDim2.new(.63, -10, 0, 28))
+local fusionRefreshButton = button(fusionPage, 'Atualizar', UDim2.new(.63, 2, 0, 58), UDim2.new(.37, -10, 0, 28))
+
+local fusionSlotsLabel = label(fusionPage, 'Selecionados: 0/3', UDim2.fromOffset(10, 89), UDim2.new(1, -20, 0, 18), 8)
 fusionSlotsLabel.Font = Enum.Font.GothamMedium
 fusionSlotsLabel.TextXAlignment = Enum.TextXAlignment.Center
 
-local fusionInputsLabel = label(fusionPage, 'Entradas: —', UDim2.fromOffset(18, 96), UDim2.new(1, -36, 0, 68), 8)
+local fusionInputsLabel = label(fusionPage, 'Entradas: —', UDim2.fromOffset(10, 108), UDim2.new(1, -20, 0, 54), 7)
 fusionInputsLabel.TextWrapped = true
 fusionInputsLabel.TextYAlignment = Enum.TextYAlignment.Top
+fusionInputsLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local fusionPetList = Instance.new('ScrollingFrame')
+fusionPetList.BackgroundColor3 = Color3.fromRGB(18, 27, 42)
+fusionPetList.BackgroundTransparency = .08
+fusionPetList.BorderSizePixel = 0
+fusionPetList.Position = UDim2.fromOffset(8, 164)
+fusionPetList.Size = UDim2.new(1, -16, 0, 210)
+fusionPetList.CanvasSize = UDim2.fromOffset(0, 0)
+fusionPetList.ScrollBarThickness = 3
+fusionPetList.ScrollBarImageColor3 = Color3.fromRGB(94, 139, 223)
+fusionPetList.Parent = fusionPage
+round(fusionPetList, 8)
+
+local fusionConfirmButton = button(fusionPage, 'SELECIONE 3 PETS • 0/3', UDim2.fromOffset(8, 381), UDim2.new(.72, -10, 0, 31))
+fusionConfirmButton.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
+local fusionClearButton = button(fusionPage, 'LIMPAR', UDim2.new(.72, 2, 0, 381), UDim2.new(.28, -10, 0, 31))
 
 local fusionDivider = Instance.new('Frame')
 fusionDivider.BackgroundColor3 = Color3.fromRGB(42, 57, 82)
 fusionDivider.BorderSizePixel = 0
-fusionDivider.Position = UDim2.fromOffset(14, 169)
-fusionDivider.Size = UDim2.new(1, -28, 0, 1)
+fusionDivider.Position = UDim2.fromOffset(12, 421)
+fusionDivider.Size = UDim2.new(1, -24, 0, 1)
 fusionDivider.Parent = fusionPage
 
-local fusionVerdict = label(fusionPage, 'RESULTADO: aguardando fusão', UDim2.fromOffset(12, 178), UDim2.new(1, -24, 0, 28), 12)
+local fusionVerdict = label(fusionPage, 'RESULTADO: aguardando fusão', UDim2.fromOffset(12, 429), UDim2.new(1, -24, 0, 24), 11)
 fusionVerdict.Font = Enum.Font.GothamBold
 fusionVerdict.TextXAlignment = Enum.TextXAlignment.Center
 fusionVerdict.TextColor3 = Color3.fromRGB(170, 184, 210)
 
-local fusionResultLabel = label(fusionPage, 'Nenhuma fusão confirmada nesta sessão.', UDim2.fromOffset(18, 210), UDim2.new(1, -36, 0, 72), 9)
+local fusionResultLabel = label(fusionPage, 'Nenhuma fusão confirmada nesta sessão.', UDim2.fromOffset(16, 456), UDim2.new(1, -32, 0, 72), 8)
 fusionResultLabel.TextWrapped = true
 fusionResultLabel.TextYAlignment = Enum.TextYAlignment.Top
 fusionResultLabel.TextXAlignment = Enum.TextXAlignment.Center
 
 local fusionFoot = label(
     fusionPage,
-    'BOM/NEUTRO/RUIM compara o $/s final com o melhor pet usado. Também mostramos a diferença contra a soma dos 3.',
-    UDim2.fromOffset(16, 282),
-    UDim2.new(1, -32, 0, 34),
+    '$/s é o foco principal; peso/Scale e mutações continuam visíveis para pesquisa.',
+    UDim2.fromOffset(14, 534),
+    UDim2.new(1, -28, 0, 28),
     7
 )
 fusionFoot.TextWrapped = true
@@ -1218,8 +1238,13 @@ fusionFoot.TextXAlignment = Enum.TextXAlignment.Center
 fusionFoot.TextYAlignment = Enum.TextYAlignment.Top
 fusionFoot.TextColor3 = Color3.fromRGB(139, 151, 177)
 
+local FUSION_SORT_MODES = {'Mutação + $/s', '$/s', 'Peso', 'Pet'}
 local FUSION = {
     Inputs = {},
+    Selected = {},
+    SortMode = 1,
+    Busy = false,
+    StatusMessage = nil,
     PendingReward = nil,
     LastResult = nil,
     SignalVersion = 0,
@@ -1257,6 +1282,37 @@ local function fusionPtName(source)
     return translated
 end
 
+local function fusionMultiCall(t, n, ...)
+    if type(t) ~= 'table' or type(t[n]) ~= 'function' then
+        return false, nil, 'função ausente'
+    end
+    local fn = t[n]
+    local args = table.pack(...)
+    local r = table.pack(pcall(fn, table.unpack(args, 1, args.n)))
+    if r[1] then return true, table.unpack(r, 2, r.n) end
+    r = table.pack(pcall(fn, t, table.unpack(args, 1, args.n)))
+    if r[1] then return true, table.unpack(r, 2, r.n) end
+    return false, nil, tostring(r[2])
+end
+
+local function fusionSave()
+    if type(Save) ~= 'table' then return nil end
+
+    -- Current game builds expose Peek/Await/WatchFields instead of Get.
+    if type(Save.Peek) == 'function' then
+        local ok, data = fusionMultiCall(Save, 'Peek')
+        if ok and type(data) == 'table' then return data end
+    end
+
+    -- Compatibility with older builds.
+    if type(Save.Get) == 'function' then
+        local ok, data = fusionMultiCall(Save, 'Get')
+        if ok and type(data) == 'table' then return data end
+    end
+
+    return nil
+end
+
 local function fusionDecodeItem(raw)
     if type(raw) ~= 'table' then return nil end
     if type(AssetItems) == 'table' and type(AssetItems.Decode) == 'function' then
@@ -1289,26 +1345,158 @@ local function fusionRate(item)
     return base and base * scale or nil
 end
 
+local function fusionWeight(item)
+    if type(item) ~= 'table' then return nil end
+    if type(AssetItems) == 'table' and type(AssetItems.WeightKg) == 'function' then
+        local value = tonumber(call(AssetItems, 'WeightKg', item))
+        if value then return value end
+    end
+    return tonumber(item.Weight or item.AssetWeight or item.Kg or item.Mass)
+end
+
+local function fusionMutationList(item)
+    local out, seen = {}, {}
+    local function add(v)
+        if v == nil then return end
+        local name = type(v) == 'table' and (v.DisplayName or v._id or v.Name or v.Id) or v
+        name = name and tostring(name) or nil
+        local key = name and norm(name) or ''
+        if key ~= '' and not seen[key] then
+            seen[key] = true
+            out[#out + 1] = name
+        end
+    end
+
+    add(item and item.BaseMutation)
+    if item and type(item.Mutations) == 'table' then
+        for _, v in pairs(item.Mutations) do add(v) end
+    end
+    table.sort(out)
+    return out
+end
+
+local function fusionMutationText(mutations)
+    if type(mutations) ~= 'table' or #mutations == 0 then return 'sem mutação' end
+    return table.concat(mutations, '+')
+end
+
 local function fusionPetInfo(uid, raw)
     local item = fusionDecodeItem(raw)
     if type(item) ~= 'table' then return nil end
     local category = item.Category or item.AssetCategory
+    if not category then return nil end
+
     local cfg = catalog(category)
     local canonical = tostring((cfg and cfg.DisplayName) or item.DisplayName or category or '?')
+    local rarity = cfg and cfg.Rarity
+    if type(rarity) == 'table' then rarity = rarity.DisplayName or rarity._id end
+    local mutations = fusionMutationList(item)
+
     return {
         Uid = tostring(uid or ''),
+        Raw = raw,
         Item = item,
         Category = category,
         Name = fusionPtName(canonical),
+        Rarity = tostring(rarity or '?'),
         Scale = tonumber(item.Scale or item.AssetScale) or 1,
         Rate = fusionRate(item),
-        Mutations = type(item.Mutations) == 'table' and item.Mutations or {},
+        Weight = fusionWeight(item),
+        Mutations = mutations,
+        HasMutation = #mutations > 0,
     }
 end
 
-local function fusionSave()
-    local data = Save and call(Save, 'Get')
-    return type(data) == 'table' and data or nil
+local function fusionIsEquipped(saveData, uid)
+    if type(saveData) ~= 'table' then return false end
+    for _, equippedUid in pairs(saveData.EquippedAssets or {}) do
+        if tostring(equippedUid) == tostring(uid) then return true end
+    end
+    return false
+end
+
+local function fusionIsInSlots(saveData, uid)
+    if type(saveData) ~= 'table' then return false end
+    for _, slotUid in pairs(saveData.FusionSlots or {}) do
+        if tostring(slotUid) == tostring(uid) then return true end
+    end
+    return false
+end
+
+local function fusionMayEnter(uid, raw)
+    if type(FuseKernel) ~= 'table' or type(FuseKernel.MayEnterFuse) ~= 'function' then
+        return true
+    end
+    local ok, allowed = pcall(FuseKernel.MayEnterFuse, uid, raw, nil, false)
+    if not ok then
+        ok, allowed = pcall(FuseKernel.MayEnterFuse, FuseKernel, uid, raw, nil, false)
+    end
+    return ok and allowed == true
+end
+
+local function fusionAvailablePets(saveData)
+    local out = {}
+    if type(saveData) ~= 'table' or type(saveData.Inventory) ~= 'table' then return out end
+
+    for uid, raw in pairs(saveData.Inventory) do
+        if type(raw) == 'table'
+            and not fusionIsInSlots(saveData, uid)
+            and not fusionIsEquipped(saveData, uid)
+            and fusionMayEnter(uid, raw) then
+            local info = fusionPetInfo(uid, raw)
+            if info then out[#out + 1] = info end
+        end
+    end
+    return out
+end
+
+local function fusionSelectedMap()
+    local map = {}
+    for _, pet in ipairs(FUSION.Selected) do map[pet.Uid] = true end
+    return map
+end
+
+local function fusionSelectedCategory()
+    return FUSION.Selected[1] and FUSION.Selected[1].Category or nil
+end
+
+local function fusionPrice(inputs)
+    if #inputs < 3 or type(FuseKernel) ~= 'table' or type(FuseKernel.PriceFor) ~= 'function' then
+        return nil
+    end
+    local items = {inputs[1].Item, inputs[2].Item, inputs[3].Item}
+    local ok, value = pcall(FuseKernel.PriceFor, items)
+    if not ok then ok, value = pcall(FuseKernel.PriceFor, FuseKernel, items) end
+    value = tonumber(value)
+    return ok and value or nil
+end
+
+local function fusionSortPets(entries)
+    local mode = FUSION_SORT_MODES[FUSION.SortMode] or FUSION_SORT_MODES[1]
+    local category = fusionSelectedCategory()
+    table.sort(entries, function(a, b)
+        if category then
+            local ac, bc = a.Category == category, b.Category == category
+            if ac ~= bc then return ac end
+        end
+
+        if mode == 'Mutação + $/s' then
+            if a.HasMutation ~= b.HasMutation then return a.HasMutation end
+            if (a.Rate or 0) ~= (b.Rate or 0) then return (a.Rate or 0) > (b.Rate or 0) end
+            return (a.Weight or 0) > (b.Weight or 0)
+        elseif mode == '$/s' then
+            if (a.Rate or 0) ~= (b.Rate or 0) then return (a.Rate or 0) > (b.Rate or 0) end
+            if a.HasMutation ~= b.HasMutation then return a.HasMutation end
+        elseif mode == 'Peso' then
+            if (a.Weight or 0) ~= (b.Weight or 0) then return (a.Weight or 0) > (b.Weight or 0) end
+            return (a.Rate or 0) > (b.Rate or 0)
+        else
+            local an, bn = norm(a.Name), norm(b.Name)
+            if an ~= bn then return an < bn end
+            return (a.Rate or 0) > (b.Rate or 0)
+        end
+        return a.Uid < b.Uid
+    end)
 end
 
 local function fusionSlotSignature(saveData)
@@ -1343,23 +1531,8 @@ local function captureFusionInputs(saveData)
         fusionTab.Text = 'FUSÃO PREDICT'
     end
 
-    if #inputs > 0 then
-        FUSION.Inputs = inputs
-    end
+    if #inputs > 0 then FUSION.Inputs = inputs end
     return inputs
-end
-
-local function fusionPrice(inputs)
-    if #inputs < 3 or type(FuseKernel) ~= 'table' or type(FuseKernel.PriceFor) ~= 'function' then
-        return nil
-    end
-    local items = {inputs[1].Item, inputs[2].Item, inputs[3].Item}
-    local ok, value = pcall(FuseKernel.PriceFor, items)
-    if not ok then
-        ok, value = pcall(FuseKernel.PriceFor, FuseKernel, items)
-    end
-    value = tonumber(value)
-    return ok and value or nil
 end
 
 local function decodeFusionReward(reward)
@@ -1370,9 +1543,7 @@ local function decodeFusionReward(reward)
         and type(FuseMachineTypes) == 'table'
         and type(FuseMachineTypes.FuseResult) == 'function' then
         local decoded = call(FuseMachineTypes, 'FuseResult', reward)
-        if type(decoded) == 'table' then
-            data = decoded
-        end
+        if type(decoded) == 'table' then data = decoded end
     end
 
     local category = data.AssetCategory or data.Category
@@ -1381,9 +1552,7 @@ local function decodeFusionReward(reward)
     local cfg = catalog(category)
     local canonical = tostring((cfg and cfg.DisplayName) or category)
     local rarity = cfg and cfg.Rarity
-    if type(rarity) == 'table' then
-        rarity = rarity.DisplayName or rarity._id
-    end
+    if type(rarity) == 'table' then rarity = rarity.DisplayName or rarity._id end
 
     local probe = {
         Category = category,
@@ -1399,7 +1568,7 @@ local function decodeFusionReward(reward)
         Rarity = tostring(rarity or data.Rarity or '?'),
         Scale = probe.Scale,
         Rate = fusionRate(probe),
-        Mutations = probe.Mutations,
+        Mutations = fusionMutationList(probe),
     }
 end
 
@@ -1407,17 +1576,6 @@ local function fusionPct(nowValue, oldValue)
     nowValue, oldValue = tonumber(nowValue), tonumber(oldValue)
     if not nowValue or not oldValue or oldValue <= 0 then return nil end
     return (nowValue / oldValue - 1) * 100
-end
-
-local function fusionMutationText(mutations)
-    if type(mutations) ~= 'table' then return '' end
-    local out = {}
-    for _, value in pairs(mutations) do
-        local name = type(value) == 'table' and (value.DisplayName or value._id or value.Name) or value
-        if name ~= nil then out[#out + 1] = tostring(name) end
-    end
-    table.sort(out)
-    return table.concat(out, '+')
 end
 
 local function classifyFusion(result, inputs)
@@ -1452,55 +1610,227 @@ local function acceptFusionReward(reward)
     if not result then return false end
 
     local inputs = {}
-    for i, input in ipairs(FUSION.Inputs or {}) do
-        inputs[i] = input
-    end
+    for i, input in ipairs(FUSION.Inputs or {}) do inputs[i] = input end
     result.Inputs = inputs
     result.At = os.clock()
     FUSION.LastResult = result
     return true
 end
 
-local function refreshFusionPage()
-    local data = fusionSave()
-    local current = captureFusionInputs(data)
-    if #current == 0 then current = FUSION.Inputs end
+local function fusionRemote(name)
+    if type(SharedRemotes) ~= 'table' then SharedRemotes = req('Shared.Remotes') end
+    local group = type(SharedRemotes) == 'table' and SharedRemotes.Fusery or nil
+    local remote = type(group) == 'table' and group[name] or nil
 
-    local filled = 0
-    if data and type(data.FusionSlots) == 'table' then
-        for _, uid in pairs(data.FusionSlots) do
-            if uid then filled = filled + 1 end
-        end
+    if not remote and Networking then
+        remote = Networking:FindFirstChild('RF/Fusery/' .. name)
+            or Networking:FindFirstChild('RE/Fusery/' .. name)
     end
 
-    fusionSlotsLabel.Text = ('Slots: %d/3 • %s'):format(
-        math.min(filled, 3),
-        filled >= 3 and 'pronto para fundir' or 'carregue 3 pets iguais'
+    if typeof(remote) == 'Instance' then return remote end
+    if type(remote) == 'table' then
+        for _, key in ipairs({'Remote', 'remote', 'Instance', '_remote', '_instance'}) do
+            if typeof(remote[key]) == 'Instance' then return remote[key] end
+        end
+        return remote
+    end
+    return nil
+end
+
+local function fusionInvoke(name, ...)
+    local remote = fusionRemote(name)
+    if not remote then return false, nil, 'remote ' .. name .. ' ausente' end
+
+    local args = table.pack(...)
+    if typeof(remote) == 'Instance' and remote:IsA('RemoteFunction') then
+        local r = table.pack(pcall(function()
+            return remote:InvokeServer(table.unpack(args, 1, args.n))
+        end))
+        if not r[1] then return false, nil, tostring(r[2]) end
+        return true, table.unpack(r, 2, r.n)
+    end
+
+    if type(remote) == 'table' and type(remote.InvokeServer) == 'function' then
+        local r = table.pack(pcall(remote.InvokeServer, remote, table.unpack(args, 1, args.n)))
+        if not r[1] then
+            r = table.pack(pcall(remote.InvokeServer, table.unpack(args, 1, args.n)))
+        end
+        if not r[1] then return false, nil, tostring(r[2]) end
+        return true, table.unpack(r, 2, r.n)
+    end
+
+    return false, nil, 'remote inválido'
+end
+
+local function fusionUpdateConfirm()
+    if FUSION.Busy then
+        fusionConfirmButton.Text = 'FUSÃO EM ANDAMENTO...'
+        fusionConfirmButton.BackgroundColor3 = Color3.fromRGB(65, 76, 98)
+        return
+    end
+
+    if #FUSION.Selected ~= 3 then
+        fusionConfirmButton.Text = ('SELECIONE 3 PETS • %d/3'):format(#FUSION.Selected)
+        fusionConfirmButton.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
+        return
+    end
+
+    local price = fusionPrice(FUSION.Selected)
+    fusionConfirmButton.Text = price
+        and ('CONFIRMAR FUSÃO • $' .. compact(price))
+        or 'CONFIRMAR FUSÃO • custo ?'
+    fusionConfirmButton.BackgroundColor3 = Color3.fromRGB(42, 91, 190)
+end
+
+local function fusionSelectionSummary()
+    local count = #FUSION.Selected
+    fusionSlotsLabel.Text = ('Selecionados: %d/3%s'):format(
+        count,
+        fusionSelectedCategory() and (' • ' .. tostring(FUSION.Selected[1].Name)) or ''
     )
 
-    if #current > 0 then
-        local lines = {}
-        local count = math.min(3, #current)
-        local meanScale = 0
+    if count == 0 then
+        fusionInputsLabel.Text = FUSION.StatusMessage or 'Entradas: —'
+        fusionUpdateConfirm()
+        return
+    end
 
-        for i = 1, count do
-            local p = current[i]
-            meanScale = meanScale + (tonumber(p.Scale) or 1)
-            lines[#lines + 1] = ('%d. %s • %.2fx • $%s/s'):format(
-                i, p.Name, p.Scale or 1, compact(p.Rate)
-            )
-        end
+    local lines, totalRate = {}, 0
+    for i, pet in ipairs(FUSION.Selected) do
+        totalRate = totalRate + (tonumber(pet.Rate) or 0)
+        lines[#lines + 1] = ('%d. %s • $%s/s • %s'):format(
+            i,
+            pet.Name,
+            compact(pet.Rate),
+            fusionMutationText(pet.Mutations)
+        )
+    end
 
-        if count > 0 then meanScale = meanScale / count end
-        local price = fusionPrice(current)
-        lines[#lines + 1] = ('Escala média: %.2fx%s'):format(
-            meanScale,
+    if count == 3 then
+        local price = fusionPrice(FUSION.Selected)
+        lines[#lines + 1] = ('Total: $%s/s%s'):format(
+            compact(totalRate),
             price and (' • custo $' .. compact(price)) or ''
         )
-        fusionInputsLabel.Text = table.concat(lines, '\n')
-    else
-        fusionInputsLabel.Text = 'Entradas: —'
     end
+
+    fusionInputsLabel.Text = FUSION.StatusMessage or table.concat(lines, '\n')
+    fusionUpdateConfirm()
+end
+
+local function fusionRemoveSelected(uid)
+    for i = #FUSION.Selected, 1, -1 do
+        if FUSION.Selected[i].Uid == uid then
+            table.remove(FUSION.Selected, i)
+        end
+    end
+end
+
+local renderFusionList
+
+renderFusionList = function()
+    for _, child in ipairs(fusionPetList:GetChildren()) do
+        if child:IsA('GuiObject') then child:Destroy() end
+    end
+
+    local saveData = fusionSave()
+    if not saveData then
+        local l = label(fusionPetList, 'Save indisponível. Toque em Atualizar.', UDim2.fromOffset(8, 8), UDim2.new(1, -16, 0, 24), 8)
+        l.TextColor3 = Color3.fromRGB(255, 150, 120)
+        fusionPetList.CanvasSize = UDim2.fromOffset(0, 40)
+        fusionSelectionSummary()
+        return
+    end
+
+    local entries = fusionAvailablePets(saveData)
+    local currentByUid = {}
+    for _, pet in ipairs(entries) do currentByUid[pet.Uid] = pet end
+
+    -- Revalidate selected pets against the current inventory.
+    for i = #FUSION.Selected, 1, -1 do
+        local fresh = currentByUid[FUSION.Selected[i].Uid]
+        if fresh then
+            FUSION.Selected[i] = fresh
+        else
+            table.remove(FUSION.Selected, i)
+        end
+    end
+
+    fusionSortPets(entries)
+    local selected = fusionSelectedMap()
+    local selectedCategory = fusionSelectedCategory()
+    local y = 3
+
+    if #entries == 0 then
+        local l = label(fusionPetList, 'Nenhum pet disponível para fusão.', UDim2.fromOffset(8, 8), UDim2.new(1, -16, 0, 24), 8)
+        l.TextColor3 = Color3.fromRGB(150, 165, 190)
+        fusionPetList.CanvasSize = UDim2.fromOffset(0, 40)
+    else
+        for _, pet in ipairs(entries) do
+            local isSelected = selected[pet.Uid] == true
+            local compatible = not selectedCategory or pet.Category == selectedCategory or isSelected
+            local rowText = ('%s%s • %s • %s\n$%s/s • %s Kg • %.3fx'):format(
+                isSelected and '✓ ' or '',
+                pet.Name,
+                pet.Rarity,
+                fusionMutationText(pet.Mutations),
+                compact(pet.Rate),
+                compact(pet.Weight),
+                pet.Scale or 1
+            )
+
+            local row = button(fusionPetList, rowText, UDim2.fromOffset(3, y), UDim2.new(1, -8, 0, 45))
+            row.TextXAlignment = Enum.TextXAlignment.Left
+            row.TextYAlignment = Enum.TextYAlignment.Center
+            row.TextWrapped = true
+            row.TextSize = 7
+
+            if isSelected then
+                row.BackgroundColor3 = Color3.fromRGB(42, 91, 190)
+            elseif not compatible then
+                row.BackgroundColor3 = Color3.fromRGB(27, 34, 47)
+                row.TextColor3 = Color3.fromRGB(104, 116, 137)
+            elseif pet.HasMutation then
+                row.BackgroundColor3 = Color3.fromRGB(52, 45, 75)
+            end
+
+            row.Activated:Connect(function()
+                if FUSION.Busy then return end
+                FUSION.StatusMessage = nil
+
+                if selected[pet.Uid] then
+                    fusionRemoveSelected(pet.Uid)
+                    renderFusionList()
+                    return
+                end
+
+                local category = fusionSelectedCategory()
+                if category and pet.Category ~= category then
+                    FUSION.StatusMessage = 'Os 3 precisam ser do mesmo pet.'
+                    fusionSelectionSummary()
+                    return
+                end
+
+                if #FUSION.Selected >= 3 then
+                    FUSION.StatusMessage = 'Já existem 3 selecionados. Remova um para trocar.'
+                    fusionSelectionSummary()
+                    return
+                end
+
+                FUSION.Selected[#FUSION.Selected + 1] = pet
+                renderFusionList()
+            end)
+
+            y = y + 49
+        end
+        fusionPetList.CanvasSize = UDim2.fromOffset(0, math.max(y + 3, 1))
+    end
+
+    fusionSelectionSummary()
+end
+
+local function refreshFusionPage()
+    fusionSelectionSummary()
 
     local result = FUSION.LastResult
     if not result then
@@ -1510,24 +1840,171 @@ local function refreshFusionPage()
         return
     end
 
-    local verdict, color, vsBest, vsSum = classifyFusion(result, result.Inputs or current)
+    local verdict, color, vsBest, vsSum = classifyFusion(result, result.Inputs or FUSION.Inputs)
     fusionVerdict.Text = 'RESULTADO: ' .. verdict
     fusionVerdict.TextColor3 = color
     fusionTab.Text = 'FUSÃO: ' .. verdict
 
     local parts = {
-        ('Vai sair: %s • %s'):format(result.Name or '?', result.Rarity or '?'),
+        ('Saiu: %s • %s'):format(result.Name or '?', result.Rarity or '?'),
         ('$%s/s • escala %.2fx'):format(compact(result.Rate), result.Scale or 1),
     }
 
     local mutation = fusionMutationText(result.Mutations)
-    if mutation ~= '' then parts[#parts + 1] = 'Mutação: ' .. mutation end
+    if mutation ~= 'sem mutação' then parts[#parts + 1] = 'Mutação: ' .. mutation end
     if vsBest then parts[#parts + 1] = ('vs melhor entrada: %+.1f%%'):format(vsBest) end
     if vsSum then parts[#parts + 1] = ('vs soma dos 3: %+.1f%%'):format(vsSum) end
-    parts[#parts + 1] = 'Resultado já confirmado pelo servidor.'
 
     fusionResultLabel.Text = table.concat(parts, '\n')
 end
+
+local function runSelectedFusion()
+    if FUSION.Busy then return end
+    if #FUSION.Selected ~= 3 then
+        FUSION.StatusMessage = 'Selecione 3 pets antes de confirmar.'
+        fusionSelectionSummary()
+        return
+    end
+
+    FUSION.Busy = true
+    FUSION.StatusMessage = 'Validando os 3 pets...'
+    fusionSelectionSummary()
+
+    local saveData = fusionSave()
+    if type(saveData) ~= 'table' or type(saveData.Inventory) ~= 'table' then
+        FUSION.Busy = false
+        FUSION.StatusMessage = 'Inventário indisponível.'
+        fusionSelectionSummary()
+        return
+    end
+
+    local selected = {}
+    local category
+    for i = 1, 3 do
+        local old = FUSION.Selected[i]
+        local raw = old and saveData.Inventory[old.Uid]
+        local pet = raw and fusionPetInfo(old.Uid, raw)
+        if not pet or not fusionMayEnter(old.Uid, raw) then
+            FUSION.Busy = false
+            FUSION.StatusMessage = 'Um dos pets não está mais disponível.'
+            renderFusionList()
+            return
+        end
+        if i == 1 then category = pet.Category
+        elseif pet.Category ~= category then
+            FUSION.Busy = false
+            FUSION.StatusMessage = 'Os 3 precisam ser do mesmo pet.'
+            fusionSelectionSummary()
+            return
+        end
+        selected[i] = pet
+    end
+
+    FUSION.Selected = selected
+    FUSION.Inputs = selected
+
+    local price = fusionPrice(selected)
+    local money = tonumber(saveData.Money)
+    if price and money and money < price then
+        FUSION.Busy = false
+        FUSION.StatusMessage = 'Dinheiro insuficiente • custo $' .. compact(price)
+        fusionSelectionSummary()
+        return
+    end
+
+    -- If the physical machine already contains pets, clear those server slots
+    -- so this menu uses exactly the 3 selected UIDs.
+    for _, uid in pairs(saveData.FusionSlots or {}) do
+        if uid then
+            fusionInvoke('EjectPet', uid)
+            task.wait(.05)
+        end
+    end
+
+    if saveData.FusionInfoAcknowledged == false then
+        local okBrief, acceptedBrief = fusionInvoke('ConfirmBriefing')
+        if not okBrief or acceptedBrief ~= true then
+            FUSION.Busy = false
+            FUSION.StatusMessage = 'Não foi possível confirmar o aviso da fusão.'
+            fusionSelectionSummary()
+            return
+        end
+    end
+
+    local loaded = {}
+    for i = 1, 3 do
+        FUSION.StatusMessage = ('Carregando pet %d/3...'):format(i)
+        fusionSelectionSummary()
+
+        local ok, accepted, reason = fusionInvoke('LoadPet', selected[i].Uid)
+        if not ok or accepted ~= true then
+            for _, uid in ipairs(loaded) do fusionInvoke('EjectPet', uid) end
+            FUSION.Busy = false
+            FUSION.StatusMessage = 'Falha ao carregar pet: ' .. tostring(reason or accepted or '?')
+            fusionSelectionSummary()
+            return
+        end
+        loaded[#loaded + 1] = selected[i].Uid
+        task.wait(.07)
+    end
+
+    FUSION.StatusMessage = 'Fundindo...'
+    fusionSelectionSummary()
+
+    local ok, accepted, reason, reward = fusionInvoke('BeginFuse')
+    if not ok or accepted ~= true then
+        for _, uid in ipairs(loaded) do fusionInvoke('EjectPet', uid) end
+        FUSION.Busy = false
+        FUSION.StatusMessage = 'Fusão recusada: ' .. tostring(reason or accepted or '?')
+        fusionSelectionSummary()
+        return
+    end
+
+    if type(reward) == 'table' then acceptFusionReward(reward) end
+
+    local granted = false
+    for _ = 1, 6 do
+        task.wait(.12)
+        local ok2, accepted2 = fusionInvoke('FinishReveal')
+        if ok2 and accepted2 == true then
+            granted = true
+            break
+        end
+    end
+
+    FUSION.Selected = {}
+    FUSION.Busy = false
+    FUSION.StatusMessage = granted and 'Fusão concluída.' or 'Fusão criada • recompensa ainda processando.'
+    renderFusionList()
+    refreshFusionPage()
+end
+
+conn(fusionSortButton.Activated, function()
+    if FUSION.Busy then return end
+    FUSION.SortMode = FUSION.SortMode % #FUSION_SORT_MODES + 1
+    fusionSortButton.Text = 'Ordenar: ' .. FUSION_SORT_MODES[FUSION.SortMode]
+    renderFusionList()
+end)
+
+conn(fusionRefreshButton.Activated, function()
+    if not FUSION.Busy then
+        FUSION.StatusMessage = nil
+        renderFusionList()
+        refreshFusionPage()
+    end
+end)
+
+conn(fusionClearButton.Activated, function()
+    if FUSION.Busy then return end
+    FUSION.Selected = {}
+    FUSION.StatusMessage = nil
+    renderFusionList()
+    refreshFusionPage()
+end)
+
+conn(fusionConfirmButton.Activated, function()
+    if not FUSION.Busy then task.defer(runSelectedFusion) end
+end)
 
 if type(FuseMachineSignals) == 'table'
     and FuseMachineSignals.FuseStarted
@@ -1701,6 +2178,7 @@ local function showFusionPage()
     tab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
     baseTab.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
     fusionTab.BackgroundColor3 = Color3.fromRGB(42, 91, 190)
+    renderFusionList()
     refreshFusionPage()
 end
 

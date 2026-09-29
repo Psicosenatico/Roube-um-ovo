@@ -1530,12 +1530,21 @@ fusionList.BackgroundColor3=Color3.fromRGB(16,24,38)
 fusionList.BackgroundTransparency=.18
 fusionList.BorderSizePixel=0
 fusionList.Position=UDim2.fromOffset(0,57)
-fusionList.Size=UDim2.new(1,0,1,-57)
+fusionList.Size=UDim2.new(1,0,1,-91)
 fusionList.CanvasSize=UDim2.fromOffset(0,0)
 fusionList.ScrollBarThickness=3
 fusionList.ScrollBarImageColor3=Color3.fromRGB(94,139,223)
 fusionList.Parent=fusionPage
 round(fusionList,8)
+
+local fusionConfirmButton=mkButton(
+    fusionPage,
+    "SELECIONE 3 PETS",
+    UDim2.new(0,0,1,-29),
+    UDim2.new(1,0,0,29)
+)
+fusionConfirmButton.TextSize=9
+fusionConfirmButton.BackgroundColor3=Color3.fromRGB(35,44,61)
 
 local function fusionCallTable(tbl,name,...)
     if typeof(tbl)~="table" or type(tbl[name])~="function" then return false,nil,"função ausente" end
@@ -1687,6 +1696,44 @@ local function fusionSelectedCategory()
     return State.FusionSelected[1] and State.FusionSelected[1].category or nil
 end
 
+local function fusionSelectedPrice()
+    if #State.FusionSelected~=3 then return nil end
+    if typeof(FuseKernel)~="table" then FuseKernel=requireOptional("Shared.Util.FuseKernel") end
+    if typeof(FuseKernel)~="table" or type(FuseKernel.PriceFor)~="function" then return nil end
+
+    local items={}
+    for i=1,3 do
+        local entry=State.FusionSelected[i]
+        if not entry or typeof(entry.item)~="table" then return nil end
+        items[i]=entry.item
+    end
+
+    local ok,price=fusionCallTable(FuseKernel,"PriceFor",items)
+    price=ok and tonumber(price) or nil
+    return finite(price) and price or nil
+end
+
+local function fusionUpdateConfirmButton()
+    if not fusionConfirmButton then return end
+    if State.FusionBusy then
+        fusionConfirmButton.Text="FUSÃO EM ANDAMENTO..."
+        fusionConfirmButton.BackgroundColor3=Color3.fromRGB(62,74,96)
+        return
+    end
+
+    if #State.FusionSelected~=3 then
+        fusionConfirmButton.Text=string.format("SELECIONE 3 PETS • %d/3",#State.FusionSelected)
+        fusionConfirmButton.BackgroundColor3=Color3.fromRGB(35,44,61)
+        return
+    end
+
+    local price=fusionSelectedPrice()
+    fusionConfirmButton.Text=price
+        and ("CONFIRMAR FUSÃO • $"..formatCompact(price))
+        or "CONFIRMAR FUSÃO • custo ?"
+    fusionConfirmButton.BackgroundColor3=Color3.fromRGB(42,91,190)
+end
+
 local function fusionUpdateStatus(message,color)
     if not fusionStatusLabel then return end
     if message then
@@ -1704,6 +1751,7 @@ local function fusionUpdateStatus(message,color)
         formatCompact(total)
     )
     fusionStatusLabel.TextColor3=Color3.fromRGB(139,164,207)
+    fusionUpdateConfirmButton()
 end
 
 local refreshFusionList
@@ -1788,6 +1836,7 @@ end
 runSelectedFusion=function()
     if State.FusionBusy or #State.FusionSelected~=3 then return end
     State.FusionBusy=true
+    fusionUpdateConfirmButton()
     fusionUpdateStatus("3/3 • preparando fusão...",Color3.fromRGB(255,204,102))
 
     local selected={}
@@ -1874,6 +1923,7 @@ runSelectedFusion=function()
 
     State.FusionLastResult=reward
     State.FusionSelected={}
+    fusionUpdateConfirmButton()
     local resultText=fusionRewardText(reward)
     if not granted then resultText=resultText.." • recompensa pendente" end
     fusionUpdateStatus("✓ "..resultText,Color3.fromRGB(111,220,143))
@@ -1955,7 +2005,6 @@ refreshFusionList=function(keepMessage)
                 State.FusionSelected[#State.FusionSelected+1]=entry
                 fusionUpdateStatus()
                 refreshFusionList()
-                if #State.FusionSelected==3 then task.defer(runSelectedFusion) end
             end)
             y+=47
         end
@@ -1976,12 +2025,24 @@ connect(fusionRefreshButton.MouseButton1Click,function()
     if not State.FusionBusy then refreshFusionList() end
 end)
 
+connect(fusionConfirmButton.MouseButton1Click,function()
+    if State.FusionBusy then return end
+    if #State.FusionSelected~=3 then
+        fusionUpdateStatus("Selecione 3 pets antes de confirmar.",Color3.fromRGB(255,166,102))
+        return
+    end
+    task.defer(runSelectedFusion)
+end)
+
 connect(fusionClearButton.MouseButton1Click,function()
     if State.FusionBusy then return end
     State.FusionSelected={}
     fusionUpdateStatus()
+    fusionUpdateConfirmButton()
     refreshFusionList()
 end)
+
+fusionUpdateConfirmButton()
 
 espToggleButton=makeMainToggle(mainPage,"ESP • Ovos",0,"EggESP")
 promptToggleButton=makeMainToggle(mainPage,"Instant Prompt",38,"InstantPrompt")

@@ -15,7 +15,7 @@ local Workspace=game:GetService("Workspace")
 
 local LP=Players.LocalPlayer
 local STARTED=os.time()
-local scannerName="Psico Fusion Research Scanner V2"
+local scannerName="Psico Fusion Research Scanner V2.1"
 
 local function safeRequire(path)
     local cur=ReplicatedStorage
@@ -117,18 +117,53 @@ local function moduleKeys(mod)
     return out
 end
 
+local saveDiagnostics={
+    calls=0,
+    directOk=false,
+    selfOk=false,
+    lastDirectType=nil,
+    lastSelfType=nil,
+    lastError=nil,
+}
+
 local function getSave()
-    if type(Save)~="table" or type(Save.Get)~="function" then return nil end
+    if type(Save)~="table" or type(Save.Get)~="function" then
+        saveDiagnostics.lastError="Save/Get ausente"
+        return nil
+    end
+
+    saveDiagnostics.calls+=1
+
+    -- Important: some current builds return nil when Get is called without
+    -- the module as self instead of throwing. V2 only retried on an error,
+    -- so a valid colon-style Get could be missed forever.
     local ok,data=pcall(Save.Get)
-    if not ok then ok,data=pcall(Save.Get,Save) end
-    return ok and type(data)=="table" and data or nil
+    saveDiagnostics.directOk=ok and type(data)=="table"
+    saveDiagnostics.lastDirectType=typeof(data)
+    if saveDiagnostics.directOk then
+        saveDiagnostics.lastError=nil
+        return data
+    end
+
+    local ok2,data2=pcall(Save.Get,Save)
+    saveDiagnostics.selfOk=ok2 and type(data2)=="table"
+    saveDiagnostics.lastSelfType=typeof(data2)
+    if saveDiagnostics.selfOk then
+        saveDiagnostics.lastError=nil
+        return data2
+    end
+
+    saveDiagnostics.lastError=tostring((not ok and data) or (not ok2 and data2) or "Get retornou "..tostring(typeof(data)).."/"..tostring(typeof(data2)))
+    return nil
 end
 
 local function decodeItem(raw)
     if type(AssetItems)=="table" and type(AssetItems.Decode)=="function" then
         local ok,item=pcall(AssetItems.Decode,raw)
-        if not ok then ok,item=pcall(AssetItems.Decode,AssetItems,raw) end
         if ok and type(item)=="table" then return item,"AssetItems.Decode" end
+
+        local ok2,item2=pcall(AssetItems.Decode,AssetItems,raw)
+        if ok2 and type(item2)=="table" then return item2,"AssetItems:Decode" end
     end
     if type(raw)=="table" then return raw,"raw-table" end
     return nil,"unavailable"
@@ -144,8 +179,9 @@ local function itemRate(item)
     if type(AssetEarnings)=="table" then
         if type(AssetEarnings.CatalogRatePerSecond)=="function" then
             local ok,v=pcall(AssetEarnings.CatalogRatePerSecond,item)
-            if not ok then ok,v=pcall(AssetEarnings.CatalogRatePerSecond,AssetEarnings,item) end
             if ok and tonumber(v) then return tonumber(v),"AssetEarnings.CatalogRatePerSecond" end
+            local ok2,v2=pcall(AssetEarnings.CatalogRatePerSecond,AssetEarnings,item)
+            if ok2 and tonumber(v2) then return tonumber(v2),"AssetEarnings:CatalogRatePerSecond" end
         end
         if type(AssetEarnings.MutationOnlyRatePerSecond)=="function" then
             local shape={
@@ -154,8 +190,9 @@ local function itemRate(item)
                 Mutations=item.Mutations or {},
             }
             local ok,v=pcall(AssetEarnings.MutationOnlyRatePerSecond,shape)
-            if not ok then ok,v=pcall(AssetEarnings.MutationOnlyRatePerSecond,AssetEarnings,shape) end
             if ok and tonumber(v) then return tonumber(v),"AssetEarnings.MutationOnlyRatePerSecond" end
+            local ok2,v2=pcall(AssetEarnings.MutationOnlyRatePerSecond,AssetEarnings,shape)
+            if ok2 and tonumber(v2) then return tonumber(v2),"AssetEarnings:MutationOnlyRatePerSecond" end
         end
     end
     return nil,nil
@@ -183,6 +220,33 @@ local function summarizeInput(uid,raw)
     local rarityName=rarity and (rarity.DisplayName or rarity._id) or nil
     local scale=tonumber(item.Scale or item.AssetScale or (type(raw)=="table" and (raw.Scale or raw.AssetScale))) or 1
     local weight,weightSource=directNumber(item,raw,{"Weight","AssetWeight","Kg","Mass"})
+    local weightLabel
+
+    -- The V2 test exposed the game's own exact helpers:
+    -- AssetItems.WeightKg and AssetItems.WeightLabel.
+    if type(AssetItems)=="table" and type(AssetItems.WeightKg)=="function" then
+        local ok,v=pcall(AssetItems.WeightKg,item)
+        if ok and tonumber(v) then
+            weight=tonumber(v)
+            weightSource="AssetItems.WeightKg"
+        else
+            local ok2,v2=pcall(AssetItems.WeightKg,AssetItems,item)
+            if ok2 and tonumber(v2) then
+                weight=tonumber(v2)
+                weightSource="AssetItems:WeightKg"
+            end
+        end
+    end
+    if type(AssetItems)=="table" and type(AssetItems.WeightLabel)=="function" then
+        local ok,v=pcall(AssetItems.WeightLabel,item)
+        if ok and v~=nil then
+            weightLabel=tostring(v)
+        else
+            local ok2,v2=pcall(AssetItems.WeightLabel,AssetItems,item)
+            if ok2 and v2~=nil then weightLabel=tostring(v2) end
+        end
+    end
+
     local rate,rateMethod=itemRate(item)
     local salePrice
     if type(AssetItems)=="table" and type(AssetItems.SalePrice)=="function" then
@@ -199,6 +263,7 @@ local function summarizeInput(uid,raw)
         scale=scale,
         weight=weight,
         weightSource=weightSource,
+        weightLabel=weightLabel,
         earningsPerSecond=rate,
         earningsMethod=rateMethod,
         salePrice=salePrice,
@@ -314,19 +379,77 @@ local state={
     lastSlotSnapshot=nil,
     lastFusionAt=0,
     status="Aguardando 3 pets na máquina",
+    observedFusionSlots=nil,
+    observedInventory=nil,
+    observedSave=nil,
+    fieldSignalEvents=0,
+    watchFieldEvents=0,
 }
 local conns={}
 
+local function looksLikeFusionSlots(t)
+    if type(t)~="table" then return false end
+    if t.FusionSlots~=nil then return false end
+    local seen=0
+    for k,v in pairs(t) do
+        if type(k)=="number" then
+            if v~=nil and type(v)~="string" then return false end
+            if v~=nil then seen+=1 end
+        else
+            return false
+        end
+    end
+    return seen<=3
+end
+
+local function absorbObservedTable(t,source)
+    if type(t)~="table" then return end
+    if type(t.FusionSlots)=="table" then
+        state.observedFusionSlots=t.FusionSlots
+        state.observedSave=t
+    end
+    if type(t.Inventory)=="table" then
+        state.observedInventory=t.Inventory
+        state.observedSave=t
+    end
+    if looksLikeFusionSlots(t) then
+        state.observedFusionSlots=t
+    end
+end
+
+local function absorbSignalArgs(source,...)
+    local args=table.pack(...)
+    for i=1,args.n do
+        if type(args[i])=="table" then absorbObservedTable(args[i],source) end
+    end
+end
+
 local function captureSlots()
     local save=getSave()
+    if save then
+        absorbObservedTable(save,"Save.Get")
+    else
+        if state.observedSave then
+            save=state.observedSave
+        elseif state.observedFusionSlots or state.observedInventory then
+            save={
+                FusionSlots=state.observedFusionSlots or {},
+                Inventory=state.observedInventory or {},
+            }
+        end
+    end
     if not save then return nil end
+
+    local fusionSlots=type(save.FusionSlots)=="table" and save.FusionSlots or state.observedFusionSlots or {}
+    local inventory=type(save.Inventory)=="table" and save.Inventory or state.observedInventory or {}
+
     local slots={}
     local inputs={}
     local decodedInputs={}
-    for index,uid in ipairs(save.FusionSlots or {}) do
+    for index,uid in ipairs(fusionSlots) do
         if uid then
             slots[#slots+1]=tostring(uid)
-            local raw=save.Inventory and save.Inventory[uid]
+            local raw=inventory and inventory[uid]
             local summary=summarizeInput(uid,raw)
             summary.slot=index
             inputs[#inputs+1]=summary
@@ -350,7 +473,7 @@ end
 local function pollSlots()
     local snap=captureSlots()
     if not snap then
-        state.status="Save.Get indisponível"
+        state.status="Save indisponível • aguardando FieldSignal/WatchFields"
         return
     end
     state.lastSlotCount=#snap.inputs
@@ -430,13 +553,66 @@ else
     state.status="FuseMachineSignals.FuseStarted não encontrado"
 end
 
--- Save.FieldSignal gives us a faster update when available; polling remains as fallback.
-if type(Save)=="table" and type(Save.FieldSignal)=="function" then
-    local ok,sig=pcall(Save.FieldSignal,"FusionSlots")
-    if not ok then ok,sig=pcall(Save.FieldSignal,Save,"FusionSlots") end
-    if ok and sig and type(sig.Connect)=="function" then
-        local ok2,c=pcall(function() return sig:Connect(function() task.defer(pollSlots) end) end)
-        if ok2 and c then conns[#conns+1]=c end
+-- Listen to Save fields as a fallback for executors/builds where Save.Get returns nil.
+-- Unlike V2, callbacks retain their payload instead of throwing it away.
+local function connectFieldSignal(field)
+    if type(Save)~="table" or type(Save.FieldSignal)~="function" then return false end
+
+    local ok,sig=pcall(Save.FieldSignal,field)
+    if not (ok and sig and type(sig.Connect)=="function") then
+        ok,sig=pcall(Save.FieldSignal,Save,field)
+    end
+    if not (ok and sig and type(sig.Connect)=="function") then return false end
+
+    local ok2,c=pcall(function()
+        return sig:Connect(function(...)
+            state.fieldSignalEvents+=1
+            local args=table.pack(...)
+            if field=="FusionSlots" then
+                for i=1,args.n do
+                    if type(args[i])=="table" then
+                        if type(args[i].FusionSlots)=="table" then
+                            state.observedFusionSlots=args[i].FusionSlots
+                            absorbObservedTable(args[i],"FieldSignal:"..field)
+                        elseif looksLikeFusionSlots(args[i]) then
+                            state.observedFusionSlots=args[i]
+                        end
+                    end
+                end
+            elseif field=="Inventory" then
+                for i=1,args.n do
+                    if type(args[i])=="table" then
+                        if type(args[i].Inventory)=="table" then
+                            state.observedInventory=args[i].Inventory
+                            absorbObservedTable(args[i],"FieldSignal:"..field)
+                        elseif not looksLikeFusionSlots(args[i]) then
+                            state.observedInventory=args[i]
+                        end
+                    end
+                end
+            end
+            absorbSignalArgs("FieldSignal:"..field,...)
+            task.defer(pollSlots)
+        end)
+    end)
+    if ok2 and c then conns[#conns+1]=c return true end
+    return false
+end
+
+connectFieldSignal("FusionSlots")
+connectFieldSignal("Inventory")
+
+if type(Save)=="table" and type(Save.WatchFields)=="function" then
+    local function watchCallback(...)
+        state.watchFieldEvents+=1
+        absorbSignalArgs("WatchFields",...)
+        task.defer(pollSlots)
+    end
+
+    local fields={"FusionSlots","Inventory"}
+    local ok,res=pcall(Save.WatchFields,fields,watchCallback)
+    if not ok then
+        pcall(Save.WatchFields,Save,fields,watchCallback)
     end
 end
 
@@ -459,17 +635,26 @@ local function exportData()
             Assets=Assets~=nil,
         },
         moduleKeys={
+            Save=moduleKeys(Save),
             AssetItems=moduleKeys(AssetItems),
             AssetEarnings=moduleKeys(AssetEarnings),
             FuseKernel=moduleKeys(FuseKernel),
             FuseMachineSignals=moduleKeys(FuseSignals),
         },
+        diagnostics={
+            save=jsonSafe(saveDiagnostics),
+            fieldSignalEvents=state.fieldSignalEvents,
+            watchFieldEvents=state.watchFieldEvents,
+            observedFusionSlots=jsonSafe(state.observedFusionSlots),
+            observedInventoryType=typeof(state.observedInventory),
+        },
         samples=state.samples,
         events=state.events,
         notes={
-            "Inputs are read directly from Save.Get().FusionSlots before FuseStarted.",
+            "Inputs prefer Save.Get().FusionSlots; FieldSignal/WatchFields are fallback sources.",
             "Input $/s prefers AssetEarnings.CatalogRatePerSecond(decodedItem).",
-            "Weight is exported when present in decoded/raw pet data; missing weight stays null.",
+            "Weight prefers the game's AssetItems.WeightKg helper; raw fields are fallback.",
+            "FuseKernel exposes BandWeightBias and DrawFusedScale in this game build; their behavior will be analyzed only after exact inputs are captured.",
             "Fusion price uses FuseKernel.PriceFor when available.",
         },
     }
@@ -546,7 +731,7 @@ title.BackgroundTransparency=1
 title.Position=UDim2.new(0,24,0,14)
 title.Size=UDim2.new(1,-90,0,42)
 title.Font=Enum.Font.GothamBold
-title.Text="FUSION RESEARCH SCANNER • V2"
+title.Text="FUSION RESEARCH SCANNER • V2.1"
 title.TextSize=26
 title.TextColor3=Color3.fromRGB(245,248,255)
 title.TextXAlignment=Enum.TextXAlignment.Left

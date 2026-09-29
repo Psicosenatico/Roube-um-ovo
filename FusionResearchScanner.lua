@@ -1,4 +1,4 @@
--- PSICOSENATICO | FUSION RESEARCH SCANNER V2
+-- PSICOSENATICO | FUSION RESEARCH SCANNER V2.3
 -- Purpose: capture the exact 3 pets in Save.FusionSlots BEFORE FuseStarted,
 -- then pair them with the server-selected fusion reward for predictor research.
 
@@ -15,7 +15,7 @@ local Workspace=game:GetService("Workspace")
 
 local LP=Players.LocalPlayer
 local STARTED=os.time()
-local scannerName="Psico Fusion Research Scanner V2.2"
+local scannerName="Psico Fusion Research Scanner V2.3"
 
 local function safeRequire(path)
     local cur=ReplicatedStorage
@@ -343,6 +343,12 @@ local function summarizeReward(reward)
         BaseMutation=reward.BaseMutation,
     }
     local rate,method=itemRate(item)
+    local salePrice
+    if type(AssetItems)=="table" and type(AssetItems.SalePrice)=="function" then
+        local ok,v=pcall(AssetItems.SalePrice,item)
+        if not ok then ok,v=pcall(AssetItems.SalePrice,AssetItems,item) end
+        if ok and tonumber(v) then salePrice=tonumber(v) end
+    end
     return {
         uid="reward",
         category=category and tostring(category) or nil,
@@ -351,10 +357,68 @@ local function summarizeReward(reward)
         scale=tonumber(reward.AssetScale or reward.Scale) or 1,
         earningsPerSecond=rate,
         earningsMethod=method,
+        salePrice=salePrice,
         mutations=cloneArray(reward.Mutations),
         baseMutation=reward.BaseMutation,
         raw=jsonSafe(raw),
         decoded=jsonSafe(reward),
+    }
+end
+
+local function mutationNames(summary)
+    local out,seen={},{}
+    if type(summary)~="table" then return out end
+    local function add(v)
+        if v==nil then return end
+        local name=type(v)=="table" and (v._id or v.DisplayName or v.Name) or v
+        name=name and tostring(name) or nil
+        local key=name and string.lower(name) or ""
+        if key~="" and not seen[key] then
+            seen[key]=true
+            out[#out+1]=name
+        end
+    end
+    add(summary.baseMutation)
+    if type(summary.mutations)=="table" then
+        for _,v in pairs(summary.mutations) do add(v) end
+    end
+    table.sort(out)
+    return out
+end
+
+local function mutationProfile(inputs,rewardSummary)
+    local inputNames={}
+    local inputNameCounts={}
+    local mutatedPets=0
+    for _,x in ipairs(inputs or {}) do
+        local names=mutationNames(x)
+        if #names>0 then mutatedPets+=1 end
+        for _,name in ipairs(names) do
+            inputNames[name]=true
+            inputNameCounts[name]=(inputNameCounts[name] or 0)+1
+        end
+    end
+    local distinct={}
+    for name in pairs(inputNames) do distinct[#distinct+1]=name end
+    table.sort(distinct)
+
+    local outputNames=mutationNames(rewardSummary)
+    local outputSet={}
+    for _,name in ipairs(outputNames) do outputSet[name]=true end
+    local retained={}
+    for _,name in ipairs(distinct) do
+        if outputSet[name] then retained[#retained+1]=name end
+    end
+
+    return {
+        inputMutatedPets=mutatedPets,
+        inputMutationBucket=tostring(mutatedPets).."/3",
+        inputDistinctMutations=distinct,
+        inputMutationCounts=inputNameCounts,
+        outputHasMutation=#outputNames>0,
+        outputMutations=outputNames,
+        retainedInputMutations=retained,
+        anyInputMutationRetained=#retained>0,
     }
 end
 
@@ -363,10 +427,13 @@ local function calcMetrics(inputs,rewardSummary,decodedInputs)
         count=#inputs,
         sumScale=0,
         sumEarningsPerSecond=0,
+        sumSalePrice=0,
+        salePriceCount=0,
         sumWeight=0,
         weightCount=0,
         minScale=nil,maxScale=nil,
         minEarningsPerSecond=nil,maxEarningsPerSecond=nil,
+        minSalePrice=nil,maxSalePrice=nil,
         minWeight=nil,maxWeight=nil,
         allSameCategory=true,
         category=inputs[1] and inputs[1].category or nil,
@@ -376,12 +443,22 @@ local function calcMetrics(inputs,rewardSummary,decodedInputs)
         m.sumScale+=sc
         m.minScale=m.minScale and math.min(m.minScale,sc) or sc
         m.maxScale=m.maxScale and math.max(m.maxScale,sc) or sc
+
         local e=tonumber(x.earningsPerSecond)
         if e then
             m.sumEarningsPerSecond+=e
             m.minEarningsPerSecond=m.minEarningsPerSecond and math.min(m.minEarningsPerSecond,e) or e
             m.maxEarningsPerSecond=m.maxEarningsPerSecond and math.max(m.maxEarningsPerSecond,e) or e
         end
+
+        local sale=tonumber(x.salePrice)
+        if sale then
+            m.sumSalePrice+=sale
+            m.salePriceCount+=1
+            m.minSalePrice=m.minSalePrice and math.min(m.minSalePrice,sale) or sale
+            m.maxSalePrice=m.maxSalePrice and math.max(m.maxSalePrice,sale) or sale
+        end
+
         local w=tonumber(x.weight)
         if w then
             m.sumWeight+=w
@@ -391,11 +468,13 @@ local function calcMetrics(inputs,rewardSummary,decodedInputs)
         end
         if m.category and x.category~=m.category then m.allSameCategory=false end
     end
+
     if m.count>0 then
         m.meanScale=m.sumScale/m.count
         m.meanEarningsPerSecond=m.sumEarningsPerSecond/m.count
     end
     if m.weightCount>0 then m.meanWeight=m.sumWeight/m.weightCount end
+    if m.salePriceCount>0 then m.meanSalePrice=m.sumSalePrice/m.salePriceCount end
 
     if type(FuseKernel)=="table" and type(FuseKernel.PriceFor)=="function" and #decodedInputs==3 then
         local ok,v=pcall(FuseKernel.PriceFor,decodedInputs)
@@ -406,13 +485,36 @@ local function calcMetrics(inputs,rewardSummary,decodedInputs)
     if rewardSummary then
         local oscale=tonumber(rewardSummary.scale)
         local orate=tonumber(rewardSummary.earningsPerSecond)
+        local osale=tonumber(rewardSummary.salePrice)
+
         if oscale and m.meanScale and m.meanScale>0 then
             m.outputScaleVsMeanInputScale=oscale/m.meanScale
         end
         if orate and m.sumEarningsPerSecond>0 then
             m.outputEarningsVsInputSum=orate/m.sumEarningsPerSecond
+            m.retainedEarningsPercent=m.outputEarningsVsInputSum*100
+            m.earningsLostVsInputSum=m.sumEarningsPerSecond-orate
+        end
+        if orate and m.maxEarningsPerSecond and m.maxEarningsPerSecond>0 then
+            m.outputEarningsVsBestInput=orate/m.maxEarningsPerSecond
+            m.retainedBestInputPercent=m.outputEarningsVsBestInput*100
+        end
+        if orate and m.meanEarningsPerSecond and m.meanEarningsPerSecond>0 then
+            m.outputEarningsVsMeanInput=orate/m.meanEarningsPerSecond
+        end
+        if osale and m.sumSalePrice>0 then
+            m.outputSaleValueVsInputSaleValue=osale/m.sumSalePrice
         end
     end
+
+    if m.fusionPrice and m.sumSalePrice>0 then
+        m.fusionPriceVsInputSalePrice=m.fusionPrice/m.sumSalePrice
+    end
+    if m.fusionPrice and m.sumEarningsPerSecond>0 then
+        m.fusionPricePerInputEarnings=m.fusionPrice/m.sumEarningsPerSecond
+    end
+
+    m.mutation=mutationProfile(inputs,rewardSummary)
     return m
 end
 
@@ -430,6 +532,12 @@ local state={
     observedSave=nil,
     fieldSignalEvents=0,
     watchFieldEvents=0,
+    kernelResearch={
+        inspected=false,
+        functionInfo={},
+        probes={},
+        lastRun=nil,
+    },
 }
 local conns={}
 local cleanupFns={}
@@ -548,6 +656,223 @@ local function captureSlots()
     }
 end
 
+local function dataCopy(v,depth,seen)
+    depth=depth or 0
+    seen=seen or {}
+    if depth>8 then return nil end
+    if type(v)~="table" then return v end
+    if seen[v] then return nil end
+    seen[v]=true
+    local out={}
+    for k,val in pairs(v) do
+        local tk,tv=type(k),typeof(val)
+        if (tk=="string" or tk=="number") and (tv=="table" or tv=="string" or tv=="number" or tv=="boolean" or tv=="nil") then
+            out[k]=dataCopy(val,depth+1,seen)
+        end
+    end
+    seen[v]=nil
+    return out
+end
+
+local function inspectFunction(name,fn)
+    local out={name=name,available=type(fn)=="function"}
+    if type(fn)~="function" then return out end
+
+    local dbg=debug
+    if type(dbg)=="table" and type(dbg.info)=="function" then
+        local ok,a,b=pcall(dbg.info,fn,"a")
+        if ok then
+            out.arity=tonumber(a)
+            out.isVararg=b==true
+        end
+        local ok2,src=pcall(dbg.info,fn,"s")
+        if ok2 then out.source=tostring(src) end
+        local ok3,nm=pcall(dbg.info,fn,"n")
+        if ok3 and nm~=nil then out.debugName=tostring(nm) end
+    end
+
+    local getinfo=(type(dbg)=="table" and dbg.getinfo) or getinfo
+    if type(getinfo)=="function" then
+        local ok,info=pcall(getinfo,fn)
+        if ok and type(info)=="table" then
+            out.getinfo=jsonSafe(info)
+        end
+    end
+
+    local getconstants=(type(dbg)=="table" and dbg.getconstants) or getconstants
+    if type(getconstants)=="function" then
+        local ok,constants=pcall(getconstants,fn)
+        if ok and type(constants)=="table" then
+            local clean={}
+            for i=1,math.min(#constants,120) do
+                local v=constants[i]
+                local tv=typeof(v)
+                if tv=="string" or tv=="number" or tv=="boolean" then clean[#clean+1]=v end
+            end
+            out.constants=clean
+        end
+    end
+
+    local getups=(type(dbg)=="table" and dbg.getupvalues) or getupvalues
+    if type(getups)=="function" then
+        local ok,ups=pcall(getups,fn)
+        if ok and type(ups)=="table" then
+            local clean={}
+            local n=0
+            for k,v in pairs(ups) do
+                n+=1
+                if n>80 then break end
+                clean[tostring(k)]=typeof(v)=="table" and jsonSafe(v,0,{}) or tostring(v)
+            end
+            out.upvalues=clean
+        end
+    end
+    return out
+end
+
+local function inspectFuseKernel()
+    if state.kernelResearch.inspected then return state.kernelResearch.functionInfo end
+    state.kernelResearch.inspected=true
+    if type(FuseKernel)=="table" then
+        state.kernelResearch.functionInfo.BandWeightBias=inspectFunction("BandWeightBias",FuseKernel.BandWeightBias)
+        state.kernelResearch.functionInfo.DrawFusedScale=inspectFunction("DrawFusedScale",FuseKernel.DrawFusedScale)
+        state.kernelResearch.functionInfo.PriceFor=inspectFunction("PriceFor",FuseKernel.PriceFor)
+        state.kernelResearch.functionInfo.MayEnterFuse=inspectFunction("MayEnterFuse",FuseKernel.MayEnterFuse)
+    end
+    return state.kernelResearch.functionInfo
+end
+
+local function numericDistribution(fn,args,count)
+    local values={}
+    for _=1,count do
+        local copied={}
+        for i,v in ipairs(args) do copied[i]=dataCopy(v) end
+        local ok,res=pcall(fn,table.unpack(copied))
+        if not ok then
+            ok,res=pcall(fn,FuseKernel,table.unpack(copied))
+        end
+        if ok and finite(tonumber(res)) then values[#values+1]=tonumber(res) end
+    end
+    if #values==0 then return nil end
+    table.sort(values)
+    local sum=0
+    for _,v in ipairs(values) do sum+=v end
+    local mean=sum/#values
+    local var=0
+    for _,v in ipairs(values) do var+=(v-mean)^2 end
+    var=var/#values
+    local function quantile(p)
+        local idx=math.clamp(math.floor((#values-1)*p+1.5),1,#values)
+        return values[idx]
+    end
+    return {
+        n=#values,
+        min=values[1],
+        max=values[#values],
+        mean=mean,
+        stddev=math.sqrt(var),
+        p10=quantile(.10),
+        p25=quantile(.25),
+        p50=quantile(.50),
+        p75=quantile(.75),
+        p90=quantile(.90),
+    }
+end
+
+local function tryKernelFunction(name,fn,snap)
+    local report={
+        name=name,
+        available=type(fn)=="function",
+        attempts={},
+        successfulShape=nil,
+        distribution=nil,
+    }
+    if type(fn)~="function" or not snap or #snap.decodedInputs~=3 then return report end
+
+    local d=snap.decodedInputs
+    local i=snap.inputs
+    local scales={
+        tonumber(i[1] and i[1].scale) or 1,
+        tonumber(i[2] and i[2].scale) or 1,
+        tonumber(i[3] and i[3].scale) or 1,
+    }
+    local weights={
+        tonumber(i[1] and i[1].weight) or 0,
+        tonumber(i[2] and i[2].weight) or 0,
+        tonumber(i[3] and i[3].weight) or 0,
+    }
+    local meanScale=(scales[1]+scales[2]+scales[3])/3
+
+    local candidates={
+        {shape="decoded-list",args={dataCopy(d)}},
+        {shape="decoded-3",args={dataCopy(d[1]),dataCopy(d[2]),dataCopy(d[3])}},
+        {shape="scale-list",args={dataCopy(scales)}},
+        {shape="scales-3",args={scales[1],scales[2],scales[3]}},
+        {shape="weight-list",args={dataCopy(weights)}},
+        {shape="weights-3",args={weights[1],weights[2],weights[3]}},
+        {shape="mean-scale",args={meanScale}},
+        {shape="decoded-list+mean",args={dataCopy(d),meanScale}},
+        {shape="mean+decoded-list",args={meanScale,dataCopy(d)}},
+    }
+
+    for _,candidate in ipairs(candidates) do
+        local args={}
+        for n,v in ipairs(candidate.args) do args[n]=dataCopy(v) end
+        local ok,res=pcall(fn,table.unpack(args))
+        local callMode="direct"
+        if not ok then
+            args={}
+            for n,v in ipairs(candidate.args) do args[n]=dataCopy(v) end
+            ok,res=pcall(fn,FuseKernel,table.unpack(args))
+            callMode="self"
+        end
+        local attempt={
+            shape=candidate.shape,
+            ok=ok,
+            callMode=callMode,
+            resultType=ok and typeof(res) or nil,
+            result=ok and jsonSafe(res) or nil,
+            error=not ok and string.sub(tostring(res),1,300) or nil,
+        }
+        report.attempts[#report.attempts+1]=attempt
+
+        if ok and report.successfulShape==nil then
+            report.successfulShape=candidate.shape
+            report.successfulCallMode=callMode
+            report.firstResult=jsonSafe(res)
+            if finite(tonumber(res)) then
+                -- Local-only research. These calls use copied data and no remotes.
+                report.distribution=numericDistribution(fn,candidate.args,64)
+            end
+        end
+    end
+    return report
+end
+
+local function runKernelResearch(snap)
+    inspectFuseKernel()
+    snap=snap or state.lastThree or state.lastSlotSnapshot
+    local run={
+        unix=os.time(),
+        serverTime=Workspace:GetServerTimeNow(),
+        hasThree=snap and #snap.inputs==3 or false,
+        inputSummary=snap and jsonSafe(snap.inputs) or nil,
+        note="Local-only pcall probes on copied pet data; no Fusery remotes are invoked.",
+    }
+    if not snap or #snap.inputs~=3 then
+        run.error="É necessário ter 3 pets carregados para testar as formas de chamada."
+        state.kernelResearch.lastRun=run
+        state.kernelResearch.probes[#state.kernelResearch.probes+1]=run
+        return run
+    end
+
+    run.BandWeightBias=tryKernelFunction("BandWeightBias",FuseKernel and FuseKernel.BandWeightBias,snap)
+    run.DrawFusedScale=tryKernelFunction("DrawFusedScale",FuseKernel and FuseKernel.DrawFusedScale,snap)
+    state.kernelResearch.lastRun=run
+    state.kernelResearch.probes[#state.kernelResearch.probes+1]=run
+    return run
+end
+
 local function pollSlots()
     local snap=captureSlots()
     if not snap then
@@ -607,11 +932,21 @@ local function handleFuseStarted(reward)
         } or nil,
         derived={
             outputScale=rewardSummary.scale,
+            outputEarningsPerSecond=rewardSummary.earningsPerSecond,
+            outputSalePrice=rewardSummary.salePrice,
             inputMeanScale=metrics.meanScale,
             inputSumEarningsPerSecond=metrics.sumEarningsPerSecond,
+            inputBestEarningsPerSecond=metrics.maxEarningsPerSecond,
+            inputSumSalePrice=metrics.salePriceCount>0 and metrics.sumSalePrice or nil,
             inputSumWeight=metrics.weightCount>0 and metrics.sumWeight or nil,
+            fusionPrice=metrics.fusionPrice,
             outputScaleVsMeanInputScale=metrics.outputScaleVsMeanInputScale,
             outputEarningsVsInputSum=metrics.outputEarningsVsInputSum,
+            outputEarningsVsBestInput=metrics.outputEarningsVsBestInput,
+            retainedEarningsPercent=metrics.retainedEarningsPercent,
+            retainedBestInputPercent=metrics.retainedBestInputPercent,
+            earningsLostVsInputSum=metrics.earningsLostVsInputSum,
+            mutation=metrics.mutation,
         },
     }
     state.samples[#state.samples+1]=sample
@@ -770,6 +1105,98 @@ if type(Save)=="table" and type(Save.Await)=="function" then
     end)
 end
 
+local function buildSessionStatistics()
+    local stats={
+        sampleCount=#state.samples,
+        economics={
+            valid=0,
+            averageOutputVsInputSum=nil,
+            averageOutputVsBestInput=nil,
+            averageScaleVsMean=nil,
+            averageRetainedEarningsPercent=nil,
+            totalInputEarnings=0,
+            totalOutputEarnings=0,
+            totalFusionPrice=0,
+        },
+        mutationBuckets={},
+        mutationTypes={},
+    }
+
+    local sumVsInput,sumVsBest,sumScaleRatio=0,0,0
+    local nVsInput,nVsBest,nScale=0,0,0
+
+    for _,sample in ipairs(state.samples) do
+        local m=sample.inputMetrics or {}
+        local mp=m.mutation or mutationProfile(sample.inputs or {},sample.rewardSummary)
+        local bucket=mp.inputMutationBucket or "?"
+        local b=stats.mutationBuckets[bucket]
+        if not b then
+            b={samples=0,outputMutated=0,outputUnmutated=0,retainedAnyInputMutation=0}
+            stats.mutationBuckets[bucket]=b
+        end
+        b.samples+=1
+        if mp.outputHasMutation then b.outputMutated+=1 else b.outputUnmutated+=1 end
+        if mp.anyInputMutationRetained then b.retainedAnyInputMutation+=1 end
+
+        for name,count in pairs(mp.inputMutationCounts or {}) do
+            local rec=stats.mutationTypes[name]
+            if not rec then
+                rec={samplesWithInput=0,totalInputPets=0,outputSameMutation=0}
+                stats.mutationTypes[name]=rec
+            end
+            rec.samplesWithInput+=1
+            rec.totalInputPets+=tonumber(count) or 0
+            local found=false
+            for _,outName in ipairs(mp.outputMutations or {}) do
+                if outName==name then found=true break end
+            end
+            if found then rec.outputSameMutation+=1 end
+        end
+
+        local inputSum=tonumber(m.sumEarningsPerSecond)
+        local output=tonumber(sample.rewardSummary and sample.rewardSummary.earningsPerSecond)
+        if inputSum and output then
+            stats.economics.valid+=1
+            stats.economics.totalInputEarnings+=inputSum
+            stats.economics.totalOutputEarnings+=output
+        end
+        if tonumber(m.fusionPrice) then stats.economics.totalFusionPrice+=tonumber(m.fusionPrice) end
+        if tonumber(m.outputEarningsVsInputSum) then
+            sumVsInput+=m.outputEarningsVsInputSum
+            nVsInput+=1
+        end
+        if tonumber(m.outputEarningsVsBestInput) then
+            sumVsBest+=m.outputEarningsVsBestInput
+            nVsBest+=1
+        end
+        if tonumber(m.outputScaleVsMeanInputScale) then
+            sumScaleRatio+=m.outputScaleVsMeanInputScale
+            nScale+=1
+        end
+    end
+
+    if nVsInput>0 then
+        stats.economics.averageOutputVsInputSum=sumVsInput/nVsInput
+        stats.economics.averageRetainedEarningsPercent=stats.economics.averageOutputVsInputSum*100
+    end
+    if nVsBest>0 then stats.economics.averageOutputVsBestInput=sumVsBest/nVsBest end
+    if nScale>0 then stats.economics.averageScaleVsMean=sumScaleRatio/nScale end
+
+    for _,b in pairs(stats.mutationBuckets) do
+        if b.samples>0 then
+            b.outputMutationRate=b.outputMutated/b.samples
+            b.outputMutationPercent=b.outputMutationRate*100
+            b.retainedAnyInputMutationRate=b.retainedAnyInputMutation/b.samples
+        end
+    end
+    for _,rec in pairs(stats.mutationTypes) do
+        if rec.samplesWithInput>0 then
+            rec.sameMutationOutputRate=rec.outputSameMutation/rec.samplesWithInput
+        end
+    end
+    return stats
+end
+
 local function exportData()
     local payload={
         scanner=scannerName,
@@ -795,6 +1222,8 @@ local function exportData()
             FuseKernel=moduleKeys(FuseKernel),
             FuseMachineSignals=moduleKeys(FuseSignals),
         },
+        kernelResearch=jsonSafe(state.kernelResearch),
+        sessionStatistics=buildSessionStatistics(),
         diagnostics={
             save=jsonSafe(saveDiagnostics),
             fieldSignalEvents=state.fieldSignalEvents,
@@ -811,10 +1240,12 @@ local function exportData()
         samples=state.samples,
         events=state.events,
         notes={
-            "Current Save build exposes Peek/Await/Watch/WatchFields and no Get; V2.2 reads committed FusionSlots through Peek.",
+            "Current Save build exposes Peek/Await/Watch/WatchFields and no Get; V2.3 reads committed FusionSlots through Peek.",
             "Input $/s prefers AssetEarnings.CatalogRatePerSecond(decodedItem).",
             "Weight prefers the game's AssetItems.WeightKg helper; raw fields are fallback.",
-            "FuseKernel exposes BandWeightBias and DrawFusedScale in this game build; their behavior will be analyzed only after exact inputs are captured.",
+            "V2.3 computes economic retention versus input sum and best input, plus mutation 0/3..3/3 session buckets.",
+            "FuseKernel research uses local-only pcall probes on copied data; it never invokes Fusery remotes or consumes pets.",
+            "DrawFusedScale/BandWeightBias probe results are exploratory until their successful argument shape is identified and compared with real server fusion samples.",
             "Fusion price uses FuseKernel.PriceFor when available.",
         },
     }
@@ -891,7 +1322,7 @@ title.BackgroundTransparency=1
 title.Position=UDim2.new(0,24,0,14)
 title.Size=UDim2.new(1,-90,0,42)
 title.Font=Enum.Font.GothamBold
-title.Text="FUSION RESEARCH SCANNER • V2.2"
+title.Text="FUSION RESEARCH SCANNER • V2.3"
 title.TextSize=26
 title.TextColor3=Color3.fromRGB(245,248,255)
 title.TextXAlignment=Enum.TextXAlignment.Left
@@ -902,7 +1333,7 @@ sub.BackgroundTransparency=1
 sub.Position=UDim2.new(0,24,0,54)
 sub.Size=UDim2.new(1,-48,0,28)
 sub.Font=Enum.Font.Gotham
-sub.Text="FusionSlots • $/s • Scale • Peso • Resultado"
+sub.Text="FusionSlots • Economia • Mutação • FuseKernel"
 sub.TextSize=16
 sub.TextColor3=Color3.fromRGB(139,164,207)
 sub.TextXAlignment=Enum.TextXAlignment.Left
@@ -932,9 +1363,10 @@ statusLabel.TextYAlignment=Enum.TextYAlignment.Top
 statusLabel.TextWrapped=true
 statusLabel.Parent=body
 
-local capture=makeButton(main,"LER SLOTS AGORA",UDim2.new(0,24,1,-66),UDim2.new(.31,-10,0,44))
-local export=makeButton(main,"EXPORTAR JSON",UDim2.new(.34,0,1,-66),UDim2.new(.31,-10,0,44))
-local clear=makeButton(main,"LIMPAR AMOSTRAS",UDim2.new(.67,0,1,-66),UDim2.new(.31,-24,0,44))
+local capture=makeButton(main,"LER SLOTS",UDim2.new(0,24,1,-66),UDim2.new(.23,-8,0,44))
+local kernel=makeButton(main,"ANALISAR KERNEL",UDim2.new(.25,4,1,-66),UDim2.new(.23,-8,0,44))
+local export=makeButton(main,"EXPORTAR JSON",UDim2.new(.50,4,1,-66),UDim2.new(.23,-8,0,44))
+local clear=makeButton(main,"LIMPAR",UDim2.new(.75,4,1,-66),UDim2.new(.23,-28,0,44))
 clear.BackgroundColor3=Color3.fromRGB(35,44,61)
 
 local dragging=false
@@ -967,6 +1399,22 @@ capture.Activated:Connect(function()
     end
 end)
 
+kernel.Activated:Connect(function()
+    pollSlots()
+    local run=runKernelResearch(state.lastThree or state.lastSlotSnapshot)
+    if run.error then
+        state.status="Kernel: "..tostring(run.error)
+    else
+        local d=run.DrawFusedScale or {}
+        local b=run.BandWeightBias or {}
+        state.status=string.format(
+            "Kernel analisado • Draw:%s • Bias:%s",
+            tostring(d.successfulShape or "sem forma válida"),
+            tostring(b.successfulShape or "sem forma válida")
+        )
+    end
+end)
+
 export.Activated:Connect(function()
     local ok,msg=exportData()
     state.status=ok and ("Exportado: "..tostring(msg)) or ("Falha ao exportar: "..tostring(msg))
@@ -975,7 +1423,9 @@ end)
 clear.Activated:Connect(function()
     table.clear(state.samples)
     table.clear(state.events)
-    state.status="Amostras limpas • aguardando nova fusão"
+    table.clear(state.kernelResearch.probes)
+    state.kernelResearch.lastRun=nil
+    state.status="Amostras/probes limpos • aguardando nova fusão"
 end)
 
 local function cleanup()
@@ -1026,6 +1476,41 @@ task.spawn(function()
                 #(last.inputs or {}),
                 tostring(last.inputCaptureMethod or "none")
             )
+            local lm=last.inputMetrics or {}
+            local mp=lm.mutation or {}
+            if tonumber(lm.retainedEarningsPercent) then
+                lines[#lines+1]=string.format(
+                    "Retenção: %.1f%% da soma | %.1f%% do melhor input",
+                    tonumber(lm.retainedEarningsPercent) or 0,
+                    tonumber(lm.retainedBestInputPercent) or 0
+                )
+            end
+            lines[#lines+1]=string.format(
+                "Mutação: %s inputs -> %s",
+                tostring(mp.inputMutationBucket or "?"),
+                mp.outputHasMutation and table.concat(mp.outputMutations or {}, "+") or "sem mutação"
+            )
+        end
+        local kr=state.kernelResearch.lastRun
+        if kr then
+            lines[#lines+1]=""
+            if kr.error then
+                lines[#lines+1]="Kernel: "..tostring(kr.error)
+            else
+                local d=kr.DrawFusedScale or {}
+                local b=kr.BandWeightBias or {}
+                lines[#lines+1]="Kernel Draw: "..tostring(d.successfulShape or "não identificado")
+                lines[#lines+1]="Kernel Bias: "..tostring(b.successfulShape or "não identificado")
+                if d.distribution then
+                    lines[#lines+1]=string.format(
+                        "Draw local n=%d | média %.4f | p10 %.4f | p90 %.4f",
+                        d.distribution.n or 0,
+                        d.distribution.mean or 0,
+                        d.distribution.p10 or 0,
+                        d.distribution.p90 or 0
+                    )
+                end
+            end
         end
         statusLabel.Text=table.concat(lines,"\n")
         task.wait(.15)

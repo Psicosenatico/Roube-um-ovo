@@ -1,4 +1,4 @@
--- PSICOSENATICO | FUSION RESEARCH SCANNER V2.3
+-- PSICOSENATICO | FUSION RESEARCH SCANNER V2.4
 -- Purpose: capture the exact 3 pets in Save.FusionSlots BEFORE FuseStarted,
 -- then pair them with the server-selected fusion reward for predictor research.
 
@@ -15,7 +15,7 @@ local Workspace=game:GetService("Workspace")
 
 local LP=Players.LocalPlayer
 local STARTED=os.time()
-local scannerName="Psico Fusion Research Scanner V2.3"
+local scannerName="Psico Fusion Research Scanner V2.4"
 
 local function safeRequire(path)
     local cur=ReplicatedStorage
@@ -739,115 +739,257 @@ local function inspectFuseKernel()
         state.kernelResearch.functionInfo.DrawFusedScale=inspectFunction("DrawFusedScale",FuseKernel.DrawFusedScale)
         state.kernelResearch.functionInfo.PriceFor=inspectFunction("PriceFor",FuseKernel.PriceFor)
         state.kernelResearch.functionInfo.MayEnterFuse=inspectFunction("MayEnterFuse",FuseKernel.MayEnterFuse)
+        state.kernelResearch.functionInfo.DrawAssetScale=inspectFunction("DrawAssetScale",AssetItems and AssetItems.DrawAssetScale)
+        state.kernelResearch.functionInfo.WeightKgForScale=inspectFunction("WeightKgForScale",AssetItems and AssetItems.WeightKgForScale)
     end
     return state.kernelResearch.functionInfo
 end
 
-local function numericDistribution(fn,args,count)
-    local values={}
-    for _=1,count do
-        local copied={}
-        for i,v in ipairs(args) do copied[i]=dataCopy(v) end
-        local ok,res=pcall(fn,table.unpack(copied))
-        if not ok then
-            ok,res=pcall(fn,FuseKernel,table.unpack(copied))
-        end
-        if ok and finite(tonumber(res)) then values[#values+1]=tonumber(res) end
+local function distributionFromValues(values,keepValues)
+    if type(values)~="table" or #values==0 then return nil end
+    local sorted={}
+    for _,v in ipairs(values) do
+        if finite(tonumber(v)) then sorted[#sorted+1]=tonumber(v) end
     end
-    if #values==0 then return nil end
-    table.sort(values)
+    if #sorted==0 then return nil end
+    table.sort(sorted)
+
     local sum=0
-    for _,v in ipairs(values) do sum+=v end
-    local mean=sum/#values
+    for _,v in ipairs(sorted) do sum+=v end
+    local mean=sum/#sorted
     local var=0
-    for _,v in ipairs(values) do var+=(v-mean)^2 end
-    var=var/#values
+    for _,v in ipairs(sorted) do var+=(v-mean)^2 end
+    var=var/#sorted
+
     local function quantile(p)
-        local idx=math.clamp(math.floor((#values-1)*p+1.5),1,#values)
-        return values[idx]
+        local idx=math.clamp(math.floor((#sorted-1)*p+1.5),1,#sorted)
+        return sorted[idx]
     end
-    return {
-        n=#values,
-        min=values[1],
-        max=values[#values],
+
+    local out={
+        n=#sorted,
+        min=sorted[1],
+        max=sorted[#sorted],
         mean=mean,
         stddev=math.sqrt(var),
+        p01=quantile(.01),
+        p05=quantile(.05),
         p10=quantile(.10),
         p25=quantile(.25),
         p50=quantile(.50),
         p75=quantile(.75),
         p90=quantile(.90),
+        p95=quantile(.95),
+        p99=quantile(.99),
+    }
+    if keepValues then out.values=sorted end
+    return out
+end
+
+local function directNumericCall(fn,args)
+    if type(fn)~="function" then return false,nil,"function unavailable" end
+    local copied={}
+    for i,v in ipairs(args or {}) do copied[i]=dataCopy(v) end
+    local ok,res=pcall(fn,table.unpack(copied))
+    if ok and finite(tonumber(res)) then return true,tonumber(res),nil end
+    return false,res,ok and "non-numeric result" or tostring(res)
+end
+
+local function drawScaleDistribution(scales,count)
+    local fn=type(FuseKernel)=="table" and FuseKernel.DrawFusedScale or nil
+    if type(fn)~="function" then return nil,"DrawFusedScale unavailable" end
+    if type(scales)~="table" or #scales~=3 then return nil,"need exactly 3 scales" end
+
+    local values={}
+    local errors={}
+    count=math.clamp(tonumber(count) or 256,16,1024)
+    for _=1,count do
+        local ok,value,err=directNumericCall(fn,{scales})
+        if ok then
+            values[#values+1]=value
+        elseif #errors<8 then
+            errors[#errors+1]=tostring(err)
+        end
+    end
+    local dist=distributionFromValues(values,true)
+    if dist then
+        dist.inputScales={scales[1],scales[2],scales[3]}
+        dist.requestedDraws=count
+        dist.errors=errors
+    end
+    return dist,#values>0 and nil or errors[1]
+end
+
+local function baselineRateForScale(category,scale)
+    if not category or not finite(tonumber(scale)) then return nil end
+    local rate=itemRate({
+        Category=category,
+        AssetCategory=category,
+        Scale=tonumber(scale),
+        AssetScale=tonumber(scale),
+        Mutations={},
+    })
+    return tonumber(rate)
+end
+
+local function economicProjectionFromDraw(dist,inputs)
+    if not dist or type(dist.values)~="table" or #dist.values==0 or type(inputs)~="table" or #inputs~=3 then
+        return nil
+    end
+    local category=inputs[1] and inputs[1].category
+    if not category then return nil end
+
+    local best=0
+    local sum=0
+    local rates={}
+    for _,x in ipairs(inputs) do
+        local r=tonumber(x.earningsPerSecond) or 0
+        best=math.max(best,r)
+        sum+=r
+    end
+
+    local belowBest,belowHalfBest,belowSum=0,0,0
+    for _,scale in ipairs(dist.values) do
+        local rate=baselineRateForScale(category,scale)
+        if rate then
+            rates[#rates+1]=rate
+            if best>0 and rate<best then belowBest+=1 end
+            if best>0 and rate<best*.5 then belowHalfBest+=1 end
+            if sum>0 and rate<sum then belowSum+=1 end
+        end
+    end
+    if #rates==0 then return nil end
+
+    local rateDist=distributionFromValues(rates,true)
+    local n=#rates
+    local scaleMin,scaleMax=math.huge,0
+    local scaleSum=0
+    for _,x in ipairs(inputs) do
+        local sc=tonumber(x.scale) or 0
+        scaleMin=math.min(scaleMin,sc)
+        scaleMax=math.max(scaleMax,sc)
+        scaleSum+=sc
+    end
+    local meanScale=scaleSum/3
+    local spread=scaleMin>0 and scaleMax/scaleMin or nil
+
+    local risk="INDETERMINADO"
+    local pBelowBest=best>0 and belowBest/n or nil
+    local pBelowHalf=best>0 and belowHalfBest/n or nil
+    if pBelowHalf and pBelowHalf>=.35 then
+        risk="MUITO ALTO"
+    elseif pBelowBest and pBelowBest>=.80 then
+        risk="ALTO"
+    elseif pBelowBest and pBelowBest>=.55 then
+        risk="MODERADO"
+    elseif pBelowBest then
+        risk="MENOR"
+    end
+
+    return {
+        note="Scale-only baseline: assumes same category and NO output mutation. It does not predict mutation inheritance.",
+        category=category,
+        inputBestEarningsPerSecond=best,
+        inputSumEarningsPerSecond=sum,
+        inputMeanScale=meanScale,
+        inputScaleMin=scaleMin,
+        inputScaleMax=scaleMax,
+        inputScaleSpreadRatio=spread,
+        baselineNoMutationRateDistribution=rateDist,
+        probabilityBelowBestInput=pBelowBest,
+        probabilityBelowHalfBestInput=best>0 and belowHalfBest/n or nil,
+        probabilityBelowInputSum=sum>0 and belowSum/n or nil,
+        riskLabel=risk,
     }
 end
 
-local function tryKernelFunction(name,fn,snap)
+local function probeBandWeightBias(snap)
+    local fn=type(FuseKernel)=="table" and FuseKernel.BandWeightBias or nil
     local report={
-        name=name,
         available=type(fn)=="function",
-        attempts={},
-        successfulShape=nil,
-        distribution=nil,
+        arity=3,
+        inferredSignature="BandWeightBias(bandStart, bandEnd, referenceScale)",
+        signatureEvidence={
+            "Runtime assertions mention a scale band start/end.",
+            "V2.3 calls with input scales in unsorted order failed when arg2 < arg1.",
+            "V2.4 tests only positive bandStart <= bandEnd pairs and varies arg3 separately.",
+        },
+        references={},
+        validationCalls={},
     }
-    if type(fn)~="function" or not snap or #snap.decodedInputs~=3 then return report end
+    if type(fn)~="function" or not snap or #snap.inputs~=3 then return report end
 
-    local d=snap.decodedInputs
-    local i=snap.inputs
-    local scales={
-        tonumber(i[1] and i[1].scale) or 1,
-        tonumber(i[2] and i[2].scale) or 1,
-        tonumber(i[3] and i[3].scale) or 1,
-    }
-    local weights={
-        tonumber(i[1] and i[1].weight) or 0,
-        tonumber(i[2] and i[2].weight) or 0,
-        tonumber(i[3] and i[3].weight) or 0,
-    }
-    local meanScale=(scales[1]+scales[2]+scales[3])/3
+    local scales={}
+    for i=1,3 do scales[i]=tonumber(snap.inputs[i] and snap.inputs[i].scale) or 1 end
+    table.sort(scales)
+    local minScale,maxScale=scales[1],scales[3]
+    local mean=(scales[1]+scales[2]+scales[3])/3
+    local median=scales[2]
+    local geo=(math.max(scales[1]*scales[2]*scales[3],1e-12))^(1/3)
 
-    local candidates={
-        {shape="decoded-list",args={dataCopy(d)}},
-        {shape="decoded-3",args={dataCopy(d[1]),dataCopy(d[2]),dataCopy(d[3])}},
-        {shape="scale-list",args={dataCopy(scales)}},
-        {shape="scales-3",args={scales[1],scales[2],scales[3]}},
-        {shape="weight-list",args={dataCopy(weights)}},
-        {shape="weights-3",args={weights[1],weights[2],weights[3]}},
-        {shape="mean-scale",args={meanScale}},
-        {shape="decoded-list+mean",args={dataCopy(d),meanScale}},
-        {shape="mean+decoded-list",args={meanScale,dataCopy(d)}},
+    local refs={
+        {name="inputMin",value=minScale},
+        {name="inputMedian",value=median},
+        {name="inputMean",value=mean},
+        {name="inputGeometricMean",value=geo},
+        {name="inputMax",value=maxScale},
+        {name="unitScale",value=1},
     }
 
-    for _,candidate in ipairs(candidates) do
-        local args={}
-        for n,v in ipairs(candidate.args) do args[n]=dataCopy(v) end
-        local ok,res=pcall(fn,table.unpack(args))
-        local callMode="direct"
-        if not ok then
-            args={}
-            for n,v in ipairs(candidate.args) do args[n]=dataCopy(v) end
-            ok,res=pcall(fn,FuseKernel,table.unpack(args))
-            callMode="self"
-        end
-        local attempt={
-            shape=candidate.shape,
-            ok=ok,
-            callMode=callMode,
-            resultType=ok and typeof(res) or nil,
-            result=ok and jsonSafe(res) or nil,
-            error=not ok and string.sub(tostring(res),1,300) or nil,
-        }
-        report.attempts[#report.attempts+1]=attempt
+    local low=math.max(.05,math.min(minScale*.55,.55))
+    local high=math.max(maxScale*1.8,2.5)
+    local boundaries={low,.65,.80,.90,1.00,1.10,1.25,1.50,2.00,high}
+    table.sort(boundaries)
+    local clean={}
+    for _,v in ipairs(boundaries) do
+        if v>0 and (#clean==0 or math.abs(v-clean[#clean])>1e-6) then clean[#clean+1]=v end
+    end
 
-        if ok and res~=nil and report.successfulShape==nil then
-            report.successfulShape=candidate.shape
-            report.successfulCallMode=callMode
-            report.firstResult=jsonSafe(res)
-            if finite(tonumber(res)) then
-                -- Local-only research. These calls use copied data and no remotes.
-                report.distribution=numericDistribution(fn,candidate.args,64)
+    -- Explicitly confirm the first two numeric arguments behave as band bounds.
+    local validOk,validRes,validErr=directNumericCall(fn,{.8,1.2,mean})
+    report.validationCalls.validBand={args={.8,1.2,mean},ok=validOk,result=validRes,error=validErr}
+    local reversedOk,reversedRes,reversedErr=directNumericCall(fn,{1.2,.8,mean})
+    report.validationCalls.reversedBand={args={1.2,.8,mean},ok=reversedOk,result=reversedRes,error=reversedErr}
+
+    for _,ref in ipairs(refs) do
+        local rows={}
+        local total=0
+        for b=1,#clean-1 do
+            local a,z=clean[b],clean[b+1]
+            if z>=a then
+                local ok,value,err=directNumericCall(fn,{a,z,ref.value})
+                rows[#rows+1]={
+                    bandStart=a,
+                    bandEnd=z,
+                    ok=ok,
+                    weight=ok and value or nil,
+                    error=not ok and string.sub(tostring(err),1,240) or nil,
+                }
+                if ok and value and value>0 then total+=value end
             end
         end
+        if total>0 then
+            for _,row in ipairs(rows) do
+                if row.weight and row.weight>0 then row.normalizedWeight=row.weight/total end
+            end
+        end
+        report.references[#report.references+1]={
+            referenceName=ref.name,
+            referenceScale=ref.value,
+            bands=rows,
+            totalPositiveWeight=total,
+        }
     end
     return report
+end
+
+local function percentileOf(sortedValues,value)
+    if type(sortedValues)~="table" or #sortedValues==0 or not finite(tonumber(value)) then return nil end
+    local n=0
+    for _,v in ipairs(sortedValues) do
+        if tonumber(v)<=tonumber(value) then n+=1 else break end
+    end
+    return n/#sortedValues
 end
 
 local function runKernelResearch(snap)
@@ -857,18 +999,34 @@ local function runKernelResearch(snap)
         unix=os.time(),
         serverTime=Workspace:GetServerTimeNow(),
         hasThree=snap and #snap.inputs==3 or false,
+        slotSignature=snap and table.concat(snap.slots or {},"|") or "",
         inputSummary=snap and jsonSafe(snap.inputs) or nil,
-        note="Local-only pcall probes on copied pet data; no Fusery remotes are invoked.",
+        note="Local-only probes on copied/local numeric data; no remotes are invoked and no pets are consumed.",
     }
     if not snap or #snap.inputs~=3 then
-        run.error="É necessário ter 3 pets carregados para testar as formas de chamada."
+        run.error="É necessário ter 3 pets carregados para analisar o Kernel."
         state.kernelResearch.lastRun=run
         state.kernelResearch.probes[#state.kernelResearch.probes+1]=run
         return run
     end
 
-    run.BandWeightBias=tryKernelFunction("BandWeightBias",FuseKernel and FuseKernel.BandWeightBias,snap)
-    run.DrawFusedScale=tryKernelFunction("DrawFusedScale",FuseKernel and FuseKernel.DrawFusedScale,snap)
+    local scales={}
+    for i=1,3 do scales[i]=tonumber(snap.inputs[i] and snap.inputs[i].scale) or 1 end
+
+    -- V2.3 established that DrawFusedScale accepts one list containing exactly 3 Scales.
+    run.DrawFusedScale={
+        available=type(FuseKernel)=="table" and type(FuseKernel.DrawFusedScale)=="function",
+        confirmedShape="scale-list",
+        distribution=nil,
+    }
+    local dist,drawErr=drawScaleDistribution(scales,256)
+    run.DrawFusedScale.distribution=dist
+    run.DrawFusedScale.error=drawErr
+    run.DrawFusedScale.economicProjection=economicProjectionFromDraw(dist,snap.inputs)
+
+    -- V2.4 focuses specifically on identifying BandWeightBias argument meaning.
+    run.BandWeightBias=probeBandWeightBias(snap)
+
     state.kernelResearch.lastRun=run
     state.kernelResearch.probes[#state.kernelResearch.probes+1]=run
     return run
@@ -896,7 +1054,12 @@ local function pollSlots()
                 local run=runKernelResearch(snap)
                 if run and not run.error then
                     local d=run.DrawFusedScale or {}
-                    state.status="3/3 capturados • Kernel Draw: "..tostring(d.successfulShape or "não identificado")
+                    local p=d.economicProjection or {}
+                    state.status=string.format(
+                        "3/3 • Kernel %s • risco %s",
+                        tostring(d.confirmedShape or "não identificado"),
+                        tostring(p.riskLabel or "indeterminado")
+                    )
                 end
             end)
         end
@@ -928,12 +1091,40 @@ local function handleFuseStarted(reward)
     end
 
     local metrics=calcMetrics(inputs,rewardSummary,decodedInputs)
+
+    local kernelValidation
+    local snapSignature=snap and table.concat(snap.slots or {},"|") or ""
+    if snapSignature~="" then
+        for idx=#state.kernelResearch.probes,1,-1 do
+            local run=state.kernelResearch.probes[idx]
+            if run and run.slotSignature==snapSignature then
+                local dist=run.DrawFusedScale and run.DrawFusedScale.distribution
+                if dist and type(dist.values)=="table" and tonumber(rewardSummary.scale) then
+                    kernelValidation={
+                        matchedKernelProbeIndex=idx,
+                        drawSampleCount=#dist.values,
+                        observedOutputScale=tonumber(rewardSummary.scale),
+                        observedScalePercentile=percentileOf(dist.values,tonumber(rewardSummary.scale)),
+                        insideP10P90=tonumber(rewardSummary.scale)>=tonumber(dist.p10 or -math.huge)
+                            and tonumber(rewardSummary.scale)<=tonumber(dist.p90 or math.huge),
+                        localP10=dist.p10,
+                        localP50=dist.p50,
+                        localP90=dist.p90,
+                        scaleOnlyEconomicProjection=run.DrawFusedScale.economicProjection,
+                    }
+                end
+                break
+            end
+        end
+    end
+
     local sample={
         index=#state.samples+1,
         unix=os.time(),
         serverTime=Workspace:GetServerTimeNow(),
         source="Client.FuseMachineSignals.FuseStarted",
         inputCaptureMethod=method,
+        kernelValidation=kernelValidation,
         inputs=inputs,
         inputMetrics=metrics,
         reward=jsonSafe(reward),
@@ -1256,10 +1447,13 @@ local function exportData()
         samples=state.samples,
         events=state.events,
         notes={
-            "Current Save build exposes Peek/Await/Watch/WatchFields and no Get; V2.3 reads committed FusionSlots through Peek.",
+            "Current Save build exposes Peek/Await/Watch/WatchFields and no Get; V2.4 reads committed FusionSlots through Peek.",
             "Input $/s prefers AssetEarnings.CatalogRatePerSecond(decodedItem).",
             "Weight prefers the game's AssetItems.WeightKg helper; raw fields are fallback.",
-            "V2.3 computes economic retention versus input sum and best input, plus mutation 0/3..3/3 session buckets.",
+            "V2.4 keeps economic retention versus input sum/best input and mutation 0/3..3/3 session buckets.",
+            "V2.3 established DrawFusedScale accepts a single list of exactly 3 input Scales; V2.4 records 256 full local draws per trio.",
+            "V2.4 probes BandWeightBias as (bandStart, bandEnd, referenceScale), based on its runtime start/end assertions, and exports a band-weight matrix.",
+            "Scale-only economic projection assumes the same category and no output mutation; it is a risk baseline, not a mutation predictor.",
             "FuseKernel research runs automatically once per distinct 3-pet slot set and can also be retried with ANALISAR KERNEL.",
             "FuseKernel research uses local-only pcall probes on copied data; it never invokes Fusery remotes or consumes pets.",
             "DrawFusedScale/BandWeightBias probe results are exploratory until their successful argument shape is identified and compared with real server fusion samples.",
@@ -1339,7 +1533,7 @@ title.BackgroundTransparency=1
 title.Position=UDim2.new(0,24,0,14)
 title.Size=UDim2.new(1,-90,0,42)
 title.Font=Enum.Font.GothamBold
-title.Text="FUSION RESEARCH SCANNER • V2.3"
+title.Text="FUSION RESEARCH SCANNER • V2.4"
 title.TextSize=26
 title.TextColor3=Color3.fromRGB(245,248,255)
 title.TextXAlignment=Enum.TextXAlignment.Left
@@ -1350,7 +1544,7 @@ sub.BackgroundTransparency=1
 sub.Position=UDim2.new(0,24,0,54)
 sub.Size=UDim2.new(1,-48,0,28)
 sub.Font=Enum.Font.Gotham
-sub.Text="FusionSlots • Economia • Mutação • FuseKernel"
+sub.Text="DrawFusedScale • BandWeightBias • risco econômico"
 sub.TextSize=16
 sub.TextColor3=Color3.fromRGB(139,164,207)
 sub.TextXAlignment=Enum.TextXAlignment.Left
@@ -1423,11 +1617,11 @@ kernel.Activated:Connect(function()
         state.status="Kernel: "..tostring(run.error)
     else
         local d=run.DrawFusedScale or {}
-        local b=run.BandWeightBias or {}
+        local p=d.economicProjection or {}
         state.status=string.format(
-            "Kernel analisado • Draw:%s • Bias:%s",
-            tostring(d.successfulShape or "sem forma válida"),
-            tostring(b.successfulShape or "sem forma válida")
+            "Kernel V2.4 • Draw:%s • risco:%s",
+            tostring(d.confirmedShape or "não identificado"),
+            tostring(p.riskLabel or "indeterminado")
         )
     end
 end)
@@ -1517,15 +1711,24 @@ task.spawn(function()
             else
                 local d=kr.DrawFusedScale or {}
                 local b=kr.BandWeightBias or {}
-                lines[#lines+1]="Kernel Draw: "..tostring(d.successfulShape or "não identificado")
-                lines[#lines+1]="Kernel Bias: "..tostring(b.successfulShape or "não identificado")
+                local p=d.economicProjection or {}
+                lines[#lines+1]="Kernel Draw: "..tostring(d.confirmedShape or "não identificado")
+                lines[#lines+1]="Band Bias: "..tostring(b.inferredSignature or "não identificado")
                 if d.distribution then
                     lines[#lines+1]=string.format(
-                        "Draw local n=%d | média %.4f | p10 %.4f | p90 %.4f",
+                        "Draw n=%d | p10 %.4f | p50 %.4f | p90 %.4f",
                         d.distribution.n or 0,
-                        d.distribution.mean or 0,
                         d.distribution.p10 or 0,
+                        d.distribution.p50 or 0,
                         d.distribution.p90 or 0
+                    )
+                end
+                if p.riskLabel then
+                    lines[#lines+1]=string.format(
+                        "Risco $/s(scale): %s | P(<melhor)=%.0f%% | spread %.2fx",
+                        tostring(p.riskLabel),
+                        100*(tonumber(p.probabilityBelowBestInput) or 0),
+                        tonumber(p.inputScaleSpreadRatio) or 0
                     )
                 end
             end

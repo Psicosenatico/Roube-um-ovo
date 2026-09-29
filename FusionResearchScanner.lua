@@ -1425,6 +1425,24 @@ local function exportData()
             FuseMachineSignals=moduleKeys(FuseSignals),
         },
         kernelResearch=jsonSafe(state.kernelResearch),
+        predictorDataSources={
+            petDirect={"Category","Scale","Mutations","BaseMutation","Personality"},
+            petDerived={
+                earningsPerSecond="AssetEarnings.CatalogRatePerSecond(decodedPet)",
+                weightKg="AssetItems.WeightKg(decodedPet)",
+                salePrice="AssetItems.SalePrice(decodedPet)",
+                rarity="Data.Assets[Category].Rarity",
+            },
+            fusionLocal={
+                drawScale="FuseKernel.DrawFusedScale({scale1,scale2,scale3})",
+                bandBias="FuseKernel.BandWeightBias(scaleTable,bandStart,bandEnd)",
+                price="FuseKernel.PriceFor({pet1,pet2,pet3})",
+            },
+            stillUnknown={
+                "Exact RNG result before fusion",
+                "Server rule/probability for output mutation",
+            },
+        },
         sessionStatistics=buildSessionStatistics(),
         diagnostics={
             save=jsonSafe(saveDiagnostics),
@@ -1442,12 +1460,12 @@ local function exportData()
         samples=state.samples,
         events=state.events,
         notes={
-            "Current Save build exposes Peek/Await/Watch/WatchFields and no Get; V2.4 reads committed FusionSlots through Peek.",
+            "Current Save build exposes Peek/Await/Watch/WatchFields and no Get; V2.5 reads committed FusionSlots through Peek.",
             "Input $/s prefers AssetEarnings.CatalogRatePerSecond(decodedItem).",
             "Weight prefers the game's AssetItems.WeightKg helper; raw fields are fallback.",
-            "V2.4 keeps economic retention versus input sum/best input and mutation 0/3..3/3 session buckets.",
+            "V2.5 keeps economic retention versus input sum/best input and mutation 0/3..3/3 session buckets.",
             "V2.3 established DrawFusedScale accepts a single list of exactly 3 input Scales; V2.4 records 256 full local draws per trio.",
-            "V2.4 probes BandWeightBias as (bandStart, bandEnd, referenceScale), based on its runtime start/end assertions, and exports a band-weight matrix.",
+            "V2.4 proved BandWeightBias argument 1 expects a table; V2.5 tests (scaleTable, bandStart, bandEnd).",
             "Scale-only economic projection assumes the same category and no output mutation; it is a risk baseline, not a mutation predictor.",
             "FuseKernel research runs automatically once per distinct 3-pet slot set and can also be retried with ANALISAR KERNEL.",
             "FuseKernel research uses local-only pcall probes on copied data; it never invokes Fusery remotes or consumes pets.",

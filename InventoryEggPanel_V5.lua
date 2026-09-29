@@ -1181,7 +1181,7 @@ fusionHint.TextXAlignment = Enum.TextXAlignment.Center
 fusionHint.TextYAlignment = Enum.TextYAlignment.Top
 fusionHint.TextColor3 = Color3.fromRGB(139, 164, 207)
 
-local fusionSortButton = button(fusionPage, 'Ordenar: Mutação + $/s', UDim2.fromOffset(8, 58), UDim2.new(.63, -10, 0, 28))
+local fusionSortButton = button(fusionPage, 'Ordenar: $/s + Mutação', UDim2.fromOffset(8, 58), UDim2.new(.63, -10, 0, 28))
 local fusionRefreshButton = button(fusionPage, 'Atualizar', UDim2.new(.63, 2, 0, 58), UDim2.new(.37, -10, 0, 28))
 
 local fusionSlotsLabel = label(fusionPage, 'Selecionados: 0/3', UDim2.fromOffset(10, 89), UDim2.new(1, -20, 0, 18), 8)
@@ -1238,7 +1238,7 @@ fusionFoot.TextXAlignment = Enum.TextXAlignment.Center
 fusionFoot.TextYAlignment = Enum.TextYAlignment.Top
 fusionFoot.TextColor3 = Color3.fromRGB(139, 151, 177)
 
-local FUSION_SORT_MODES = {'Mutação + $/s', '$/s', 'Peso', 'Pet'}
+local FUSION_SORT_MODES = {'$/s + Mutação', '$/s', 'Peso', 'Pet'}
 local FUSION = {
     Inputs = {},
     Selected = {},
@@ -1480,20 +1480,24 @@ local function fusionSortPets(entries)
             if ac ~= bc then return ac end
         end
 
-        if mode == 'Mutação + $/s' then
+        -- $/s is ALWAYS the primary order. The selected mode only resolves
+        -- ties / near-identical value entries; it never moves a weaker pet
+        -- above a stronger one.
+        local ar, br = a.Rate or 0, b.Rate or 0
+        if ar ~= br then return ar > br end
+
+        if mode == '$/s + Mutação' then
             if a.HasMutation ~= b.HasMutation then return a.HasMutation end
-            if (a.Rate or 0) ~= (b.Rate or 0) then return (a.Rate or 0) > (b.Rate or 0) end
-            return (a.Weight or 0) > (b.Weight or 0)
-        elseif mode == '$/s' then
-            if (a.Rate or 0) ~= (b.Rate or 0) then return (a.Rate or 0) > (b.Rate or 0) end
-            if a.HasMutation ~= b.HasMutation then return a.HasMutation end
+            if (a.Weight or 0) ~= (b.Weight or 0) then return (a.Weight or 0) > (b.Weight or 0) end
         elseif mode == 'Peso' then
             if (a.Weight or 0) ~= (b.Weight or 0) then return (a.Weight or 0) > (b.Weight or 0) end
-            return (a.Rate or 0) > (b.Rate or 0)
-        else
+            if a.HasMutation ~= b.HasMutation then return a.HasMutation end
+        elseif mode == 'Pet' then
             local an, bn = norm(a.Name), norm(b.Name)
             if an ~= bn then return an < bn end
-            return (a.Rate or 0) > (b.Rate or 0)
+            if a.HasMutation ~= b.HasMutation then return a.HasMutation end
+        else
+            if a.HasMutation ~= b.HasMutation then return a.HasMutation end
         end
         return a.Uid < b.Uid
     end)

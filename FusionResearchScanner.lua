@@ -1,4 +1,4 @@
--- PSICOSENATICO | FUSION RESEARCH SCANNER V2.4
+-- PSICOSENATICO | FUSION RESEARCH SCANNER V2.5
 -- Purpose: capture the exact 3 pets in Save.FusionSlots BEFORE FuseStarted,
 -- then pair them with the server-selected fusion reward for predictor research.
 
@@ -15,7 +15,7 @@ local Workspace=game:GetService("Workspace")
 
 local LP=Players.LocalPlayer
 local STARTED=os.time()
-local scannerName="Psico Fusion Research Scanner V2.4"
+local scannerName="Psico Fusion Research Scanner V2.5"
 
 local function safeRequire(path)
     local cur=ReplicatedStorage
@@ -1533,7 +1533,7 @@ title.BackgroundTransparency=1
 title.Position=UDim2.new(0,24,0,14)
 title.Size=UDim2.new(1,-150,0,42)
 title.Font=Enum.Font.GothamBold
-title.Text="FUSION RESEARCH SCANNER • V2.4"
+title.Text="FUSION RESEARCH SCANNER • V2.5"
 title.TextSize=26
 title.TextColor3=Color3.fromRGB(245,248,255)
 title.TextXAlignment=Enum.TextXAlignment.Left
@@ -1677,7 +1677,7 @@ kernel.Activated:Connect(function()
         local d=run.DrawFusedScale or {}
         local p=d.economicProjection or {}
         state.status=string.format(
-            "Kernel V2.4 • Draw:%s • risco:%s",
+            "Kernel V2.5 • Draw:%s • risco:%s",
             tostring(d.confirmedShape or "não identificado"),
             tostring(p.riskLabel or "indeterminado")
         )

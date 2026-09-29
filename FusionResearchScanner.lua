@@ -532,6 +532,7 @@ local state={
     observedSave=nil,
     fieldSignalEvents=0,
     watchFieldEvents=0,
+    lastKernelSlotSignature="",
     kernelResearch={
         inspected=false,
         functionInfo={},
@@ -884,6 +885,21 @@ local function pollSlots()
     if #snap.inputs==3 then
         state.lastThree=snap
         state.status="3/3 capturados • pronto para fundir"
+
+        -- Run the local FuseKernel study once for each distinct trio. This is
+        -- automatic so it can also catch the short 3/3 window created by the
+        -- direct-fusion menu before BeginFuse. No remote is called here.
+        local sig=table.concat(snap.slots or {},"|")
+        if sig~="" and sig~=state.lastKernelSlotSignature then
+            state.lastKernelSlotSignature=sig
+            task.defer(function()
+                local run=runKernelResearch(snap)
+                if run and not run.error then
+                    local d=run.DrawFusedScale or {}
+                    state.status="3/3 capturados • Kernel Draw: "..tostring(d.successfulShape or "não identificado")
+                end
+            end)
+        end
     elseif #snap.inputs>0 then
         state.status=string.format("%d/3 pets carregados",#snap.inputs)
     elseif os.clock()-state.lastFusionAt>1.5 then
@@ -1244,6 +1260,7 @@ local function exportData()
             "Input $/s prefers AssetEarnings.CatalogRatePerSecond(decodedItem).",
             "Weight prefers the game's AssetItems.WeightKg helper; raw fields are fallback.",
             "V2.3 computes economic retention versus input sum and best input, plus mutation 0/3..3/3 session buckets.",
+            "FuseKernel research runs automatically once per distinct 3-pet slot set and can also be retried with ANALISAR KERNEL.",
             "FuseKernel research uses local-only pcall probes on copied data; it never invokes Fusery remotes or consumes pets.",
             "DrawFusedScale/BandWeightBias probe results are exploratory until their successful argument shape is identified and compared with real server fusion samples.",
             "Fusion price uses FuseKernel.PriceFor when available.",
@@ -1425,6 +1442,7 @@ clear.Activated:Connect(function()
     table.clear(state.events)
     table.clear(state.kernelResearch.probes)
     state.kernelResearch.lastRun=nil
+    state.lastKernelSlotSignature=""
     state.status="Amostras/probes limpos • aguardando nova fusão"
 end)
 

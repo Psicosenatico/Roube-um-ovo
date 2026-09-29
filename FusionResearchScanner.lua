@@ -15,7 +15,7 @@ local Workspace=game:GetService("Workspace")
 
 local LP=Players.LocalPlayer
 local STARTED=os.time()
-local scannerName="Psico Fusion Research Scanner V2.1"
+local scannerName="Psico Fusion Research Scanner V2.2"
 
 local function safeRequire(path)
     local cur=ReplicatedStorage
@@ -119,42 +119,88 @@ end
 
 local saveDiagnostics={
     calls=0,
-    directOk=false,
-    selfOk=false,
-    lastDirectType=nil,
-    lastSelfType=nil,
+    source=nil,
     lastError=nil,
+    getAvailable=type(Save)=="table" and type(Save.Get)=="function" or false,
+    peekAvailable=type(Save)=="table" and type(Save.Peek)=="function" or false,
+    awaitAvailable=type(Save)=="table" and type(Save.Await)=="function" or false,
+    peekFullDirectType=nil,
+    peekFullSelfType=nil,
+    peekFusionSlotsType=nil,
+    peekInventoryType=nil,
+    awaitType=nil,
 }
 
+local function callSaveFunction(name,...)
+    if type(Save)~="table" then return nil,false,nil end
+    local fn=Save[name]
+    if type(fn)~="function" then return nil,false,"missing" end
+
+    local args=table.pack(...)
+    local ok,value=pcall(fn,table.unpack(args,1,args.n))
+    if ok and value~=nil then return value,true,"direct" end
+
+    local ok2,value2=pcall(fn,Save,table.unpack(args,1,args.n))
+    if ok2 and value2~=nil then return value2,true,"self" end
+
+    local err=(not ok and value) or (not ok2 and value2) or "nil"
+    return nil,false,tostring(err)
+end
+
 local function getSave()
-    if type(Save)~="table" or type(Save.Get)~="function" then
-        saveDiagnostics.lastError="Save/Get ausente"
+    if type(Save)~="table" then
+        saveDiagnostics.lastError="Shared.Save ausente"
         return nil
     end
-
     saveDiagnostics.calls+=1
 
-    -- Important: some current builds return nil when Get is called without
-    -- the module as self instead of throwing. V2 only retried on an error,
-    -- so a valid colon-style Get could be missed forever.
-    local ok,data=pcall(Save.Get)
-    saveDiagnostics.directOk=ok and type(data)=="table"
-    saveDiagnostics.lastDirectType=typeof(data)
-    if saveDiagnostics.directOk then
-        saveDiagnostics.lastError=nil
-        return data
+    -- Older builds exposed Get(); the current build from the user's V2.1
+    -- export exposes Peek/Await instead. Try both families without assuming one.
+    if type(Save.Get)=="function" then
+        local data,ok,mode=callSaveFunction("Get")
+        if ok and type(data)=="table" then
+            saveDiagnostics.source="Get/"..tostring(mode)
+            saveDiagnostics.lastError=nil
+            return data
+        end
     end
 
-    local ok2,data2=pcall(Save.Get,Save)
-    saveDiagnostics.selfOk=ok2 and type(data2)=="table"
-    saveDiagnostics.lastSelfType=typeof(data2)
-    if saveDiagnostics.selfOk then
-        saveDiagnostics.lastError=nil
-        return data2
+    if type(Save.Peek)=="function" then
+        local data,ok,mode=callSaveFunction("Peek")
+        saveDiagnostics.peekFullDirectType=ok and typeof(data) or saveDiagnostics.peekFullDirectType
+        if ok and type(data)=="table" then
+            -- A no-argument Peek normally returns the full client save.
+            if data.FusionSlots~=nil or data.Inventory~=nil or data.Money~=nil or data.SpeedPower~=nil then
+                saveDiagnostics.source="Peek/full/"..tostring(mode)
+                saveDiagnostics.lastError=nil
+                return data
+            end
+        end
     end
 
-    saveDiagnostics.lastError=tostring((not ok and data) or (not ok2 and data2) or "Get retornou "..tostring(typeof(data)).."/"..tostring(typeof(data2)))
+    saveDiagnostics.lastError="nenhum snapshot completo disponível"
     return nil
+end
+
+local function peekField(field)
+    if type(Save)~="table" or type(Save.Peek)~="function" then return nil,false,nil end
+
+    local value,ok,mode=callSaveFunction("Peek",field)
+    if ok then
+        if field=="FusionSlots" then saveDiagnostics.peekFusionSlotsType=typeof(value) end
+        if field=="Inventory" then saveDiagnostics.peekInventoryType=typeof(value) end
+        if type(value)=="table" and value[field]~=nil then
+            return value[field],true,"Peek/"..field.."/wrapped/"..tostring(mode)
+        end
+        return value,true,"Peek/"..field.."/"..tostring(mode)
+    end
+
+    -- Some versions only support full Peek().
+    local full=getSave()
+    if type(full)=="table" and full[field]~=nil then
+        return full[field],true,"Peek/full."..field
+    end
+    return nil,false,nil
 end
 
 local function decodeItem(raw)
@@ -386,6 +432,17 @@ local state={
     watchFieldEvents=0,
 }
 local conns={}
+local cleanupFns={}
+
+local function keepCleanupHandle(handle)
+    if typeof(handle)=="RBXScriptConnection" then
+        conns[#conns+1]=handle
+    elseif type(handle)=="function" then
+        cleanupFns[#cleanupFns+1]=handle
+    elseif type(handle)=="table" and type(handle.Disconnect)=="function" then
+        cleanupFns[#cleanupFns+1]=function() pcall(handle.Disconnect,handle) end
+    end
+end
 
 local function looksLikeFusionSlots(t)
     if type(t)~="table" then return false end
@@ -424,10 +481,31 @@ local function absorbSignalArgs(source,...)
     end
 end
 
+local function refreshObservedFromPeek()
+    -- This is the main V2.2 fix for the visual "one pet behind" behavior.
+    -- V2.1's WatchFields payload represented the previous FusionSlots state;
+    -- Peek reads the committed/current value after the callback.
+    local slots,slotsOk=peekField("FusionSlots")
+    if slotsOk and type(slots)=="table" then
+        if type(slots.FusionSlots)=="table" then slots=slots.FusionSlots end
+        if looksLikeFusionSlots(slots) then
+            state.observedFusionSlots=slots
+        end
+    end
+
+    local inv,invOk=peekField("Inventory")
+    if invOk and type(inv)=="table" then
+        if type(inv.Inventory)=="table" then inv=inv.Inventory end
+        state.observedInventory=inv
+    end
+end
+
 local function captureSlots()
+    refreshObservedFromPeek()
+
     local save=getSave()
     if save then
-        absorbObservedTable(save,"Save.Get")
+        absorbObservedTable(save,"Save snapshot")
     else
         if state.observedSave then
             save=state.observedSave
@@ -602,18 +680,94 @@ end
 connectFieldSignal("FusionSlots")
 connectFieldSignal("Inventory")
 
-if type(Save)=="table" and type(Save.WatchFields)=="function" then
-    local function watchCallback(...)
+local function scheduleCommittedRefresh()
+    -- WatchFields in the current build fires before the local snapshot is fully
+    -- committed. Refresh immediately and again shortly after to avoid 0/1,1/2,2/3.
+    task.defer(function()
+        refreshObservedFromPeek()
+        pollSlots()
+        task.wait(.04)
+        refreshObservedFromPeek()
+        pollSlots()
+        task.wait(.10)
+        refreshObservedFromPeek()
+        pollSlots()
+    end)
+end
+
+local function extractFieldPayload(field,...)
+    local args=table.pack(...)
+    for i=1,args.n do
+        local v=args[i]
+        if type(v)=="table" then
+            if type(v[field])=="table" then return v[field] end
+            if field=="FusionSlots" and looksLikeFusionSlots(v) then return v end
+            if field=="Inventory" and not looksLikeFusionSlots(v) then
+                -- Because this callback watches Inventory only, an arbitrary UID map
+                -- is the inventory payload even when it is not wrapped as {Inventory=...}.
+                return v
+            end
+        end
+    end
+    return nil
+end
+
+local function watchOneField(field)
+    if type(Save)~="table" then return false end
+
+    local callback=function(...)
         state.watchFieldEvents+=1
-        absorbSignalArgs("WatchFields",...)
-        task.defer(pollSlots)
+        local payload=extractFieldPayload(field,...)
+        if field=="FusionSlots" and type(payload)=="table" then
+            -- Keep the callback payload as fallback, but Peek after commit is authoritative.
+            state.observedFusionSlots=payload
+        elseif field=="Inventory" and type(payload)=="table" then
+            state.observedInventory=payload
+        end
+        absorbSignalArgs("Watch:"..field,...)
+        scheduleCommittedRefresh()
     end
 
-    local fields={"FusionSlots","Inventory"}
-    local ok,res=pcall(Save.WatchFields,fields,watchCallback)
-    if not ok then
-        pcall(Save.WatchFields,Save,fields,watchCallback)
+    if type(Save.WatchFields)=="function" then
+        local ok,res=pcall(Save.WatchFields,{field},callback)
+        if not ok then ok,res=pcall(Save.WatchFields,Save,{field},callback) end
+        if ok then
+            keepCleanupHandle(res)
+            return true
+        end
     end
+
+    if type(Save.Watch)=="function" then
+        local ok,res=pcall(Save.Watch,field,callback)
+        if not ok then ok,res=pcall(Save.Watch,Save,field,callback) end
+        if ok then
+            keepCleanupHandle(res)
+            return true
+        end
+    end
+    return false
+end
+
+watchOneField("FusionSlots")
+watchOneField("Inventory")
+
+-- Seed the caches immediately instead of waiting for the first mutation event.
+refreshObservedFromPeek()
+
+-- Await is only used once as an asynchronous bootstrap fallback. It never blocks
+-- the scanner UI or polling loop.
+if type(Save)=="table" and type(Save.Await)=="function" then
+    task.spawn(function()
+        local value,ok,mode=callSaveFunction("Await")
+        saveDiagnostics.awaitType=typeof(value)
+        if ok and type(value)=="table" then
+            saveDiagnostics.source="Await/"..tostring(mode)
+            absorbObservedTable(value,"Await")
+            if type(value.FusionSlots)=="table" then state.observedFusionSlots=value.FusionSlots end
+            if type(value.Inventory)=="table" then state.observedInventory=value.Inventory end
+            scheduleCommittedRefresh()
+        end
+    end)
 end
 
 local function exportData()
@@ -647,11 +801,17 @@ local function exportData()
             watchFieldEvents=state.watchFieldEvents,
             observedFusionSlots=jsonSafe(state.observedFusionSlots),
             observedInventoryType=typeof(state.observedInventory),
+            observedInventoryCount=(function()
+                local n=0
+                if type(state.observedInventory)=="table" then for _ in pairs(state.observedInventory) do n+=1 end end
+                return n
+            end)(),
+            currentSlotCount=state.lastSlotCount,
         },
         samples=state.samples,
         events=state.events,
         notes={
-            "Inputs prefer Save.Get().FusionSlots; FieldSignal/WatchFields are fallback sources.",
+            "Current Save build exposes Peek/Await/Watch/WatchFields and no Get; V2.2 reads committed FusionSlots through Peek.",
             "Input $/s prefers AssetEarnings.CatalogRatePerSecond(decodedItem).",
             "Weight prefers the game's AssetItems.WeightKg helper; raw fields are fallback.",
             "FuseKernel exposes BandWeightBias and DrawFusedScale in this game build; their behavior will be analyzed only after exact inputs are captured.",
@@ -731,7 +891,7 @@ title.BackgroundTransparency=1
 title.Position=UDim2.new(0,24,0,14)
 title.Size=UDim2.new(1,-90,0,42)
 title.Font=Enum.Font.GothamBold
-title.Text="FUSION RESEARCH SCANNER • V2.1"
+title.Text="FUSION RESEARCH SCANNER • V2.2"
 title.TextSize=26
 title.TextColor3=Color3.fromRGB(245,248,255)
 title.TextXAlignment=Enum.TextXAlignment.Left
@@ -821,6 +981,7 @@ end)
 local function cleanup()
     state.alive=false
     for _,c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+    for _,fn in ipairs(cleanupFns) do pcall(fn) end
     pcall(function() gui:Destroy() end)
     if _G.PSICO_FUSION_SCAN_CLEANUP==cleanup then _G.PSICO_FUSION_SCAN_CLEANUP=nil end
 end

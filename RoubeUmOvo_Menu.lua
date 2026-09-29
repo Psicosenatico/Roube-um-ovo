@@ -1517,8 +1517,8 @@ fusionPage.Size=UDim2.new(1,-16,1,-16)
 fusionPage.Visible=false
 fusionPage.Parent=contentHost
 
-local FUSION_SORT_MODES={"VALOR + MUT","$/S","PESO","PET"}
-local fusionSortButton=mkButton(fusionPage,"CLASSIFICAR: VALOR + MUT",UDim2.fromOffset(0,0),UDim2.new(.67,-3,0,27))
+local FUSION_SORT_MODES={"$/S + MUT","$/S","PESO","PET"}
+local fusionSortButton=mkButton(fusionPage,"CLASSIFICAR: $/S + MUT",UDim2.fromOffset(0,0),UDim2.new(.67,-3,0,27))
 local fusionRefreshButton=mkButton(fusionPage,"ATUALIZAR",UDim2.new(.68,0,0,0),UDim2.new(.32,0,0,27))
 local fusionStatusLabel=mkLabel(fusionPage,"0/3 • selecione 3 do mesmo pet",UDim2.fromOffset(2,31),UDim2.new(.76,-2,0,21),8)
 fusionStatusLabel.TextColor3=Color3.fromRGB(139,164,207)
@@ -1766,20 +1766,24 @@ local function fusionSortEntries(entries)
             local bc=b.category==selectedCategory
             if ac~=bc then return ac end
         end
-        if mode=="VALOR + MUT" then
+
+        -- Rendimento é sempre a prioridade principal, independentemente
+        -- do modo escolhido. Os outros modos apenas desempatarão.
+        local ar,br=a.rate or 0,b.rate or 0
+        if ar~=br then return ar>br end
+
+        if mode=="$/S + MUT" then
             if a.hasMutation~=b.hasMutation then return a.hasMutation end
-            if a.rate~=b.rate then return a.rate>b.rate end
             if a.weight~=b.weight then return a.weight>b.weight end
-        elseif mode=="$/S" then
-            if a.rate~=b.rate then return a.rate>b.rate end
-            if a.hasMutation~=b.hasMutation then return a.hasMutation end
         elseif mode=="PESO" then
             if a.weight~=b.weight then return a.weight>b.weight end
-            if a.rate~=b.rate then return a.rate>b.rate end
-        else
+            if a.hasMutation~=b.hasMutation then return a.hasMutation end
+        elseif mode=="PET" then
             local an,bn=searchText(a.displayName),searchText(b.displayName)
             if an~=bn then return an<bn end
-            if a.rate~=b.rate then return a.rate>b.rate end
+            if a.hasMutation~=b.hasMutation then return a.hasMutation end
+        else
+            if a.hasMutation~=b.hasMutation then return a.hasMutation end
         end
         return a.uid<b.uid
     end)

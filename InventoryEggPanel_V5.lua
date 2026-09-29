@@ -1921,7 +1921,7 @@ local function runSelectedFusion()
         end
     end
 
-    if saveData.FusionInfoAcknowledged == false then
+    if not saveData.FusionInfoAcknowledged then
         local okBrief, acceptedBrief = fusionInvoke('ConfirmBriefing')
         if not okBrief or acceptedBrief ~= true then
             FUSION.Busy = false

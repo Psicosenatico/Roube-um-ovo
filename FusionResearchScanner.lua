@@ -1531,7 +1531,7 @@ stroke.Parent=main
 local title=Instance.new("TextLabel")
 title.BackgroundTransparency=1
 title.Position=UDim2.new(0,24,0,14)
-title.Size=UDim2.new(1,-90,0,42)
+title.Size=UDim2.new(1,-150,0,42)
 title.Font=Enum.Font.GothamBold
 title.Text="FUSION RESEARCH SCANNER • V2.4"
 title.TextSize=26
@@ -1550,9 +1550,21 @@ sub.TextColor3=Color3.fromRGB(139,164,207)
 sub.TextXAlignment=Enum.TextXAlignment.Left
 sub.Parent=main
 
+local minimize=makeButton(main,"—",UDim2.new(1,-116,0,16),UDim2.fromOffset(44,44))
+minimize.TextSize=23
+minimize.BackgroundColor3=Color3.fromRGB(35,44,61)
+
 local close=makeButton(main,"×",UDim2.new(1,-64,0,16),UDim2.fromOffset(44,44))
 close.TextSize=25
 close.BackgroundColor3=Color3.fromRGB(35,44,61)
+
+local mini=makeButton(gui,"SCAN",UDim2.new(1,-76,.5,-28),UDim2.fromOffset(56,56))
+mini.Name="MinimizedButton"
+mini.AnchorPoint=Vector2.new(0,0)
+mini.TextSize=11
+mini.BackgroundColor3=Color3.fromRGB(18,42,72)
+mini.Visible=false
+round(mini,28)
 
 local body=Instance.new("Frame")
 body.BackgroundColor3=Color3.fromRGB(16,34,58)
@@ -1601,6 +1613,52 @@ conns[#conns+1]=UIS.InputChanged:Connect(function(input)
     end
 end)
 
+local miniDragging=false
+local miniMoved=false
+local miniDragStart,miniStartPos
+
+mini.InputBegan:Connect(function(input)
+    if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+        miniDragging=true
+        miniMoved=false
+        miniDragStart=input.Position
+        miniStartPos=mini.Position
+    end
+end)
+
+mini.InputEnded:Connect(function(input)
+    if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+        miniDragging=false
+    end
+end)
+
+conns[#conns+1]=UIS.InputChanged:Connect(function(input)
+    if miniDragging and (input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch) then
+        local d=input.Position-miniDragStart
+        if d.Magnitude>6 then miniMoved=true end
+        mini.Position=UDim2.new(
+            miniStartPos.X.Scale,
+            miniStartPos.X.Offset+d.X,
+            miniStartPos.Y.Scale,
+            miniStartPos.Y.Offset+d.Y
+        )
+    end
+end)
+
+minimize.Activated:Connect(function()
+    main.Visible=false
+    mini.Visible=true
+end)
+
+mini.Activated:Connect(function()
+    if miniMoved then
+        miniMoved=false
+        return
+    end
+    mini.Visible=false
+    main.Visible=true
+end)
+
 capture.Activated:Connect(function()
     pollSlots()
     local snap=state.lastSlotSnapshot
@@ -1642,6 +1700,7 @@ end)
 
 local function cleanup()
     state.alive=false
+    mini.Visible=false
     for _,c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     for _,fn in ipairs(cleanupFns) do pcall(fn) end
     pcall(function() gui:Destroy() end)

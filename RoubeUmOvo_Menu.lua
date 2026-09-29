@@ -86,6 +86,10 @@ local State={
     AutoTrainStatus="Inicializando",
     AutoTrainBelt=nil,
     AutoTrainBeltAt=0,
+    FusionSelected={},
+    FusionSortMode=1,
+    FusionBusy=false,
+    FusionLastResult=nil,
     Stats={EspVisible=0,CatalogPets=0},
 }
 
@@ -98,6 +102,9 @@ local TreadmillUtil
 local SpeedPowerProjection
 local PlotState
 local SharedRemotes
+local SaveData
+local AssetItems
+local FuseKernel
 local PetTranslator
 local PetLocalizedCache={}
 
@@ -340,6 +347,9 @@ local function resolveModules()
     SpeedPowerProjection=requireOptional("Client.SpeedPowerProjection")
     PlotState=requireOptional("Client.PlotState")
     SharedRemotes=requireOptional("Shared.Remotes")
+    SaveData=requireOptional("Shared.Save")
+    AssetItems=requireOptional("Shared.Util.AssetItems")
+    FuseKernel=requireOptional("Shared.Util.FuseKernel")
     indexMutationScalars()
     return true
 end
@@ -1467,6 +1477,7 @@ sidebar.Size=UDim2.new(0,104,1,-77)
 sidebar.Parent=mainFrame
 local tabMain=mkButton(sidebar,"FUNÇÕES",UDim2.fromOffset(0,0),UDim2.new(1,0,0,42))
 local tabFilters=mkButton(sidebar,"FILTROS ESP",UDim2.fromOffset(0,50),UDim2.new(1,0,0,42))
+local tabFusion=mkButton(sidebar,"FUSÃO",UDim2.fromOffset(0,100),UDim2.new(1,0,0,42))
 
 local contentHost=Instance.new("Frame")
 contentHost.BackgroundColor3=Color3.fromRGB(20,28,43)
@@ -1497,6 +1508,480 @@ filterPage.ScrollBarThickness=3
 filterPage.ScrollBarImageColor3=Color3.fromRGB(94,139,223)
 filterPage.Visible=false
 filterPage.Parent=contentHost
+
+local fusionPage=Instance.new("Frame")
+fusionPage.BackgroundTransparency=1
+fusionPage.BorderSizePixel=0
+fusionPage.Position=UDim2.fromOffset(8,8)
+fusionPage.Size=UDim2.new(1,-16,1,-16)
+fusionPage.Visible=false
+fusionPage.Parent=contentHost
+
+local FUSION_SORT_MODES={"VALOR + MUT","$/S","PESO","PET"}
+local fusionSortButton=mkButton(fusionPage,"CLASSIFICAR: VALOR + MUT",UDim2.fromOffset(0,0),UDim2.new(.67,-3,0,27))
+local fusionRefreshButton=mkButton(fusionPage,"ATUALIZAR",UDim2.new(.68,0,0,0),UDim2.new(.32,0,0,27))
+local fusionStatusLabel=mkLabel(fusionPage,"0/3 • selecione 3 do mesmo pet",UDim2.fromOffset(2,31),UDim2.new(.76,-2,0,21),8)
+fusionStatusLabel.TextColor3=Color3.fromRGB(139,164,207)
+local fusionClearButton=mkButton(fusionPage,"LIMPAR",UDim2.new(.78,0,0,31),UDim2.new(.22,0,0,21))
+fusionClearButton.TextSize=8
+
+local fusionList=Instance.new("ScrollingFrame")
+fusionList.BackgroundColor3=Color3.fromRGB(16,24,38)
+fusionList.BackgroundTransparency=.18
+fusionList.BorderSizePixel=0
+fusionList.Position=UDim2.fromOffset(0,57)
+fusionList.Size=UDim2.new(1,0,1,-57)
+fusionList.CanvasSize=UDim2.fromOffset(0,0)
+fusionList.ScrollBarThickness=3
+fusionList.ScrollBarImageColor3=Color3.fromRGB(94,139,223)
+fusionList.Parent=fusionPage
+round(fusionList,8)
+
+local function fusionCallTable(tbl,name,...)
+    if typeof(tbl)~="table" or type(tbl[name])~="function" then return false,nil,"função ausente" end
+    local fn=tbl[name]
+    local args=table.pack(...)
+    local r=table.pack(pcall(fn,table.unpack(args,1,args.n)))
+    if r[1] then return true,table.unpack(r,2,r.n) end
+    r=table.pack(pcall(fn,tbl,table.unpack(args,1,args.n)))
+    if r[1] then return true,table.unpack(r,2,r.n) end
+    return false,nil,tostring(r[2])
+end
+
+local function fusionCurrentSave()
+    if typeof(SaveData)~="table" then SaveData=requireOptional("Shared.Save") end
+    if typeof(SaveData)~="table" then return nil end
+    for _,name in ipairs({"Peek","Get"}) do
+        if type(SaveData[name])=="function" then
+            local ok,data=fusionCallTable(SaveData,name)
+            if ok and typeof(data)=="table" then return data end
+        end
+    end
+    if type(SaveData.Await)=="function" then
+        local ok,data=fusionCallTable(SaveData,"Await")
+        if ok and typeof(data)=="table" then return data end
+    end
+    return nil
+end
+
+local function fusionDecode(raw)
+    if typeof(AssetItems)~="table" then AssetItems=requireOptional("Shared.Util.AssetItems") end
+    if typeof(AssetItems)=="table" and type(AssetItems.Decode)=="function" then
+        local ok,item=fusionCallTable(AssetItems,"Decode",raw)
+        if ok and typeof(item)=="table" then return item end
+    end
+    return typeof(raw)=="table" and raw or nil
+end
+
+local function fusionAssetConfig(category)
+    if typeof(AssetsData)~="table" then return nil end
+    local dir=AssetsData.Directory or AssetsData.Configs
+    return typeof(dir)=="table" and dir[category] or nil
+end
+
+local function fusionMutationNames(item)
+    local out,seen={},{}
+    local function add(v)
+        if v==nil then return end
+        local name
+        if typeof(v)=="table" then
+            name=v._id or v.DisplayName or v.Name or v.Id
+        else
+            name=v
+        end
+        name=name and safeString(name) or nil
+        local key=name and normalize(name) or ""
+        if key~="" and not seen[key] then
+            seen[key]=true
+            out[#out+1]=name
+        end
+    end
+    add(item and item.BaseMutation)
+    if item and typeof(item.Mutations)=="table" then
+        for _,m in pairs(item.Mutations) do add(m) end
+    end
+    table.sort(out,function(a,b) return searchText(a)<searchText(b) end)
+    return out
+end
+
+local function fusionPetRate(item)
+    if typeof(AssetEarnings)~="table" then return 0 end
+    for _,name in ipairs({"CatalogRatePerSecond","MutationOnlyRatePerSecond"}) do
+        if type(AssetEarnings[name])=="function" then
+            local target=item
+            if name=="MutationOnlyRatePerSecond" then
+                target={
+                    Category=item.Category or item.AssetCategory,
+                    Scale=item.Scale or item.AssetScale,
+                    Mutations=item.Mutations or {},
+                }
+            end
+            local ok,value=fusionCallTable(AssetEarnings,name,target)
+            if ok and finite(tonumber(value)) then return tonumber(value) end
+        end
+    end
+    return 0
+end
+
+local function fusionPetWeight(item)
+    if typeof(AssetItems)=="table" and type(AssetItems.WeightKg)=="function" then
+        local ok,value=fusionCallTable(AssetItems,"WeightKg",item)
+        if ok and finite(tonumber(value)) then return tonumber(value) end
+    end
+    return tonumber(item.Weight or item.AssetWeight or item.Kg or item.Mass) or 0
+end
+
+local function fusionMayEnter(item,cfg)
+    if not item then return false end
+    if item.InFuse==true or item.IsFavorite==true or item.Favorite==true then return false end
+    if cfg and cfg.CannotFuse==true then return false end
+    if typeof(FuseKernel)~="table" then FuseKernel=requireOptional("Shared.Util.FuseKernel") end
+    if typeof(FuseKernel)=="table" and type(FuseKernel.MayEnterFuse)=="function" then
+        local ok,allowed=fusionCallTable(FuseKernel,"MayEnterFuse",item)
+        if ok and type(allowed)=="boolean" then return allowed end
+    end
+    return true
+end
+
+local function fusionInventoryEntries()
+    local save=fusionCurrentSave()
+    local inventory=save and save.Inventory
+    if typeof(inventory)~="table" then return {},save end
+    local equipped=typeof(save.EquippedAssets)=="table" and save.EquippedAssets or {}
+    local out={}
+    for uid,raw in pairs(inventory) do
+        local item=fusionDecode(raw)
+        if item and item.Category then
+            local category=safeString(item.Category)
+            local cfg=fusionAssetConfig(category)
+            if not equipped[uid] and fusionMayEnter(item,cfg) then
+                local mutations=fusionMutationNames(item)
+                local display=(cfg and cfg.DisplayName) or item.DisplayName or category
+                local rarity=cfg and cfg.Rarity
+                local rarityName=rarity and (rarity.DisplayName or rarity._id) or "?"
+                out[#out+1]={
+                    uid=safeString(uid),
+                    category=category,
+                    displayName=localizedPetName(display),
+                    rarity=safeString(rarityName),
+                    mutations=mutations,
+                    hasMutation=#mutations>0,
+                    rate=fusionPetRate(item),
+                    weight=fusionPetWeight(item),
+                    scale=tonumber(item.Scale or item.AssetScale) or 1,
+                    item=item,
+                }
+            end
+        end
+    end
+    return out,save
+end
+
+local function fusionSelectedMap()
+    local map={}
+    for _,entry in ipairs(State.FusionSelected) do map[entry.uid]=true end
+    return map
+end
+
+local function fusionSelectedCategory()
+    return State.FusionSelected[1] and State.FusionSelected[1].category or nil
+end
+
+local function fusionUpdateStatus(message,color)
+    if not fusionStatusLabel then return end
+    if message then
+        fusionStatusLabel.Text=message
+        fusionStatusLabel.TextColor3=color or Color3.fromRGB(139,164,207)
+        return
+    end
+    local total=0
+    for _,entry in ipairs(State.FusionSelected) do total+=tonumber(entry.rate) or 0 end
+    local cat=fusionSelectedCategory()
+    fusionStatusLabel.Text=string.format(
+        "%d/3%s • total %s/s",
+        #State.FusionSelected,
+        cat and (" • "..safeString(State.FusionSelected[1].displayName)) or "",
+        formatCompact(total)
+    )
+    fusionStatusLabel.TextColor3=Color3.fromRGB(139,164,207)
+end
+
+local refreshFusionList
+local runSelectedFusion
+
+local function fusionSortEntries(entries)
+    local mode=FUSION_SORT_MODES[State.FusionSortMode] or FUSION_SORT_MODES[1]
+    local selectedCategory=fusionSelectedCategory()
+    table.sort(entries,function(a,b)
+        if selectedCategory then
+            local ac=a.category==selectedCategory
+            local bc=b.category==selectedCategory
+            if ac~=bc then return ac end
+        end
+        if mode=="VALOR + MUT" then
+            if a.hasMutation~=b.hasMutation then return a.hasMutation end
+            if a.rate~=b.rate then return a.rate>b.rate end
+            if a.weight~=b.weight then return a.weight>b.weight end
+        elseif mode=="$/S" then
+            if a.rate~=b.rate then return a.rate>b.rate end
+            if a.hasMutation~=b.hasMutation then return a.hasMutation end
+        elseif mode=="PESO" then
+            if a.weight~=b.weight then return a.weight>b.weight end
+            if a.rate~=b.rate then return a.rate>b.rate end
+        else
+            local an,bn=searchText(a.displayName),searchText(b.displayName)
+            if an~=bn then return an<bn end
+            if a.rate~=b.rate then return a.rate>b.rate end
+        end
+        return a.uid<b.uid
+    end)
+end
+
+local function fusionRemoveSelected(uid)
+    for i=#State.FusionSelected,1,-1 do
+        if State.FusionSelected[i].uid==uid then table.remove(State.FusionSelected,i) end
+    end
+end
+
+local function fusionInvoke(name,...)
+    if typeof(SharedRemotes)~="table" then SharedRemotes=requireOptional("Shared.Remotes") end
+    local group=typeof(SharedRemotes)=="table" and SharedRemotes.Fusery or nil
+    local remote=typeof(group)=="table" and group[name] or nil
+    remote=unwrapRemote(remote)
+    if not remote then return false,nil,"remote "..name.." ausente" end
+    local args=table.pack(...)
+    if typeof(remote)=="Instance" and remote:IsA("RemoteFunction") then
+        local r=table.pack(pcall(function() return remote:InvokeServer(table.unpack(args,1,args.n)) end))
+        if not r[1] then return false,nil,tostring(r[2]) end
+        return true,table.unpack(r,2,r.n)
+    end
+    if typeof(remote)=="table" and type(remote.InvokeServer)=="function" then
+        local r=table.pack(pcall(remote.InvokeServer,remote,table.unpack(args,1,args.n)))
+        if not r[1] then
+            r=table.pack(pcall(remote.InvokeServer,table.unpack(args,1,args.n)))
+        end
+        if not r[1] then return false,nil,tostring(r[2]) end
+        return true,table.unpack(r,2,r.n)
+    end
+    return false,nil,"remote inválido"
+end
+
+local function fusionRewardText(reward)
+    if typeof(reward)~="table" then return "Fusão concluída" end
+    local category=reward.AssetCategory or reward.Category
+    local cfg=category and fusionAssetConfig(category) or nil
+    local name=localizedPetName((cfg and cfg.DisplayName) or category or "Pet")
+    local muts=fusionMutationNames({Mutations=reward.Mutations or {},BaseMutation=reward.BaseMutation})
+    local item={
+        Category=category,
+        AssetCategory=category,
+        Scale=reward.AssetScale or reward.Scale or 1,
+        AssetScale=reward.AssetScale or reward.Scale or 1,
+        Mutations=reward.Mutations or {},
+        BaseMutation=reward.BaseMutation,
+    }
+    local rate=fusionPetRate(item)
+    local mutText=#muts>0 and table.concat(muts,", ") or "sem mutação"
+    return string.format("%s • %s/s • %.3fx • %s",name,formatCompact(rate),tonumber(item.Scale) or 1,mutText)
+end
+
+runSelectedFusion=function()
+    if State.FusionBusy or #State.FusionSelected~=3 then return end
+    State.FusionBusy=true
+    fusionUpdateStatus("3/3 • preparando fusão...",Color3.fromRGB(255,204,102))
+
+    local selected={}
+    for i,entry in ipairs(State.FusionSelected) do selected[i]=entry end
+    local category=selected[1].category
+    for i=2,3 do
+        if selected[i].category~=category then
+            fusionUpdateStatus("Os 3 precisam ser do mesmo pet.",Color3.fromRGB(255,115,115))
+            State.FusionBusy=false
+            return
+        end
+    end
+
+    local save=fusionCurrentSave()
+    local inventory=save and save.Inventory
+    if typeof(inventory)~="table" then
+        fusionUpdateStatus("Inventário indisponível.",Color3.fromRGB(255,115,115))
+        State.FusionBusy=false
+        return
+    end
+
+    local fresh={}
+    for i,entry in ipairs(selected) do
+        local raw=inventory[entry.uid]
+        local item=raw and fusionDecode(raw)
+        if not item or safeString(item.Category)~=category then
+            fusionUpdateStatus("Um pet saiu do inventário. Atualize a lista.",Color3.fromRGB(255,115,115))
+            State.FusionBusy=false
+            task.defer(refreshFusionList)
+            return
+        end
+        fresh[i]={uid=entry.uid,item=item}
+    end
+
+    if typeof(FuseKernel)=="table" and type(FuseKernel.PriceFor)=="function" then
+        local items={fresh[1].item,fresh[2].item,fresh[3].item}
+        local ok,price=fusionCallTable(FuseKernel,"PriceFor",items)
+        local money=tonumber(save.Money)
+        if ok and finite(tonumber(price)) and money and money<tonumber(price) then
+            fusionUpdateStatus("Dinheiro insuficiente • custo "..formatCompact(tonumber(price)),Color3.fromRGB(255,115,115))
+            State.FusionBusy=false
+            return
+        end
+    end
+
+    -- Keep remote FusionSlots clean so the three menu selections are exactly
+    -- the three pets consumed by this fusion.
+    for _,uid in ipairs(save.FusionSlots or {}) do
+        fusionInvoke("EjectPet",uid)
+        task.wait(.05)
+    end
+
+    local loaded={}
+    for i=1,3 do
+        fusionUpdateStatus(string.format("Carregando pet %d/3...",i),Color3.fromRGB(255,204,102))
+        local ok,accepted,reason=fusionInvoke("LoadPet",fresh[i].uid)
+        if not ok or accepted~=true then
+            for _,uid in ipairs(loaded) do fusionInvoke("EjectPet",uid) end
+            fusionUpdateStatus("Falha ao carregar: "..safeString(reason or accepted or "?"),Color3.fromRGB(255,115,115))
+            State.FusionBusy=false
+            task.defer(refreshFusionList)
+            return
+        end
+        loaded[#loaded+1]=fresh[i].uid
+        task.wait(.07)
+    end
+
+    fusionUpdateStatus("Fundindo...",Color3.fromRGB(255,204,102))
+    local ok,accepted,reason,reward=fusionInvoke("BeginFuse")
+    if not ok or accepted~=true then
+        for _,uid in ipairs(loaded) do fusionInvoke("EjectPet",uid) end
+        fusionUpdateStatus("Fusão recusada: "..safeString(reason or accepted or "?"),Color3.fromRGB(255,115,115))
+        State.FusionBusy=false
+        task.defer(refreshFusionList)
+        return
+    end
+
+    local granted=false
+    for _=1,5 do
+        task.wait(.12)
+        local ok2,accepted2=fusionInvoke("FinishReveal")
+        if ok2 and accepted2==true then granted=true break end
+    end
+
+    State.FusionLastResult=reward
+    State.FusionSelected={}
+    local resultText=fusionRewardText(reward)
+    if not granted then resultText=resultText.." • recompensa pendente" end
+    fusionUpdateStatus("✓ "..resultText,Color3.fromRGB(111,220,143))
+    State.FusionBusy=false
+    task.wait(.15)
+    refreshFusionList(true)
+end
+
+refreshFusionList=function(keepMessage)
+    if not fusionList then return end
+    for _,child in ipairs(fusionList:GetChildren()) do
+        if child:IsA("GuiObject") then child:Destroy() end
+    end
+
+    local entries=fusionInventoryEntries()
+    local availableMap={}
+    for _,entry in ipairs(entries) do availableMap[entry.uid]=entry end
+    for i=#State.FusionSelected,1,-1 do
+        local current=availableMap[State.FusionSelected[i].uid]
+        if not current then
+            table.remove(State.FusionSelected,i)
+        else
+            State.FusionSelected[i]=current
+        end
+    end
+
+    fusionSortEntries(entries)
+    local selected=fusionSelectedMap()
+    local selectedCategory=fusionSelectedCategory()
+    local y=2
+
+    if #entries==0 then
+        local empty=mkLabel(fusionList,"Nenhum pet disponível para fusão.",UDim2.fromOffset(8,8),UDim2.new(1,-16,0,26),9)
+        empty.TextColor3=Color3.fromRGB(150,165,190)
+        fusionList.CanvasSize=UDim2.fromOffset(0,42)
+    else
+        for _,entry in ipairs(entries) do
+            local isSelected=selected[entry.uid]==true
+            local compatible=(not selectedCategory) or entry.category==selectedCategory or isSelected
+            local mutText=entry.hasMutation and table.concat(entry.mutations,", ") or "sem mutação"
+            local prefix=isSelected and "✓ " or ""
+            local text=string.format(
+                "%s%s • %s • %s\n%s/s • %s Kg • %.3fx",
+                prefix,
+                safeString(entry.displayName),
+                safeString(entry.rarity),
+                mutText,
+                formatCompact(entry.rate),
+                formatCompact(entry.weight),
+                entry.scale
+            )
+            local row=mkButton(fusionList,text,UDim2.fromOffset(2,y),UDim2.new(1,-7,0,43))
+            row.TextXAlignment=Enum.TextXAlignment.Left
+            row.TextYAlignment=Enum.TextYAlignment.Center
+            row.TextWrapped=true
+            row.TextSize=8
+            if isSelected then
+                row.BackgroundColor3=Color3.fromRGB(42,91,190)
+            elseif not compatible then
+                row.BackgroundColor3=Color3.fromRGB(28,34,47)
+                row.TextColor3=Color3.fromRGB(100,112,132)
+            elseif entry.hasMutation then
+                row.BackgroundColor3=Color3.fromRGB(47,45,72)
+            end
+            connect(row.MouseButton1Click,function()
+                if State.FusionBusy then return end
+                if selected[entry.uid] then
+                    fusionRemoveSelected(entry.uid)
+                    fusionUpdateStatus()
+                    refreshFusionList()
+                    return
+                end
+                local cat=fusionSelectedCategory()
+                if cat and entry.category~=cat then
+                    fusionUpdateStatus("Escolha 3 do mesmo pet • atual: "..safeString(State.FusionSelected[1].displayName),Color3.fromRGB(255,166,102))
+                    return
+                end
+                if #State.FusionSelected>=3 then return end
+                State.FusionSelected[#State.FusionSelected+1]=entry
+                fusionUpdateStatus()
+                refreshFusionList()
+                if #State.FusionSelected==3 then task.defer(runSelectedFusion) end
+            end)
+            y+=47
+        end
+        fusionList.CanvasSize=UDim2.fromOffset(0,math.max(y+2,1))
+    end
+
+    if not keepMessage and not State.FusionBusy then fusionUpdateStatus() end
+end
+
+connect(fusionSortButton.MouseButton1Click,function()
+    if State.FusionBusy then return end
+    State.FusionSortMode=State.FusionSortMode%#FUSION_SORT_MODES+1
+    fusionSortButton.Text="CLASSIFICAR: "..FUSION_SORT_MODES[State.FusionSortMode]
+    refreshFusionList()
+end)
+
+connect(fusionRefreshButton.MouseButton1Click,function()
+    if not State.FusionBusy then refreshFusionList() end
+end)
+
+connect(fusionClearButton.MouseButton1Click,function()
+    if State.FusionBusy then return end
+    State.FusionSelected={}
+    fusionUpdateStatus()
+    refreshFusionList()
+end)
 
 espToggleButton=makeMainToggle(mainPage,"ESP • Ovos",0,"EggESP")
 promptToggleButton=makeMainToggle(mainPage,"Instant Prompt",38,"InstantPrompt")
@@ -1547,13 +2032,19 @@ statusLabel.TextColor3=Color3.fromRGB(139,164,207)
 
 local function showPage(which)
     local filters=(which=="filters")
-    mainPage.Visible=not filters
+    local fusion=(which=="fusion")
+    local main=(which=="main")
+    mainPage.Visible=main
     filterPage.Visible=filters
-    tabMain.BackgroundColor3=not filters and Color3.fromRGB(42,91,190) or Color3.fromRGB(35,44,61)
+    fusionPage.Visible=fusion
+    tabMain.BackgroundColor3=main and Color3.fromRGB(42,91,190) or Color3.fromRGB(35,44,61)
     tabFilters.BackgroundColor3=filters and Color3.fromRGB(42,91,190) or Color3.fromRGB(35,44,61)
+    tabFusion.BackgroundColor3=fusion and Color3.fromRGB(42,91,190) or Color3.fromRGB(35,44,61)
+    if fusion and not State.FusionBusy then task.defer(refreshFusionList) end
 end
 connect(tabMain.MouseButton1Click,function() showPage("main") end)
 connect(tabFilters.MouseButton1Click,function() showPage("filters") end)
+connect(tabFusion.MouseButton1Click,function() showPage("fusion") end)
 showPage("main")
 
 local function applyResponsive()
@@ -1841,6 +2332,7 @@ local function initializeData()
     refreshESP()
     refreshStatus()
     refreshLiveInfo()
+    refreshFusionList()
     return true
 end
 

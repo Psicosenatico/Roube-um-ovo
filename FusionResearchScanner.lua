@@ -836,7 +836,7 @@ local function tryKernelFunction(name,fn,snap)
         }
         report.attempts[#report.attempts+1]=attempt
 
-        if ok and report.successfulShape==nil then
+        if ok and res~=nil and report.successfulShape==nil then
             report.successfulShape=candidate.shape
             report.successfulCallMode=callMode
             report.firstResult=jsonSafe(res)

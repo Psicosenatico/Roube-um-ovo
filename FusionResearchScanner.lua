@@ -1600,6 +1600,7 @@ local function pollSlots()
     state.lastSlotSnapshot=snap
     if #snap.blockedSlots>0 then
         state.lastThree=nil
+        state.lastKernelSlotSignature=""
         state.status=string.format(
             "Scanner: %d pet(s) protegidos/em uso ignorados. Não entram no Predict.",
             #snap.blockedSlots

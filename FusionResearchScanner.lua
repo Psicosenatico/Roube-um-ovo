@@ -2108,6 +2108,16 @@ task.spawn(function()
                 tostring(mp.inputMutationBucket or "?"),
                 mp.outputHasMutation and table.concat(mp.outputMutations or {}, "+") or "sem mutação"
             )
+            local po=last.predictionOutcome
+            if po and po.observed then
+                local o=po.observed.actualEconomic or {}
+                lines[#lines+1]=string.format(
+                    "Real: <pior %s | >melhor %s | >2x %s",
+                    o.belowWorstInput and "SIM" or "não",
+                    o.aboveBestInput and "SIM" or "não",
+                    o.above2xBestInput and "SIM" or "não"
+                )
+            end
         end
         local kr=state.kernelResearch.lastRun
         if kr then
@@ -2131,10 +2141,26 @@ task.spawn(function()
                 end
                 if p.riskLabel then
                     lines[#lines+1]=string.format(
-                        "Risco $/s(scale): %s | P(<melhor)=%.0f%% | spread %.2fx",
+                        "Risco $/s(scale): %s | spread %.2fx",
                         tostring(p.riskLabel),
-                        100*(tonumber(p.probabilityBelowBestInput) or 0),
                         tonumber(p.inputScaleSpreadRatio) or 0
+                    )
+                    lines[#lines+1]=string.format(
+                        "Roleta: <pior %.0f%% | <melhor %.0f%% | >melhor %.0f%%",
+                        100*(tonumber(p.probabilityBelowWorstInput) or 0),
+                        100*(tonumber(p.probabilityBelowBestInput) or 0),
+                        100*(tonumber(p.probabilityAboveBestInput) or 0)
+                    )
+                    lines[#lines+1]=string.format(
+                        "Cauda boa: >1.5x %.0f%% | >2x %.0f%% | >soma %.0f%%",
+                        100*(tonumber(p.probabilityAbove1_5xBestInput) or 0),
+                        100*(tonumber(p.probabilityAbove2xBestInput) or 0),
+                        100*(tonumber(p.probabilityAboveInputSum) or 0)
+                    )
+                    lines[#lines+1]=string.format(
+                        "Scale: <mínimo %.0f%% | >máximo %.0f%%",
+                        100*(tonumber(p.probabilityScaleBelowInputMin) or 0),
+                        100*(tonumber(p.probabilityScaleAboveInputMax) or 0)
                     )
                 end
             end

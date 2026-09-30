@@ -2005,6 +2005,8 @@ runSelectedFusion=function()
     refreshFusionList(true)
 end
 
+local fusionRosterLastCheck=0
+local fusionRosterSignature=nil
 refreshFusionList=function(keepMessage)
     if not fusionList then return end
     for _,child in ipairs(fusionList:GetChildren()) do
@@ -2012,6 +2014,10 @@ refreshFusionList=function(keepMessage)
     end
 
     local entries=fusionInventoryEntries()
+    local rosterIds={}
+    for _,pet in ipairs(entries) do rosterIds[#rosterIds+1]=pet.uid end
+    table.sort(rosterIds)
+    fusionRosterSignature=table.concat(rosterIds,"|")
     local availableMap={}
     for _,entry in ipairs(entries) do availableMap[entry.uid]=entry end
     for i=#State.FusionSelected,1,-1 do
@@ -2565,6 +2571,17 @@ task.defer(function()
         if CONFIG.EggESP then refreshESP() end
         if CONFIG.InstantHit then refreshBats() end
         if CONFIG.AutoTrain then autoTrainTick() end
+        if fusionPage.Visible and not State.FusionBusy
+            and os.clock()-fusionRosterLastCheck>=1.5 then
+            fusionRosterLastCheck=os.clock()
+            local live=fusionInventoryEntries()
+            local ids={}
+            for _,pet in ipairs(live) do ids[#ids+1]=pet.uid end
+            table.sort(ids)
+            if table.concat(ids,"|")~=fusionRosterSignature then
+                refreshFusionList()
+            end
+        end
         refreshAutoTrainStatus()
         refreshStatus()
         refreshLiveInfo()

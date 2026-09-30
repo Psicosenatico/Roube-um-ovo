@@ -1561,6 +1561,40 @@ local function fusionSortPets(entries)
     end)
 end
 
+local function fusionFilterMinRate(text)
+    local raw=tostring(text or ''):lower():gsub('%s+',''):gsub('%$',''):gsub('/s','')
+    if raw=='' then return 0,true end
+    local digits,suffix=raw:match('^([%d.,]+)([kmbt]?)$')
+    if not digits then return nil,false end
+    if digits:find(',',1,true) then
+        digits=digits:gsub('%.',''):gsub(',','.')
+    else
+        local _,count=digits:gsub('%.','')
+        if count>1 then digits=digits:gsub('%.','') end
+    end
+    local n=tonumber(digits)
+    if not n or n<0 then return nil,false end
+    return n*(({k=1e3,m=1e6,b=1e9,t=1e12})[suffix] or 1),true
+end
+
+local function fusionFilterEntries(available)
+    local filtered={}
+    local query=norm(FUSION.PetQuery or '')
+    local minimum,valid=fusionFilterMinRate(FUSION.MinRateText)
+    if not valid then return filtered,false end
+    for _,pet in ipairs(available) do
+        local matchesPet=query=='' or norm(pet.Name):find(query,1,true)
+            or norm(pet.Category):find(query,1,true)
+        local matchesMutation=FUSION.MutationFilter==1
+            or (FUSION.MutationFilter==2 and pet.HasMutation)
+            or (FUSION.MutationFilter==3 and not pet.HasMutation)
+        if matchesPet and matchesMutation and (tonumber(pet.Rate) or 0)>=minimum then
+            filtered[#filtered+1]=pet
+        end
+    end
+    return filtered,true
+end
+
 local function fusionSlotSignature(saveData)
     if type(saveData) ~= 'table' or type(saveData.FusionSlots) ~= 'table' then return '' end
     local ids = {}
@@ -1805,13 +1839,14 @@ renderFusionList = function()
         return
     end
 
-    local entries = fusionAvailablePets(saveData)
+    local eligible = fusionAvailablePets(saveData)
     local rosterIds={}
-    for _,pet in ipairs(entries) do rosterIds[#rosterIds+1]=pet.Uid end
+    for _,pet in ipairs(eligible) do rosterIds[#rosterIds+1]=pet.Uid end
     table.sort(rosterIds)
     fusionRosterSignature=table.concat(rosterIds,"|")
+    -- Selection is validated against ALL eligible pets, not the filtered list.
     local currentByUid = {}
-    for _, pet in ipairs(entries) do currentByUid[pet.Uid] = pet end
+    for _,pet in ipairs(eligible) do currentByUid[pet.Uid]=pet end
 
     -- Revalidate selected pets against the current inventory.
     for i = #FUSION.Selected, 1, -1 do
@@ -1823,15 +1858,24 @@ renderFusionList = function()
         end
     end
 
+    local entries,validFilter=fusionFilterEntries(eligible)
+    if validFilter then
+        fusionHint.Text=('%d/%d pets disponíveis • ★ e base protegidos'):format(#entries,#eligible)
+        fusionHint.TextColor3=Color3.fromRGB(139,164,207)
+    else
+        fusionHint.Text='Valor inválido: use 200M, 1.5B ou 500K.'
+        fusionHint.TextColor3=Color3.fromRGB(255,155,115)
+    end
+
     fusionSortPets(entries)
     local selected = fusionSelectedMap()
     local selectedCategory = fusionSelectedCategory()
     local y = 3
 
     if #entries == 0 then
-        local l = label(fusionPetList,
-            type(FuseKernel)~="table" and 'Regra de fusão indisponível.'
-                or 'Nenhum pet livre (favoritos ★/base excluídos).',
+        local msg=#eligible==0 and 'Nenhum pet livre (favoritos ★/base excluídos).'
+            or 'Nenhum pet corresponde aos filtros.'
+        local l=label(fusionPetList,msg,
             UDim2.fromOffset(8, 8), UDim2.new(1, -16, 0, 24), 8)
         l.TextColor3 = Color3.fromRGB(150, 165, 190)
         fusionPetList.CanvasSize = UDim2.fromOffset(0, 40)
@@ -2079,7 +2123,32 @@ end
 conn(fusionSortButton.Activated, function()
     if FUSION.Busy then return end
     FUSION.SortMode = FUSION.SortMode % #FUSION_SORT_MODES + 1
-    fusionSortButton.Text = 'Ordenar: ' .. FUSION_SORT_MODES[FUSION.SortMode]
+    fusionSortButton.Text='Ordem: $/s ↓ | Desempate: '..FUSION_SORT_MODES[FUSION.SortMode]
+    renderFusionList()
+end)
+
+conn(fusionPetFilterBox:GetPropertyChangedSignal('Text'), function()
+    FUSION.PetQuery=fusionPetFilterBox.Text
+    if not FUSION.Busy then renderFusionList() end
+end)
+conn(fusionMinRateBox:GetPropertyChangedSignal('Text'), function()
+    FUSION.MinRateText=fusionMinRateBox.Text
+    if not FUSION.Busy then renderFusionList() end
+end)
+conn(fusionMutationFilterButton.Activated, function()
+    if FUSION.Busy then return end
+    FUSION.MutationFilter=FUSION.MutationFilter%3+1
+    fusionMutationFilterButton.Text=({'Mutação: Todas','Mutação: Com','Mutação: Sem'})[FUSION.MutationFilter]
+    renderFusionList()
+end)
+conn(fusionFilterResetButton.Activated, function()
+    if FUSION.Busy then return end
+    FUSION.PetQuery=''
+    FUSION.MinRateText=''
+    FUSION.MutationFilter=1
+    fusionPetFilterBox.Text=''
+    fusionMinRateBox.Text=''
+    fusionMutationFilterButton.Text='Mutação: Todas'
     renderFusionList()
 end)
 

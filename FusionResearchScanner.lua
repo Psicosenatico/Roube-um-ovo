@@ -1927,7 +1927,13 @@ local function buildSessionStatistics()
         mutationBuckets={},
         mutationTypes={},
         calibration={
-            basis="scale-only prediction vs observed output Scale converted to no-mutation $/s",
+            basis="V2.7 256-draw scale-only prediction vs observed Scale converted to no-mutation $/s",
+            targets={},
+            samplesWithPrediction=0,
+        },
+        analyticCalibration={
+            basis="V2.8 original client bands × exact BandWeightBias; hypothesized doubling; observed Scale converted to no-mutation $/s",
+            status="EXPERIMENTAL: compare multiple fusions before treating percentages as calibrated.",
             targets={},
             samplesWithPrediction=0,
         },
@@ -1939,6 +1945,7 @@ local function buildSessionStatistics()
     }
     for _,def in ipairs(CALIBRATION_TARGETS) do
         stats.calibration.targets[def.key]=newCalibrationTarget(def.label)
+        stats.analyticCalibration.targets[def.key]=newCalibrationTarget(def.label)
     end
 
     local sumVsInput,sumVsBest,sumScaleRatio=0,0,0
@@ -2002,6 +2009,27 @@ local function buildSessionStatistics()
             if po.observed.scaleAboveInputMax==true then stats.observedOutcomeCounts.scale.aboveInputMax+=1 end
         end
 
+        local analytic=sample.analyticPredictionOutcome
+        if type(analytic)=="table" and type(analytic.prediction)=="table" and type(analytic.observed)=="table" then
+            stats.analyticCalibration.samplesWithPrediction+=1
+            local actualBaseline=analytic.observed.scaleOnlyBaseline or {}
+            for _,def in ipairs(CALIBRATION_TARGETS) do
+                local observedValue
+                if def.key=="scaleBelowInputMin" then
+                    observedValue=analytic.observed.scaleBelowInputMin
+                elseif def.key=="scaleAboveInputMax" then
+                    observedValue=analytic.observed.scaleAboveInputMax
+                else
+                    observedValue=actualBaseline[def.key]
+                end
+                addCalibrationObservation(
+                    stats.analyticCalibration.targets[def.key],
+                    analytic.prediction[def.key],
+                    observedValue
+                )
+            end
+        end
+
         local inputSum=tonumber(m.sumEarningsPerSecond)
         local output=tonumber(sample.rewardSummary and sample.rewardSummary.earningsPerSecond)
         if inputSum and output then
@@ -2044,6 +2072,9 @@ local function buildSessionStatistics()
         end
     end
     for _,target in pairs(stats.calibration.targets) do
+        finalizeCalibrationTarget(target)
+    end
+    for _,target in pairs(stats.analyticCalibration.targets) do
         finalizeCalibrationTarget(target)
     end
     return stats

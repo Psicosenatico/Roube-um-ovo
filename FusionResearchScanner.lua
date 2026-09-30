@@ -2616,7 +2616,12 @@ end)
 
 kernel.Activated:Connect(function()
     pollSlots()
-    local run=runKernelResearch(state.lastThree or state.lastSlotSnapshot)
+    local current=state.lastSlotSnapshot
+    if not current or #current.inputs~=3 then
+        state.status="ANALISAR KERNEL: carregue 3 pets atualmente nos slots."
+        return
+    end
+    local run=runKernelResearch(current)
     if run.error then
         state.status="Kernel: "..tostring(run.error)
     else

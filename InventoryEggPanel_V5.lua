@@ -1186,10 +1186,10 @@ fusionPage.AnchorPoint = mainPage.AnchorPoint
 fusionPage.Visible = false
 fusionPage.ScrollBarThickness = 3
 fusionPage.ScrollBarImageColor3 = Color3.fromRGB(94, 139, 223)
-fusionPage.CanvasSize = UDim2.fromOffset(0, 735)
+fusionPage.CanvasSize = UDim2.fromOffset(0, 850)
 fusionPage.Parent = host
 
-local fusionTitle = label(fusionPage, 'FUSÃO DE PETS', UDim2.fromOffset(8, 2), UDim2.new(1, -16, 0, 24), 12)
+local fusionTitle = label(fusionPage, 'FUSÃO PREDICT', UDim2.fromOffset(8, 2), UDim2.new(1, -16, 0, 24), 12)
 fusionTitle.Font = Enum.Font.GothamBold
 fusionTitle.TextColor3 = Color3.fromRGB(242, 246, 255)
 fusionTitle.TextXAlignment = Enum.TextXAlignment.Center
@@ -1224,16 +1224,43 @@ local fusionSlotsLabel = label(fusionPage, 'Selecionados: 0/3', UDim2.fromOffset
 fusionSlotsLabel.Font = Enum.Font.GothamMedium
 fusionSlotsLabel.TextXAlignment = Enum.TextXAlignment.Center
 
-local fusionInputsLabel = label(fusionPage, 'Entradas: —', UDim2.fromOffset(10, 181), UDim2.new(1, -20, 0, 136), 7)
+local fusionInputsLabel = label(fusionPage, 'Entradas: —', UDim2.fromOffset(10, 181), UDim2.new(1, -20, 0, 110), 7)
 fusionInputsLabel.TextWrapped = true
 fusionInputsLabel.TextYAlignment = Enum.TextYAlignment.Top
 fusionInputsLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local fusionPredictCard = Instance.new('Frame')
+fusionPredictCard.BackgroundColor3 = Color3.fromRGB(22, 33, 51)
+fusionPredictCard.BackgroundTransparency = .02
+fusionPredictCard.BorderSizePixel = 0
+fusionPredictCard.Position = UDim2.fromOffset(8, 296)
+fusionPredictCard.Size = UDim2.new(1, -16, 0, 116)
+fusionPredictCard.Parent = fusionPage
+round(fusionPredictCard, 8)
+
+local fusionPredictTitle = label(
+    fusionPredictCard, 'CHANCES DA FUSÃO',
+    UDim2.fromOffset(10, 6), UDim2.new(1, -20, 0, 18), 9
+)
+fusionPredictTitle.Font = Enum.Font.GothamBold
+fusionPredictTitle.TextColor3 = Color3.fromRGB(116, 173, 255)
+fusionPredictTitle.TextXAlignment = Enum.TextXAlignment.Center
+
+local fusionPredictLabel = label(
+    fusionPredictCard,
+    'Selecione 3 pets iguais para calcular as probabilidades.',
+    UDim2.fromOffset(10, 27), UDim2.new(1, -20, 0, 82), 8
+)
+fusionPredictLabel.TextWrapped = true
+fusionPredictLabel.TextYAlignment = Enum.TextYAlignment.Top
+fusionPredictLabel.TextXAlignment = Enum.TextXAlignment.Left
+fusionPredictLabel.TextColor3 = Color3.fromRGB(225, 232, 245)
 
 local fusionPetList = Instance.new('ScrollingFrame')
 fusionPetList.BackgroundColor3 = Color3.fromRGB(18, 27, 42)
 fusionPetList.BackgroundTransparency = .08
 fusionPetList.BorderSizePixel = 0
-fusionPetList.Position = UDim2.fromOffset(8, 322)
+fusionPetList.Position = UDim2.fromOffset(8, 420)
 fusionPetList.Size = UDim2.new(1, -16, 0, 180)
 fusionPetList.CanvasSize = UDim2.fromOffset(0, 0)
 fusionPetList.ScrollBarThickness = 3
@@ -1241,23 +1268,23 @@ fusionPetList.ScrollBarImageColor3 = Color3.fromRGB(94, 139, 223)
 fusionPetList.Parent = fusionPage
 round(fusionPetList, 8)
 
-local fusionConfirmButton = button(fusionPage, 'SELECIONE 3 PETS • 0/3', UDim2.fromOffset(8, 508), UDim2.new(.72, -10, 0, 31))
+local fusionConfirmButton = button(fusionPage, 'SELECIONE 3 PETS • 0/3', UDim2.fromOffset(8, 606), UDim2.new(.72, -10, 0, 31))
 fusionConfirmButton.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
-local fusionClearButton = button(fusionPage, 'LIMPAR', UDim2.new(.72, 2, 0, 508), UDim2.new(.28, -10, 0, 31))
+local fusionClearButton = button(fusionPage, 'LIMPAR', UDim2.new(.72, 2, 0, 606), UDim2.new(.28, -10, 0, 31))
 
 local fusionDivider = Instance.new('Frame')
 fusionDivider.BackgroundColor3 = Color3.fromRGB(42, 57, 82)
 fusionDivider.BorderSizePixel = 0
-fusionDivider.Position = UDim2.fromOffset(12, 547)
+fusionDivider.Position = UDim2.fromOffset(12, 645)
 fusionDivider.Size = UDim2.new(1, -24, 0, 1)
 fusionDivider.Parent = fusionPage
 
-local fusionVerdict = label(fusionPage, 'RESULTADO: aguardando fusão', UDim2.fromOffset(12, 556), UDim2.new(1, -24, 0, 24), 11)
+local fusionVerdict = label(fusionPage, 'RESULTADO: aguardando fusão', UDim2.fromOffset(12, 654), UDim2.new(1, -24, 0, 24), 11)
 fusionVerdict.Font = Enum.Font.GothamBold
 fusionVerdict.TextXAlignment = Enum.TextXAlignment.Center
 fusionVerdict.TextColor3 = Color3.fromRGB(170, 184, 210)
 
-local fusionResultLabel = label(fusionPage, 'Nenhuma fusão confirmada nesta sessão.', UDim2.fromOffset(16, 584), UDim2.new(1, -32, 0, 72), 8)
+local fusionResultLabel = label(fusionPage, 'Nenhuma fusão confirmada nesta sessão.', UDim2.fromOffset(16, 682), UDim2.new(1, -32, 0, 72), 8)
 fusionResultLabel.TextWrapped = true
 fusionResultLabel.TextYAlignment = Enum.TextYAlignment.Top
 fusionResultLabel.TextXAlignment = Enum.TextXAlignment.Center
@@ -1265,7 +1292,7 @@ fusionResultLabel.TextXAlignment = Enum.TextXAlignment.Center
 local fusionFoot = label(
     fusionPage,
     'OBJETIVO: máximo $/s por slot. A soma sacrificada é secundária; 3 pets viram 1 slot mais forte.',
-    UDim2.fromOffset(14, 660),
+    UDim2.fromOffset(14, 758),
     UDim2.new(1, -28, 0, 28),
     7
 )
@@ -1917,6 +1944,10 @@ local function fusionSelectionSummary()
 
     if count == 0 then
         fusionInputsLabel.Text = FUSION.StatusMessage or 'Entradas: —'
+        fusionPredictTitle.Text = 'CHANCES DA FUSÃO'
+        fusionPredictTitle.TextColor3 = Color3.fromRGB(116, 173, 255)
+        fusionPredictLabel.Text = 'Selecione 3 pets iguais para calcular as probabilidades.'
+        fusionPredictLabel.TextColor3 = Color3.fromRGB(180, 194, 217)
         fusionUpdateConfirm()
         return
     end
@@ -1940,34 +1971,57 @@ local function fusionSelectionSummary()
             costText
         )
 
-        local predict = fusionBuildPredict(FUSION.Selected)
+        fusionPredictTitle.Text = 'CHANCES DA FUSÃO • CALCULANDO...'
+        fusionPredictTitle.TextColor3 = Color3.fromRGB(255, 204, 102)
+        fusionPredictLabel.Text = 'Calculando a roleta dos 3 Scales...'
+        fusionPredictLabel.TextColor3 = Color3.fromRGB(225, 232, 245)
+
+        local okPredict, predict = pcall(fusionBuildPredict, FUSION.Selected)
+        if not okPredict then
+            FUSION.PredictStatus = 'erro'
+            FUSION.PredictData = {error=tostring(predict)}
+            predict = FUSION.PredictData
+        end
+
         if FUSION.PredictStatus == 'pronto' and predict then
-            lines[#lines + 1] = ('PREDICT %d× • >melhor %.1f%% • >1.5x %.1f%% • >2x %.1f%%'):format(
-                predict.draws or 0,
-                predict.probabilityAboveBest or 0,
-                predict.probabilityAbove1_5x or 0,
-                predict.probabilityAbove2x or 0
+            fusionPredictTitle.Text = ('CHANCE DE SUPERAR %s/s: %.1f%%'):format(
+                compact(bestRate),
+                predict.probabilityAboveBest or 0
             )
-            lines[#lines + 1] = ('<pior %.1f%% • <melhor %.1f%%'):format(
-                predict.probabilityBelowWorst or 0,
-                predict.probabilityBelowBest or 0
-            )
-            lines[#lines + 1] = ('Rendimento: p10 %s/s • p50 %s/s • p90 %s/s'):format(
-                compact(predict.rateP10),
-                compact(predict.rateP50),
-                compact(predict.rateP90)
-            )
-            lines[#lines + 1] = ('Scale: p50 %.2fx • p90 %.2fx • chance, não garantia'):format(
-                tonumber(predict.scaleP50) or 0,
-                tonumber(predict.scaleP90) or 0
-            )
-        elseif FUSION.PredictStatus == 'erro' then
-            lines[#lines + 1] = 'PREDICT indisponível: ' .. tostring(predict and predict.error or '?')
+            fusionPredictTitle.TextColor3 = Color3.fromRGB(111, 220, 143)
+            fusionPredictLabel.Text = table.concat({
+                ('> melhor atual: %.1f%%   |   < melhor: %.1f%%'):format(
+                    predict.probabilityAboveBest or 0,
+                    predict.probabilityBelowBest or 0
+                ),
+                ('> 1.5× melhor: %.1f%%   |   > 2× melhor: %.1f%%'):format(
+                    predict.probabilityAbove1_5x or 0,
+                    predict.probabilityAbove2x or 0
+                ),
+                ('< pior dos 3: %.1f%%'):format(
+                    predict.probabilityBelowWorst or 0
+                ),
+                ('$/s provável • p50 %s/s   |   p90 %s/s'):format(
+                    compact(predict.rateP50),
+                    compact(predict.rateP90)
+                ),
+            }, '\n')
+            fusionPredictLabel.TextColor3 = Color3.fromRGB(230, 237, 248)
+        else
+            local err = predict and predict.error or 'motivo desconhecido'
+            fusionPredictTitle.Text = 'PREDICT INDISPONÍVEL'
+            fusionPredictTitle.TextColor3 = Color3.fromRGB(255, 115, 115)
+            fusionPredictLabel.Text = 'Erro: ' .. tostring(err)
+            fusionPredictLabel.TextColor3 = Color3.fromRGB(255, 170, 170)
         end
     else
         FUSION.PredictKey = nil
         FUSION.PredictStatus = 'idle'
         FUSION.PredictData = nil
+        fusionPredictTitle.Text = 'CHANCES DA FUSÃO'
+        fusionPredictTitle.TextColor3 = Color3.fromRGB(116, 173, 255)
+        fusionPredictLabel.Text = ('Selecione mais %d pet(s) igual(is) para calcular.'):format(3-count)
+        fusionPredictLabel.TextColor3 = Color3.fromRGB(180, 194, 217)
     end
 
     fusionInputsLabel.Text = FUSION.StatusMessage or table.concat(lines, '\n')

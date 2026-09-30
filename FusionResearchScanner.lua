@@ -966,10 +966,12 @@ local function buildWeightedClientBands(scales)
     if type(biasFn)~="function" then return nil,"BandWeightBias unavailable" end
     if type(scales)~="table" or #scales~=3 then return nil,"Exactly 3 input Scales required" end
 
+    local orderedScales={scales[1],scales[2],scales[3]}
+    table.sort(orderedScales)
     local rows={}
     local total=0
     for _,b in ipairs(rules.bands) do
-        local ok,bias,err=directNumericCall(biasFn,{scales,b.min,b.max})
+        local ok,bias,err=directNumericCall(biasFn,{orderedScales,b.min,b.max})
         if not ok or not finite(bias) or bias<=0 then
             return nil,"BandWeightBias failed on official band "..tostring(b.index)..": "..tostring(err or bias)
         end
@@ -1013,8 +1015,14 @@ local function analyticPAboveScale(model,threshold,withDoubling)
     for _,band in ipairs(model.bands or {}) do
         local width=band.max-band.min
         for k=0,ANALYTIC_TAIL_STEPS do
-            local factor=(k==ANALYTIC_TAIL_STEPS)
-                and odds^k or ((1-odds)*(odds^k))
+            local factor
+            if odds==0 then
+                factor=k==0 and 1 or 0
+            elseif k==ANALYTIC_TAIL_STEPS then
+                factor=odds^k
+            else
+                factor=(1-odds)*(odds^k)
+            end
             if factor>0 then
                 local thresholdAtBase=threshold/(2^k)
                 local fraction=math.clamp((band.max-math.max(band.min,thresholdAtBase))/width,0,1)

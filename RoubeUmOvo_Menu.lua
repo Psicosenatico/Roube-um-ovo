@@ -1734,17 +1734,17 @@ local function fusionInventoryEntries()
     return out,save
 end
 
-local function fusionSelectedMap()
+State.fusionSelectedMap=function()
     local map={}
     for _,entry in ipairs(State.FusionSelected) do map[entry.uid]=true end
     return map
 end
 
-local function fusionSelectedCategory()
+State.fusionSelectedCategory=function()
     return State.FusionSelected[1] and State.FusionSelected[1].category or nil
 end
 
-local function fusionSelectedPrice()
+State.fusionSelectedPrice=function()
     if #State.FusionSelected~=3 then return nil end
     if typeof(FuseKernel)~="table" then FuseKernel=requireOptional("Shared.Util.FuseKernel") end
     if typeof(FuseKernel)~="table" or type(FuseKernel.PriceFor)~="function" then return nil end
@@ -1761,7 +1761,7 @@ local function fusionSelectedPrice()
     return finite(price) and price or nil
 end
 
-local function fusionUpdateConfirmButton()
+State.fusionUpdateConfirmButton=function()
     if not fusionConfirmButton then return end
     if State.FusionBusy then
         fusionConfirmButton.Text="FUSÃO EM ANDAMENTO..."
@@ -1775,7 +1775,7 @@ local function fusionUpdateConfirmButton()
         return
     end
 
-    local price=fusionSelectedPrice()
+    local price=State.fusionSelectedPrice()
     fusionConfirmButton.Text=price
         and ("CONFIRMAR FUSÃO • $"..formatCompact(price))
         or "CONFIRMAR FUSÃO • custo ?"
@@ -1791,7 +1791,7 @@ local function fusionUpdateStatus(message,color)
     end
     local total=0
     for _,entry in ipairs(State.FusionSelected) do total+=tonumber(entry.rate) or 0 end
-    local cat=fusionSelectedCategory()
+    local cat=State.fusionSelectedCategory()
     fusionStatusLabel.Text=string.format(
         "%d/3%s • total %s/s",
         #State.FusionSelected,
@@ -1799,7 +1799,7 @@ local function fusionUpdateStatus(message,color)
         formatCompact(total)
     )
     fusionStatusLabel.TextColor3=Color3.fromRGB(139,164,207)
-    fusionUpdateConfirmButton()
+    State.fusionUpdateConfirmButton()
 end
 
 local refreshFusionList
@@ -1807,7 +1807,7 @@ local runSelectedFusion
 
 State.fusionSortEntries=function(entries)
     local mode=State.FusionSortModes[State.FusionSortMode] or State.FusionSortModes[1]
-    local selectedCategory=fusionSelectedCategory()
+    local selectedCategory=State.fusionSelectedCategory()
     table.sort(entries,function(a,b)
         if selectedCategory then
             local ac=a.category==selectedCategory
@@ -1888,7 +1888,7 @@ end
 runSelectedFusion=function()
     if State.FusionBusy or #State.FusionSelected~=3 then return end
     State.FusionBusy=true
-    fusionUpdateConfirmButton()
+    State.fusionUpdateConfirmButton()
     fusionUpdateStatus("3/3 • preparando fusão...",Color3.fromRGB(255,204,102))
 
     local selected={}
@@ -1996,7 +1996,7 @@ runSelectedFusion=function()
 
     State.FusionLastResult=reward
     State.FusionSelected={}
-    fusionUpdateConfirmButton()
+    State.fusionUpdateConfirmButton()
     local resultText=fusionRewardText(reward)
     if not granted then resultText=resultText.." • recompensa pendente" end
     fusionUpdateStatus("✓ "..resultText,Color3.fromRGB(111,220,143))
@@ -2030,8 +2030,8 @@ refreshFusionList=function(keepMessage)
     end
 
     State.fusionSortEntries(entries)
-    local selected=fusionSelectedMap()
-    local selectedCategory=fusionSelectedCategory()
+    local selected=State.fusionSelectedMap()
+    local selectedCategory=State.fusionSelectedCategory()
     local y=2
 
     if #entries==0 then
@@ -2088,7 +2088,7 @@ refreshFusionList=function(keepMessage)
                     refreshFusionList()
                     return
                 end
-                local cat=fusionSelectedCategory()
+                local cat=State.fusionSelectedCategory()
                 if cat and entry.category~=cat then
                     fusionUpdateStatus("Escolha 3 do mesmo pet • atual: "..safeString(State.FusionSelected[1].displayName),Color3.fromRGB(255,166,102))
                     return
@@ -2130,11 +2130,11 @@ connect(fusionClearButton.MouseButton1Click,function()
     if State.FusionBusy then return end
     State.FusionSelected={}
     fusionUpdateStatus()
-    fusionUpdateConfirmButton()
+    State.fusionUpdateConfirmButton()
     refreshFusionList()
 end)
 
-fusionUpdateConfirmButton()
+State.fusionUpdateConfirmButton()
 
 espToggleButton=makeMainToggle(mainPage,"ESP • Ovos",0,"EggESP")
 promptToggleButton=makeMainToggle(mainPage,"Instant Prompt",38,"InstantPrompt")

@@ -1087,7 +1087,12 @@ end
 local function scaleForIncomeThreshold(category,target,cap)
     target=tonumber(target)
     if not finite(target) or target<0 then return nil,"invalid income target" end
-    local low=.00001
+    local low=math.huge
+    local rules=loadClientScaleRules()
+    for _,band in ipairs(rules and rules.bands or {}) do
+        low=math.min(low,band.min)
+    end
+    if not finite(low) or low<=0 then return nil,"no valid lowest client band" end
     local lowRate=baselineRateForScale(category,low)
     local highRate=baselineRateForScale(category,cap)
     if not (finite(lowRate) and finite(highRate)) then return nil,"client income helper unavailable" end

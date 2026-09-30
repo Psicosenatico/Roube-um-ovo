@@ -1588,6 +1588,7 @@ local function predictionOutcomeForSample(prediction,rewardSummary,metrics)
             above2xBestInput=prediction.probabilityAbove2xBestInput,
             aboveInputSum=prediction.probabilityAboveInputSum,
             aboveInventoryBest=prediction.probabilityAboveInventoryBest,
+            absoluteIncomeTargets=prediction.absoluteIncomeTargets,
             scaleBelowInputMin=prediction.probabilityScaleBelowInputMin,
             scaleAboveInputMax=prediction.probabilityScaleAboveInputMax,
         },
@@ -1949,6 +1950,7 @@ local function buildSessionStatistics()
             basis="V2.8 original client bands × exact BandWeightBias; hypothesized doubling; observed Scale converted to no-mutation $/s",
             status="EXPERIMENTAL: compare multiple fusions before treating percentages as calibrated.",
             targets={},
+            absoluteIncomeTargets={},
             samplesWithPrediction=0,
         },
         observedOutcomeCounts={
@@ -1960,6 +1962,11 @@ local function buildSessionStatistics()
     for _,def in ipairs(CALIBRATION_TARGETS) do
         stats.calibration.targets[def.key]=newCalibrationTarget(def.label)
         stats.analyticCalibration.targets[def.key]=newCalibrationTarget(def.label)
+    end
+    for _,target in ipairs({1e6,1e7,1e8,1e9,1e10,1e11,1e12}) do
+        stats.analyticCalibration.absoluteIncomeTargets[tostring(target)]=newCalibrationTarget(
+            "Produção final superior a $"..tostring(target).."/s"
+        )
     end
 
     local sumVsInput,sumVsBest,sumScaleRatio=0,0,0
@@ -2042,6 +2049,18 @@ local function buildSessionStatistics()
                     observedValue
                 )
             end
+            local actualBaselineRate=tonumber(analytic.observed.baselineNoMutationRate)
+            for _,row in ipairs(analytic.prediction.absoluteIncomeTargets or {}) do
+                local target=tonumber(row.targetEarningsPerSecond)
+                local rec=target and stats.analyticCalibration.absoluteIncomeTargets[tostring(target)]
+                if rec and finite(actualBaselineRate) then
+                    addCalibrationObservation(
+                        rec,
+                        row.probabilityAbove,
+                        actualBaselineRate>target
+                    )
+                end
+            end
         end
 
         local inputSum=tonumber(m.sumEarningsPerSecond)
@@ -2089,6 +2108,9 @@ local function buildSessionStatistics()
         finalizeCalibrationTarget(target)
     end
     for _,target in pairs(stats.analyticCalibration.targets) do
+        finalizeCalibrationTarget(target)
+    end
+    for _,target in pairs(stats.analyticCalibration.absoluteIncomeTargets) do
         finalizeCalibrationTarget(target)
     end
     return stats

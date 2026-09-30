@@ -2120,6 +2120,126 @@ local function flatBandWeightExport()
     return out
 end
 
+local function flatAnalyticBandExport()
+    local rows={}
+    for runIndex,run in ipairs(state.kernelResearch.probes or {}) do
+        local analytic=run.AnalyticClientBands
+        if analytic and type(analytic.bands)=="table" then
+            local inputs=run.inputSummary or {}
+            for _,band in ipairs(analytic.bands) do
+                rows[#rows+1]={
+                    runIndex=runIndex,
+                    slotSignature=run.slotSignature,
+                    category=inputs[1] and inputs[1].category,
+                    scale1=inputs[1] and inputs[1].scale,
+                    scale2=inputs[2] and inputs[2].scale,
+                    scale3=inputs[3] and inputs[3].scale,
+                    originalBandIndex=band.index,
+                    min=band.min,
+                    max=band.max,
+                    originalWeight=band.rawWeight,
+                    trioBandBias=band.bias,
+                    effectiveWeight=band.effectiveWeight,
+                    effectiveProbability=band.probability,
+                    hardCap=analytic.clientScaleRules and analytic.clientScaleRules.scaleHardCap,
+                    configuredDoublingOdds=analytic.clientScaleRules and analytic.clientScaleRules.doublingOdds,
+                }
+            end
+        end
+    end
+    return rows
+end
+
+local function flatAnalyticAgreementExport()
+    local out={}
+    for runIndex,run in ipairs(state.kernelResearch.probes or {}) do
+        local an=run.AnalyticClientBands
+        local g=an and an.localDrawAgreement
+        if g then
+            out[#out+1]={
+                runIndex=runIndex,
+                slotSignature=run.slotSignature,
+                localDrawCount=g.n,
+                baseBandsMeanAbsDifference=g.bandOnlyMeanAbsDifference,
+                hypothesizedDoublingMeanAbsDifference=g.hypotheticalMeanAbsDifference,
+                baseBandsMaxAbsDifference=g.bandOnlyMaxAbsDifference,
+                hypothesizedDoublingMaxAbsDifference=g.hypotheticalMaxAbsDifference,
+            }
+        end
+    end
+    return out
+end
+
+local function flatAnalyticTrioComparisons()
+    local bySignature={}
+    for idx,run in ipairs(state.kernelResearch.probes or {}) do
+        local a=run.AnalyticClientBands
+        local e=a and a.economicProjection
+        if e and not e.error and type(run.slotSignature)=="string" and run.slotSignature~="" then
+            local ins=run.inputSummary or {}
+            bySignature[run.slotSignature]={
+                probeIndex=idx,
+                slotSignature=run.slotSignature,
+                category=e.category,
+                scale1=ins[1] and ins[1].scale,
+                scale2=ins[2] and ins[2].scale,
+                scale3=ins[3] and ins[3].scale,
+                expectedOutputRate=e.expectedEarningsPerSecond,
+                p10OutputRate=e.outputRateQuantiles and e.outputRateQuantiles.p10,
+                medianOutputRate=e.outputRateQuantiles and e.outputRateQuantiles.p50,
+                p90OutputRate=e.outputRateQuantiles and e.outputRateQuantiles.p90,
+                p99OutputRate=e.outputRateQuantiles and e.outputRateQuantiles.p99,
+                inputBestRate=e.inputBestEarningsPerSecond,
+                inputSumRate=e.inputSumEarningsPerSecond,
+                referenceIncomeTarget=e.inventoryBestEarningsPerSecond,
+                probabilityAboveReferenceTarget=e.probabilityAboveInventoryBest,
+                probabilityAboveInputBest=e.probabilityAboveBestInput,
+                probabilityAbove2xInputBest=e.probabilityAbove2xBestInput,
+                fusionPrice=run.inputFusionPrice,
+                localDrawDifference=a.localDrawAgreement
+                    and a.localDrawAgreement.hypotheticalMeanAbsDifference or nil,
+                analysisStatus="Experimental no-mutation rate projection, using exact client bands plus hypothetical doubling.",
+                usesWeight=false,
+            }
+        end
+    end
+    local options={}
+    for _,v in pairs(bySignature) do options[#options+1]=v end
+    local byExpected={}
+    local byChance={}
+    for _,v in ipairs(options) do
+        byExpected[#byExpected+1]=v
+        if v.probabilityAboveReferenceTarget~=nil then
+            byChance[#byChance+1]=v
+        end
+    end
+    table.sort(byExpected,function(a,b)
+        if a.expectedOutputRate~=b.expectedOutputRate then
+            return a.expectedOutputRate>b.expectedOutputRate
+        end
+        return a.slotSignature<b.slotSignature
+    end)
+    table.sort(byChance,function(a,b)
+        if a.probabilityAboveReferenceTarget~=b.probabilityAboveReferenceTarget then
+            return a.probabilityAboveReferenceTarget>b.probabilityAboveReferenceTarget
+        end
+        return (a.medianOutputRate or 0)>(b.medianOutputRate or 0)
+    end)
+    local function firstN(sorted)
+        local out={}
+        for i=1,math.min(10,#sorted) do out[#out+1]=sorted[i] end
+        return out
+    end
+    return {
+        note="Only trios OBSERVED in scanner slots, not all combinations in the inventory. Exploratory math requires validation. No fusion is triggered.",
+        target="Absolute $/s, without using weight. Compare the SAME session benchmark across species.",
+        fixedSessionTarget=state.sessionInventoryIncomeTarget,
+        distinctTrioCount=#options,
+        highestExpectedRate=firstN(byExpected),
+        highestProbabilityAboveFixedInventoryTarget=firstN(byChance),
+    }
+end
+
 local function exportData()
     local payload={
         scanner=scannerName,
@@ -2147,6 +2267,9 @@ local function exportData()
         },
         kernelResearch=jsonSafe(state.kernelResearch),
         bandWeightFlat=flatBandWeightExport(),
+        clientBandFlat=flatAnalyticBandExport(),
+        analyticDrawAgreementFlat=flatAnalyticAgreementExport(),
+        experimentalTrioComparisons=flatAnalyticTrioComparisons(),
         v26ResearchTargets={
             externalClientFormulaHypotheses={
                 sizeBandCount=11,
@@ -2207,6 +2330,12 @@ local function exportData()
             "V2.6 exports BandWeightBias rows again in bandWeightFlat so individual weights never disappear behind jsonSafe max-depth.",
             "V2.6 also locates DrawAssetScale through DrawFusedScale upvalues and exports its constants/upvalues to recover the exact client size bands.",
             "V2.7 records pre-fusion roulette probabilities for below-worst/below-best/above-best/1.5x/2x/input-sum outcomes and calibrates them against real results.",
+            "V2.8 uses 11 client SCALE_BANDS and their exact per-trio BandWeightBias, and compares a hypothetical doubling model with the game's DrawFusedScale samples.",
+            "V2.8 projects no-mutation $/s directly using the game's category-aware CatalogRatePerSecond; kg/weight has ZERO role in optimizing trios.",
+            "V2.8 stores a constant session-wide inventory $/s benchmark so different tested species can be compared using the same absolute income target.",
+            "clientBandFlat and experimentalTrioComparisons are exported directly to avoid jsonSafe depth truncation.",
+            "Analytic percentages are EXPERIMENTAL until double behavior and prediction calibration are validated against server results.",
+
             "V2.7 calibration uses the observed output Scale converted to a no-mutation rate, isolating the Scale model from unknown output-mutation effects; actual economic outcome is also stored separately.",
             "Scale-only economic projection assumes the same category and no output mutation; it is a risk baseline, not a mutation predictor.",
             "FuseKernel research runs automatically once per distinct 3-pet slot set and can also be retried with ANALISAR KERNEL.",

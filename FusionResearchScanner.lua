@@ -1470,8 +1470,33 @@ local function runKernelResearch(snap)
     run.DrawFusedScale.error=drawErr
     run.DrawFusedScale.economicProjection=economicProjectionFromDraw(dist,snap.inputs)
 
-    -- V2.4 focuses specifically on identifying BandWeightBias argument meaning.
+    -- Preserve the old exploratory bands for regression comparisons.
     run.BandWeightBias=probeBandWeightBias(snap)
+
+    -- New: recover the eleven ACTUAL client bands. The pet's category and the
+    -- client's income helper determine output $/s; weight is never used here.
+    local weightedBands,bandErr=buildWeightedClientBands(scales)
+    run.AnalyticClientBands={
+        available=weightedBands~=nil,
+        error=bandErr,
+        clientScaleRules=weightedBands and weightedBands.rules or nil,
+        bands=weightedBands and weightedBands.bands or nil,
+        effectiveWeightTotal=weightedBands and weightedBands.effectiveWeightTotal or nil,
+        modelStatus=weightedBands and weightedBands.modelStatus or nil,
+    }
+    if weightedBands then
+        local invBest=inventoryIncomeBenchmark()
+        run.AnalyticClientBands.inventoryBenchmark=invBest
+        run.AnalyticClientBands.localDrawAgreement=analyticModelDrawAgreement(weightedBands,dist)
+        run.AnalyticClientBands.economicProjection=analyticIncomeProjection(
+            weightedBands,snap.inputs,invBest
+        )
+    end
+
+    if type(FuseKernel)=="table" and type(FuseKernel.PriceFor)=="function" then
+        local ok,cost=directNumericCall(FuseKernel.PriceFor,{snap.decodedInputs})
+        if ok then run.inputFusionPrice=cost end
+    end
 
     state.kernelResearch.lastRun=run
     state.kernelResearch.probes[#state.kernelResearch.probes+1]=run

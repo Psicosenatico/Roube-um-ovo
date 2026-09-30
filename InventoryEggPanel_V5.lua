@@ -1158,6 +1158,7 @@ local FUSION = {
     PetQuery = '',
     MinRateText = '',
     MutationFilter = 1,
+    FilterUpdating = false,
     Busy = false,
     StatusMessage = nil,
     PendingReward = nil,
@@ -1583,12 +1584,24 @@ end
 
 local function fusionFilterEntries(available)
     local filtered={}
-    local query=norm(FUSION.PetQuery or '')
+    local function searchKey(value)
+        local result=norm(value)
+        for _,pair in ipairs({
+            {'á','a'},{'à','a'},{'â','a'},{'ã','a'},{'ä','a'},
+            {'é','e'},{'è','e'},{'ê','e'},{'í','i'},{'ì','i'},
+            {'ó','o'},{'ò','o'},{'ô','o'},{'õ','o'},
+            {'ú','u'},{'ù','u'},{'û','u'},{'ç','c'}
+        }) do
+            result=result:gsub(pair[1],pair[2])
+        end
+        return result
+    end
+    local query=searchKey(FUSION.PetQuery or '')
     local minimum,valid=fusionFilterMinRate(FUSION.MinRateText)
     if not valid then return filtered,false end
     for _,pet in ipairs(available) do
-        local matchesPet=query=='' or norm(pet.Name):find(query,1,true)
-            or norm(pet.Category):find(query,1,true)
+        local matchesPet=query=='' or searchKey(pet.Name):find(query,1,true)
+            or searchKey(pet.Category):find(query,1,true)
         local matchesMutation=FUSION.MutationFilter==1
             or (FUSION.MutationFilter==2 and pet.HasMutation)
             or (FUSION.MutationFilter==3 and not pet.HasMutation)
@@ -2132,11 +2145,11 @@ end)
 
 conn(FUSION.PetFilterBox:GetPropertyChangedSignal('Text'), function()
     FUSION.PetQuery=FUSION.PetFilterBox.Text
-    if not FUSION.Busy then renderFusionList() end
+    if not FUSION.Busy and not FUSION.FilterUpdating then renderFusionList() end
 end)
 conn(FUSION.MinRateBox:GetPropertyChangedSignal('Text'), function()
     FUSION.MinRateText=FUSION.MinRateBox.Text
-    if not FUSION.Busy then renderFusionList() end
+    if not FUSION.Busy and not FUSION.FilterUpdating then renderFusionList() end
 end)
 conn(FUSION.MutationFilterButton.Activated, function()
     if FUSION.Busy then return end
@@ -2146,12 +2159,14 @@ conn(FUSION.MutationFilterButton.Activated, function()
 end)
 conn(FUSION.FilterResetButton.Activated, function()
     if FUSION.Busy then return end
+    FUSION.FilterUpdating=true
     FUSION.PetQuery=''
     FUSION.MinRateText=''
     FUSION.MutationFilter=1
     FUSION.PetFilterBox.Text=''
     FUSION.MinRateBox.Text=''
     FUSION.MutationFilterButton.Text='Mutação: Todas'
+    FUSION.FilterUpdating=false
     renderFusionList()
 end)
 

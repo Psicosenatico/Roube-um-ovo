@@ -98,15 +98,69 @@ task.defer(function()
 end)
 
 local cb=tostring(os.time())..'_'..tostring(math.random(100000,999999))
-local function run(path)
-    local src=game:HttpGet('https://raw.githubusercontent.com/Psicosenatico/Roube-um-ovo/main/'..path..'?cb='..cb)
-    local fn,err=loadstring(src)
-    if not fn then error(path..' compile: '..tostring(err)) end
-    local ok,e=pcall(fn)
-    if not ok then error(path..' runtime: '..tostring(e)) end
+
+-- The loader must not fail silently on mobile if a downstream module cannot
+-- compile or run. A failure in the add-on must not conceal the main menu.
+local function showLoaderError(path,err)
+    local message=path..": "..tostring(err)
+    _G.PSICO_LAST_LOADER_ERROR=message
+    warn("[PSICO LOADER] "..message)
+    local ok=pcall(function()
+        local root=(function()
+            local canGet,h=pcall(function() return gethui and gethui() end)
+            return (canGet and h) or game:GetService("CoreGui")
+        end)()
+        local previous=root:FindFirstChild("PsicoLoaderDiagnostics")
+        if previous then previous:Destroy() end
+
+        local screen=Instance.new("ScreenGui")
+        screen.Name="PsicoLoaderDiagnostics"
+        screen.ResetOnSpawn=false
+        screen.IgnoreGuiInset=true
+        screen.DisplayOrder=200000
+        screen.Parent=root
+
+        local box=Instance.new("Frame")
+        box.AnchorPoint=Vector2.new(.5,0)
+        box.Position=UDim2.new(.5,0,.05,0)
+        box.Size=UDim2.new(.85,0,0,105)
+        box.BackgroundColor3=Color3.fromRGB(67,25,32)
+        box.BorderSizePixel=0
+        box.Parent=screen
+        Instance.new("UICorner",box).CornerRadius=UDim.new(0,10)
+
+        local msg=Instance.new("TextLabel")
+        msg.BackgroundTransparency=1
+        msg.Position=UDim2.fromOffset(8,6)
+        msg.Size=UDim2.new(1,-16,1,-12)
+        msg.TextWrapped=true
+        msg.TextXAlignment=Enum.TextXAlignment.Left
+        msg.TextYAlignment=Enum.TextYAlignment.Top
+        msg.TextSize=13
+        msg.Font=Enum.Font.GothamMedium
+        msg.TextColor3=Color3.fromRGB(255,220,220)
+        msg.Text="PSICOSENATICO: falha em "..path.."\n"..tostring(err):sub(1,320)..
+            "\nDetalhes: _G.PSICO_LAST_LOADER_ERROR"
+        msg.Parent=box
+    end)
+    if not ok then warn("[PSICO LOADER] Não foi possível exibir o diagnóstico.") end
 end
 
-run('RoubeUmOvo_Menu.lua')
+local function run(path)
+    local ok,err=pcall(function()
+        local src=game:HttpGet(
+            'https://raw.githubusercontent.com/Psicosenatico/Roube-um-ovo/main/'..path..'?cb='..cb
+        )
+        local fn,compileError=loadstring(src)
+        if not fn then error("ERRO DE COMPILAÇÃO: "..tostring(compileError)) end
+        local didRun,runtimeError=pcall(fn)
+        if not didRun then error("ERRO DE EXECUÇÃO: "..tostring(runtimeError)) end
+    end)
+    if not ok then showLoaderError(path,err) end
+    return ok
+end
+
+if not run('RoubeUmOvo_Menu.lua') then return end
 run('InventoryEggPanel_V5.lua')
 
 task.defer(function()

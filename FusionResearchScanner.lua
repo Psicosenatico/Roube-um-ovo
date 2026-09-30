@@ -907,6 +907,333 @@ local function baselineRateForScale(category,scale)
     return tonumber(rate)
 end
 
+-- V2.8: use the actual SCALE_BANDS table embedded in the client's
+-- DrawAssetScale, rather than inventing research bands. Weight does not
+-- participate in either roulette scoring or the economic objectives.
+local cachedScaleRules=nil
+local cachedScaleRulesAttempted=false
+
+local function loadClientScaleRules()
+    if cachedScaleRulesAttempted then return cachedScaleRules end
+    cachedScaleRulesAttempted=true
+    local helperTable=assetHelpersFromDrawFusedScale()
+    local draw=helperTable and helperTable.DrawAssetScale
+    if type(draw)~="function" and type(AssetItems)=="table" then
+        draw=AssetItems.DrawAssetScale
+    end
+    local ups=debugUpvalues(draw)
+    for _,up in pairs(ups or {}) do
+        if type(up)=="table" and type(up.SCALE_BANDS)=="table" then
+            local bands={}
+            for idx,raw in ipairs(up.SCALE_BANDS) do
+                local lo=tonumber(raw.min)
+                local hi=tonumber(raw.max)
+                local weight=tonumber(raw.weight)
+                if not (finite(lo) and finite(hi) and finite(weight) and lo>0 and hi>lo and weight>0) then
+                    return nil
+                end
+                bands[#bands+1]={index=idx,min=lo,max=hi,rawWeight=weight}
+            end
+            local cap=tonumber(up.SCALE_HARD_CAP)
+            local odds=tonumber(up.SCALE_DOUBLING_ODDS)
+            if #bands>0 and finite(cap) and cap>0 and finite(odds) and odds>=0 and odds<1 then
+                cachedScaleRules={
+                    source="Runtime DrawAssetScale upvalue SCALE_BANDS",
+                    bands=bands,
+                    bandCount=#bands,
+                    scaleHardCap=cap,
+                    doublingOdds=odds,
+                    assumptions={
+                        "SCALE_BANDS and their weights are read directly from the loaded client.",
+                        "BandWeightBias is called for each exact original band using this trio.",
+                        "The uniform draw inside a band is supported by observed local samples but not formally proved.",
+                        "Repeated 1% doubling until the cap is a WORKING HYPOTHESIS: the exact control flow of DrawAssetScale has not been recovered.",
+                        "Output mutations and their effects are excluded from the economic projection.",
+                    },
+                }
+                return cachedScaleRules
+            end
+        end
+    end
+    return nil
+end
+
+local function buildWeightedClientBands(scales)
+    local rules=loadClientScaleRules()
+    local biasFn=type(FuseKernel)=="table" and FuseKernel.BandWeightBias or nil
+    if not rules then return nil,"Exact client SCALE_BANDS unavailable" end
+    if type(biasFn)~="function" then return nil,"BandWeightBias unavailable" end
+    if type(scales)~="table" or #scales~=3 then return nil,"Exactly 3 input Scales required" end
+
+    local rows={}
+    local total=0
+    for _,b in ipairs(rules.bands) do
+        local ok,bias,err=directNumericCall(biasFn,{scales,b.min,b.max})
+        if not ok or not finite(bias) or bias<=0 then
+            return nil,"BandWeightBias failed on official band "..tostring(b.index)..": "..tostring(err or bias)
+        end
+        local effective=b.rawWeight*bias
+        total+=effective
+        rows[#rows+1]={
+            index=b.index,
+            min=b.min,
+            max=b.max,
+            rawWeight=b.rawWeight,
+            bias=bias,
+            effectiveWeight=effective,
+        }
+    end
+    if total<=0 or not finite(total) then return nil,"Invalid effective band weight sum" end
+    for _,b in ipairs(rows) do b.probability=b.effectiveWeight/total end
+    return {
+        source=rules.source,
+        rules=rules,
+        inputScales={scales[1],scales[2],scales[3]},
+        bands=rows,
+        effectiveWeightTotal=total,
+        bandCount=#rows,
+        modelStatus="Experimental: exact client bands/bias; geometric doubling and within-band uniformity require validation.",
+    }
+end
+
+-- The geometric doubling treatment below is intentionally a hypothesis.
+-- Retain the base-band-only distribution for independent comparison.
+local ANALYTIC_TAIL_STEPS=6
+local function analyticPAboveScale(model,threshold,withDoubling)
+    if type(model)~="table" then return nil end
+    threshold=tonumber(threshold)
+    if not finite(threshold) then return nil end
+    local cap=model.rules.scaleHardCap
+    if threshold<0 then return 1 end
+    if threshold>=cap then return 0 end
+    local odds=withDoubling and model.rules.doublingOdds or 0
+    local probability=0
+
+    for _,band in ipairs(model.bands or {}) do
+        local width=band.max-band.min
+        for k=0,ANALYTIC_TAIL_STEPS do
+            local factor=(k==ANALYTIC_TAIL_STEPS)
+                and odds^k or ((1-odds)*(odds^k))
+            if factor>0 then
+                local thresholdAtBase=threshold/(2^k)
+                local fraction=math.clamp((band.max-math.max(band.min,thresholdAtBase))/width,0,1)
+                probability+=band.probability*factor*fraction
+            end
+        end
+    end
+
+    return math.clamp(probability,0,1)
+end
+
+local function analyticScaleQuantile(model,q,withDoubling)
+    local cap=model.rules.scaleHardCap
+    local left=0
+    local right=cap
+    for _=1,38 do
+        local middle=(left+right)/2
+        local above=analyticPAboveScale(model,middle,withDoubling)
+        if above and 1-above>=q then right=middle else left=middle end
+    end
+    return right
+end
+
+local function analyticModelDrawAgreement(model,dist)
+    if not dist or type(dist.values)~="table" or #dist.values<32 then return nil end
+    local thresholdMap={.45,.85,1.05,1.45,1.55,1.9,2.1,3.15,4.2,6.2,10,17,35}
+    local rows={}
+    local sumRaw,sumHypo,maxRaw,maxHypo=0,0,0,0
+    for _,t in ipairs(thresholdMap) do
+        local n=0
+        for _,v in ipairs(dist.values) do if tonumber(v) and v>t then n+=1 end end
+        local empirical=n/#dist.values
+        local bandOnly=analyticPAboveScale(model,t,false)
+        local withDoubling=analyticPAboveScale(model,t,true)
+        local rawErr=math.abs(empirical-bandOnly)
+        local hypoErr=math.abs(empirical-withDoubling)
+        sumRaw+=rawErr
+        sumHypo+=hypoErr
+        maxRaw=math.max(maxRaw,rawErr)
+        maxHypo=math.max(maxHypo,hypoErr)
+        rows[#rows+1]={
+            thresholdScale=t,
+            observedLocalDrawRate=empirical,
+            undoubledBandProbability=bandOnly,
+            hypotheticalDoubledProbability=withDoubling,
+            undoubledAbsoluteError=rawErr,
+            hypotheticalAbsoluteError=hypoErr,
+        }
+    end
+    return {
+        source="256 local DrawFusedScale calls, NOT real server fusion results",
+        n=#dist.values,
+        thresholds=rows,
+        bandOnlyMeanAbsDifference=sumRaw/#rows,
+        hypotheticalMeanAbsDifference=sumHypo/#rows,
+        bandOnlyMaxAbsDifference=maxRaw,
+        hypotheticalMaxAbsDifference=maxHypo,
+        status="Sampling checks consistency only; rare outcomes and exact doubling control flow remain unverified.",
+    }
+end
+
+local function scaleForIncomeThreshold(category,target,cap)
+    target=tonumber(target)
+    if not finite(target) or target<0 then return nil,"invalid income target" end
+    local low=.00001
+    local lowRate=baselineRateForScale(category,low)
+    local highRate=baselineRateForScale(category,cap)
+    if not (finite(lowRate) and finite(highRate)) then return nil,"client income helper unavailable" end
+    if lowRate>highRate then return nil,"income function decreases" end
+    if target<lowRate then return 0 end
+    if target>=highRate then return cap end
+    local left=low
+    local right=cap
+    for _=1,38 do
+        local middle=(left+right)/2
+        local rate=baselineRateForScale(category,middle)
+        if not finite(rate) then return nil,"income helper failed during inverse" end
+        if rate>target then right=middle else left=middle end
+    end
+    return right
+end
+
+local function inventoryIncomeBenchmark()
+    local inventory=state.observedInventory
+    if type(inventory)~="table" then return nil end
+    local best=0
+    for _,raw in pairs(inventory) do
+        local item=decodeItem(raw)
+        if type(item)=="table" then
+            local rate=itemRate(item)
+            if finite(rate) and rate>best then best=rate end
+        end
+    end
+    return best>0 and best or nil
+end
+
+local function analyticIncomeProjection(model,inputs,inventoryBenchmark)
+    if not model or type(inputs)~="table" or #inputs~=3 then return nil end
+    local cat=inputs[1] and inputs[1].category
+    if not cat then return nil end
+    for _,x in ipairs(inputs) do
+        if x.category~=cat then return {error="Fusion inputs belong to different categories"} end
+    end
+    local worst=math.huge
+    local best=0
+    local sum=0
+    for _,x in ipairs(inputs) do
+        local rate=tonumber(x.earningsPerSecond)
+        if not finite(rate) then return {error="Missing observed input earnings"} end
+        worst=math.min(worst,rate)
+        best=math.max(best,rate)
+        sum+=rate
+    end
+
+    local cap=model.rules.scaleHardCap
+    local checkpoints={.1,.5,.85,1,1.5,2,4,6,12,20,35,cap}
+    local prior=nil
+    for _,sc in ipairs(checkpoints) do
+        local rate=baselineRateForScale(cat,sc)
+        if not finite(rate) then return {error="Income helper unavailable for "..tostring(cat)} end
+        if prior and rate<prior-1e-7 then
+            return {error="Income is not monotonic on validation grid; do not invert rates"}
+        end
+        prior=rate
+    end
+
+    local function pAboveIncome(target)
+        local sc,err=scaleForIncomeThreshold(cat,target,cap)
+        if sc==nil then return nil,err end
+        return analyticPAboveScale(model,sc,true),nil
+    end
+
+    local aboveWorst=pAboveIncome(worst)
+    local aboveBest=pAboveIncome(best)
+    local aboveOneAndHalf=pAboveIncome(1.5*best)
+    local aboveDouble=pAboveIncome(2*best)
+    local aboveSum=pAboveIncome(sum)
+    if not aboveBest then return {error="Could not compute income probabilities"} end
+
+    local quantileScales={}
+    local quantileRates={}
+    for _,nameAndQ in ipairs({
+        {"p10",.10},{"p50",.50},{"p90",.90},{"p95",.95},{"p99",.99},
+    }) do
+        local name,q=nameAndQ[1],nameAndQ[2]
+        local sc=analyticScaleQuantile(model,q,true)
+        quantileScales[name]=sc
+        quantileRates[name]=baselineRateForScale(cat,sc)
+    end
+
+    -- Integrate earnings across the complete client band mixture.
+    -- 28 deterministic midpoints per official band capture very small-probability
+    -- bands that 256 random draws almost never encounter.
+    local expected=0
+    local integrationNodes=28
+    for _,band in ipairs(model.bands) do
+        local bandAverage=0
+        for i=1,integrationNodes do
+            local base=band.min+(i-.5)*(band.max-band.min)/integrationNodes
+            for k=0,ANALYTIC_TAIL_STEPS do
+                local odds=model.rules.doublingOdds
+                local factor=(k==ANALYTIC_TAIL_STEPS)
+                    and odds^k or ((1-odds)*(odds^k))
+                if factor>0 then
+                    local sc=math.min(base*(2^k),cap)
+                    local rate=baselineRateForScale(cat,sc)
+                    if not finite(rate) then return {error="Income helper failed while integrating"} end
+                    bandAverage+=rate*factor
+                end
+            end
+        end
+        expected+=band.probability*bandAverage/integrationNodes
+    end
+
+    local absolute={}
+    for _,target in ipairs({1e6,1e7,1e8,1e9,1e10,1e11,1e12}) do
+        local prob=pAboveIncome(target)
+        absolute[#absolute+1]={targetEarningsPerSecond=target,probabilityAbove=prob}
+    end
+    local benchmarkChance=finite(inventoryBenchmark) and pAboveIncome(inventoryBenchmark) or nil
+
+    return {
+        category=cat,
+        modelStatus="EXPERIMENTAL: real band weights and bias; the doubling-loop shape and no-mutation earnings assumptions still need server validation.",
+        objective="Maximize actual $/s (absolute or chance to exceed a target), NOT pet weight.",
+        mutationModel="UNKNOWN; all projected output rates assume NO output mutation.",
+        outputRateQuantiles=quantileRates,
+        outputScaleQuantiles=quantileScales,
+        expectedEarningsPerSecond=expected,
+        inputWorstEarningsPerSecond=worst,
+        inputBestEarningsPerSecond=best,
+        inputSumEarningsPerSecond=sum,
+        inventoryBestEarningsPerSecond=inventoryBenchmark,
+        probabilityAboveInventoryBest=benchmarkChance,
+        probabilityBelowWorstInput=aboveWorst and (1-aboveWorst) or nil,
+        probabilityBelowBestInput=1-aboveBest,
+        probabilityAboveBestInput=aboveBest,
+        probabilityAbove1_5xBestInput=aboveOneAndHalf,
+        probabilityAbove2xBestInput=aboveDouble,
+        probabilityAboveInputSum=aboveSum,
+        probabilityScaleBelowInputMin=1-analyticPAboveScale(model,math.min(
+            tonumber(inputs[1].scale) or 1,tonumber(inputs[2].scale) or 1,tonumber(inputs[3].scale) or 1
+        ),true),
+        probabilityScaleAboveInputMax=analyticPAboveScale(model,math.max(
+            tonumber(inputs[1].scale) or 1,tonumber(inputs[2].scale) or 1,tonumber(inputs[3].scale) or 1
+        ),true),
+        absoluteIncomeTargets=absolute,
+        thresholds={
+            worstInputRate=worst,
+            bestInputRate=best,
+            oneAndHalfBestRate=1.5*best,
+            doubleBestRate=2*best,
+            inputSumRate=sum,
+            inventoryBestRate=inventoryBenchmark,
+        },
+        expectedIncomeIntegrationNodesPerBand=integrationNodes,
+        includedWeight=false,
+    }
+end
+
 local function economicProjectionFromDraw(dist,inputs)
     if not dist or type(dist.values)~="table" or #dist.values==0 or type(inputs)~="table" or #inputs~=3 then
         return nil

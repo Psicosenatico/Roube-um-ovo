@@ -1782,6 +1782,7 @@ end
 
 local renderFusionList
 
+local fusionRosterSignature = nil
 renderFusionList = function()
     for _, child in ipairs(fusionPetList:GetChildren()) do
         if child:IsA('GuiObject') then child:Destroy() end
@@ -1797,6 +1798,10 @@ renderFusionList = function()
     end
 
     local entries = fusionAvailablePets(saveData)
+    local rosterIds={}
+    for _,pet in ipairs(entries) do rosterIds[#rosterIds+1]=pet.Uid end
+    table.sort(rosterIds)
+    fusionRosterSignature=table.concat(rosterIds,"|")
     local currentByUid = {}
     for _, pet in ipairs(entries) do currentByUid[pet.Uid] = pet end
 
@@ -1816,7 +1821,10 @@ renderFusionList = function()
     local y = 3
 
     if #entries == 0 then
-        local l = label(fusionPetList, 'Nenhum pet disponível para fusão.', UDim2.fromOffset(8, 8), UDim2.new(1, -16, 0, 24), 8)
+        local l = label(fusionPetList,
+            type(FuseKernel)~="table" and 'Regra de fusão indisponível.'
+                or 'Nenhum pet livre (favoritos ★/base excluídos).',
+            UDim2.fromOffset(8, 8), UDim2.new(1, -16, 0, 24), 8)
         l.TextColor3 = Color3.fromRGB(150, 165, 190)
         fusionPetList.CanvasSize = UDim2.fromOffset(0, 40)
     else
@@ -1851,6 +1859,16 @@ renderFusionList = function()
             row.Activated:Connect(function()
                 if FUSION.Busy then return end
                 FUSION.StatusMessage = nil
+
+                local currentSave=fusionSave()
+                local currentRaw=type(currentSave)=="table" and type(currentSave.Inventory)=="table"
+                    and (currentSave.Inventory[pet.Uid] or currentSave.Inventory[tostring(pet.Uid)])
+                local reason=fusionProtectedReason(pet.Uid,currentRaw,currentSave,false)
+                if reason or not fusionMayEnter(pet.Uid,currentRaw) then
+                    FUSION.StatusMessage="Indisponível: "..tostring(reason or "bloqueado pelo jogo")
+                    renderFusionList()
+                    return
+                end
 
                 if selected[pet.Uid] then
                     fusionRemoveSelected(pet.Uid)
@@ -2365,6 +2383,7 @@ end)
 refreshBaseControls()
 
 local placementSignature = ''
+local fusionRosterCheckedAt=0
 local function inventorySignature()
     local inv = readInventoryEggs(false)
     if type(inv) ~= 'table' then return '' end
@@ -2402,7 +2421,21 @@ task.spawn(function()
             FUSION.SaveRewardRef = nil
         end
 
-        if fusionPage.Visible then refreshFusionPage() end
+        if fusionPage.Visible then
+            refreshFusionPage()
+            if not FUSION.Busy and os.clock()-fusionRosterCheckedAt>=1.5
+                and type(saveData)=="table" and type(saveData.Inventory)=="table" then
+                fusionRosterCheckedAt=os.clock()
+                local eligible=fusionAvailablePets(saveData)
+                local ids={}
+                for _,pet in ipairs(eligible) do ids[#ids+1]=pet.Uid end
+                table.sort(ids)
+                local signature=table.concat(ids,"|")
+                if signature~=fusionRosterSignature then
+                    renderFusionList()
+                end
+            end
+        end
 
         if page.Visible then
             local sig = inventorySignature()

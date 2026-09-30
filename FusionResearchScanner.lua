@@ -15,7 +15,7 @@ local Workspace=game:GetService("Workspace")
 
 local LP=Players.LocalPlayer
 local STARTED=os.time()
-local scannerName="Psico Fusion Research Scanner V2.8"
+local scannerName="Psico Fusion Research Scanner V2.8.1"
 
 local function safeRequire(path)
     local cur=ReplicatedStorage
@@ -1621,11 +1621,15 @@ local function pollSlots()
                 if run and not run.error then
                     local d=run.DrawFusedScale or {}
                     local p=d.economicProjection or {}
-                    state.status=string.format(
-                        "3/3 • Kernel %s • risco %s",
-                        tostring(d.confirmedShape or "não identificado"),
-                        tostring(p.riskLabel or "indeterminado")
-                    )
+                    if state.lastSlotSnapshot
+                        and state.lastSlotSnapshot.allowedForResearch==true
+                        and table.concat(state.lastSlotSnapshot.slots or {},"|")==sig then
+                        state.status=string.format(
+                            "3/3 • Kernel %s • risco %s",
+                            tostring(d.confirmedShape or "não identificado"),
+                            tostring(p.riskLabel or "indeterminado")
+                        )
+                    end
                 end
             end)
         end
@@ -2576,7 +2580,7 @@ title.BackgroundTransparency=1
 title.Position=UDim2.new(0,24,0,14)
 title.Size=UDim2.new(1,-150,0,42)
 title.Font=Enum.Font.GothamBold
-title.Text="FUSION RESEARCH SCANNER • V2.8"
+title.Text="FUSION RESEARCH SCANNER • V2.8.1"
 title.TextSize=26
 title.TextColor3=Color3.fromRGB(245,248,255)
 title.TextXAlignment=Enum.TextXAlignment.Left
@@ -2587,7 +2591,7 @@ sub.BackgroundTransparency=1
 sub.Position=UDim2.new(0,24,0,54)
 sub.Size=UDim2.new(1,-48,0,28)
 sub.Font=Enum.Font.Gotham
-sub.Text="DrawFusedScale • BandWeightBias • risco econômico"
+sub.Text="Favoritos ★ protegidos • $/s • FuseKernel"
 sub.TextSize=16
 sub.TextColor3=Color3.fromRGB(139,164,207)
 sub.TextXAlignment=Enum.TextXAlignment.Left
@@ -2793,7 +2797,8 @@ task.spawn(function()
         local lines={
             state.status,
             "",
-            string.format("Slots agora: %d/3  |  Amostras: %d",state.lastSlotCount,#state.samples),
+            string.format("Slots: %d/3 | Amostras: %d | Protegidos: %d",
+                state.lastSlotCount,#state.samples,state.lastProtectedCount),
         }
         if snap and #snap.inputs>0 then
             lines[#lines+1]=""
@@ -2857,6 +2862,11 @@ task.spawn(function()
             end
         end
         local kr=state.kernelResearch.lastRun
+        if kr and (not snap or kr.slotSignature~=(table.concat(snap.slots or {},"|"))
+            or snap.allowedForResearch~=true) then
+            lines[#lines+1]="Último Kernel: histórico de trio anterior (não aplicável agora)."
+            kr=nil
+        end
         if kr then
             lines[#lines+1]=""
             if kr.error then

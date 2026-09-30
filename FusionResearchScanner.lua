@@ -1,4 +1,4 @@
--- PSICOSENATICO | FUSION RESEARCH SCANNER V2.5
+-- PSICOSENATICO | FUSION RESEARCH SCANNER V2.6
 -- Purpose: capture the exact 3 pets in Save.FusionSlots BEFORE FuseStarted,
 -- then pair them with the server-selected fusion reward for predictor research.
 
@@ -15,7 +15,7 @@ local Workspace=game:GetService("Workspace")
 
 local LP=Players.LocalPlayer
 local STARTED=os.time()
-local scannerName="Psico Fusion Research Scanner V2.5"
+local scannerName="Psico Fusion Research Scanner V2.6"
 
 local function safeRequire(path)
     local cur=ReplicatedStorage
@@ -1460,10 +1460,10 @@ local function exportData()
         samples=state.samples,
         events=state.events,
         notes={
-            "Current Save build exposes Peek/Await/Watch/WatchFields and no Get; V2.5 reads committed FusionSlots through Peek.",
+            "Current Save build exposes Peek/Await/Watch/WatchFields and no Get; V2.6 reads committed FusionSlots through Peek.",
             "Input $/s prefers AssetEarnings.CatalogRatePerSecond(decodedItem).",
             "Weight prefers the game's AssetItems.WeightKg helper; raw fields are fallback.",
-            "V2.5 keeps economic retention versus input sum/best input and mutation 0/3..3/3 session buckets.",
+            "V2.6 keeps economic retention versus input sum/best input and mutation 0/3..3/3 session buckets.",
             "V2.3 established DrawFusedScale accepts a single list of exactly 3 input Scales; V2.4 records 256 full local draws per trio.",
             "V2.4 proved BandWeightBias argument 1 expects a table; V2.5 tests (scaleTable, bandStart, bandEnd).",
             "Scale-only economic projection assumes the same category and no output mutation; it is a risk baseline, not a mutation predictor.",
@@ -1546,7 +1546,7 @@ title.BackgroundTransparency=1
 title.Position=UDim2.new(0,24,0,14)
 title.Size=UDim2.new(1,-150,0,42)
 title.Font=Enum.Font.GothamBold
-title.Text="FUSION RESEARCH SCANNER • V2.5"
+title.Text="FUSION RESEARCH SCANNER • V2.6"
 title.TextSize=26
 title.TextColor3=Color3.fromRGB(245,248,255)
 title.TextXAlignment=Enum.TextXAlignment.Left
@@ -1690,7 +1690,7 @@ kernel.Activated:Connect(function()
         local d=run.DrawFusedScale or {}
         local p=d.economicProjection or {}
         state.status=string.format(
-            "Kernel V2.5 • Draw:%s • risco:%s",
+            "Kernel V2.6 • Draw:%s • risco:%s",
             tostring(d.confirmedShape or "não identificado"),
             tostring(p.riskLabel or "indeterminado")
         )

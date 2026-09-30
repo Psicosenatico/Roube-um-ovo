@@ -1260,7 +1260,7 @@ fusionResultLabel.TextXAlignment = Enum.TextXAlignment.Center
 
 local fusionFoot = label(
     fusionPage,
-    '$/s é o foco principal; peso/Scale e mutações continuam visíveis para pesquisa.',
+    'OBJETIVO: máximo $/s por slot. A soma sacrificada é secundária; 3 pets viram 1 slot mais forte.',
     UDim2.fromOffset(14, 598),
     UDim2.new(1, -28, 0, 28),
     7
@@ -1692,12 +1692,11 @@ local function fusionPct(nowValue, oldValue)
 end
 
 local function classifyFusion(result, inputs)
-    local best, sum, count = 0, 0, 0
+    local best, count = 0, 0
     for _, input in ipairs(inputs or {}) do
         local rate = tonumber(input.Rate)
         if rate then
             best = math.max(best, rate)
-            sum = sum + rate
             count = count + 1
         end
     end
@@ -1707,15 +1706,18 @@ local function classifyFusion(result, inputs)
         return 'CONFIRMADO', Color3.fromRGB(94, 139, 223), nil, nil
     end
 
+    -- Slot-density verdict: compare the new single pet with the strongest
+    -- slot among the three inputs. The sum of the sacrificed pets does NOT
+    -- penalize the verdict because the user's goal is maximum $/s per slot.
     local vsBest = fusionPct(output, best)
-    local vsSum = sum > 0 and fusionPct(output, sum) or nil
+    local slotGain = output - best
 
     if vsBest and vsBest >= 5 then
-        return 'BOM', Color3.fromRGB(88, 214, 141), vsBest, vsSum
+        return 'SLOT MAIS FORTE', Color3.fromRGB(88, 214, 141), vsBest, slotGain
     elseif vsBest and vsBest <= -5 then
-        return 'RUIM', Color3.fromRGB(255, 105, 105), vsBest, vsSum
+        return 'SLOT MAIS FRACO', Color3.fromRGB(255, 105, 105), vsBest, slotGain
     end
-    return 'NEUTRO', Color3.fromRGB(244, 201, 93), vsBest, vsSum
+    return 'SLOT SEMELHANTE', Color3.fromRGB(244, 201, 93), vsBest, slotGain
 end
 
 local function acceptFusionReward(reward)
@@ -1808,9 +1810,9 @@ local function fusionSelectionSummary()
         return
     end
 
-    local lines, totalRate = {}, 0
+    local lines, bestRate = {}, 0
     for i, pet in ipairs(FUSION.Selected) do
-        totalRate = totalRate + (tonumber(pet.Rate) or 0)
+        bestRate = math.max(bestRate, tonumber(pet.Rate) or 0)
         lines[#lines + 1] = ('%d. %s • $%s/s • %s'):format(
             i,
             pet.Name,
@@ -1821,8 +1823,8 @@ local function fusionSelectionSummary()
 
     if count == 3 then
         local price = fusionPrice(FUSION.Selected)
-        lines[#lines + 1] = ('Total: $%s/s%s'):format(
-            compact(totalRate),
+        lines[#lines + 1] = ('Alvo por slot: superar $%s/s • 3→1 slot%s'):format(
+            compact(bestRate),
             price and (' • custo $' .. compact(price)) or ''
         )
     end
@@ -1980,20 +1982,25 @@ local function refreshFusionPage()
         return
     end
 
-    local verdict, color, vsBest, vsSum = classifyFusion(result, result.Inputs or FUSION.Inputs)
+    local verdict, color, vsBest, slotGain = classifyFusion(result, result.Inputs or FUSION.Inputs)
     fusionVerdict.Text = 'RESULTADO: ' .. verdict
     fusionVerdict.TextColor3 = color
     fusionTab.Text = 'FUSÃO: ' .. verdict
 
     local parts = {
         ('Saiu: %s • %s'):format(result.Name or '?', result.Rarity or '?'),
-        ('$%s/s • escala %.2fx'):format(compact(result.Rate), result.Scale or 1),
+        ('$%s/s • escala %.2fx • ocupa 1 slot'):format(compact(result.Rate), result.Scale or 1),
     }
 
     local mutation = fusionMutationText(result.Mutations)
     if mutation ~= 'sem mutação' then parts[#parts + 1] = 'Mutação: ' .. mutation end
-    if vsBest then parts[#parts + 1] = ('vs melhor entrada: %+.1f%%'):format(vsBest) end
-    if vsSum then parts[#parts + 1] = ('vs soma dos 3: %+.1f%%'):format(vsSum) end
+    if vsBest then parts[#parts + 1] = ('vs melhor slot de entrada: %+.1f%%'):format(vsBest) end
+    if slotGain then
+        local sign = slotGain >= 0 and '+' or '-'
+        parts[#parts + 1] = ('ganho de potência no slot: %s$%s/s'):format(
+            sign, compact(math.abs(slotGain))
+        )
+    end
 
     fusionResultLabel.Text = table.concat(parts, '\n')
 end

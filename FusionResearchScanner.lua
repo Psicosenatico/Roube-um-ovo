@@ -1,4 +1,4 @@
--- PSICOSENATICO | FUSION RESEARCH SCANNER V2.6
+-- PSICOSENATICO | FUSION RESEARCH SCANNER V2.7
 -- Purpose: capture the exact 3 pets in Save.FusionSlots BEFORE FuseStarted,
 -- then pair them with the server-selected fusion reward for predictor research.
 
@@ -15,7 +15,7 @@ local Workspace=game:GetService("Workspace")
 
 local LP=Players.LocalPlayer
 local STARTED=os.time()
-local scannerName="Psico Fusion Research Scanner V2.6"
+local scannerName="Psico Fusion Research Scanner V2.7"
 
 local function safeRequire(path)
     local cur=ReplicatedStorage
@@ -915,43 +915,70 @@ local function economicProjectionFromDraw(dist,inputs)
     if not category then return nil end
 
     local best=0
+    local worst=math.huge
     local sum=0
     local rates={}
+    local inputScaleMin,inputScaleMax=math.huge,0
+    local inputScaleSum=0
+
     for _,x in ipairs(inputs) do
         local r=tonumber(x.earningsPerSecond) or 0
         best=math.max(best,r)
+        if r>0 then worst=math.min(worst,r) end
         sum+=r
-    end
 
-    local belowBest,belowHalfBest,belowSum=0,0,0
+        local sc=tonumber(x.scale) or 0
+        inputScaleMin=math.min(inputScaleMin,sc)
+        inputScaleMax=math.max(inputScaleMax,sc)
+        inputScaleSum+=sc
+    end
+    if worst==math.huge then worst=0 end
+
+    local counts={
+        belowWorst=0,
+        belowBest=0,
+        aboveBest=0,
+        above1_5xBest=0,
+        above2xBest=0,
+        aboveInputSum=0,
+        scaleBelowInputMin=0,
+        scaleAboveInputMax=0,
+    }
+
     for _,scale in ipairs(dist.values) do
         local rate=baselineRateForScale(category,scale)
         if rate then
             rates[#rates+1]=rate
-            if best>0 and rate<best then belowBest+=1 end
-            if best>0 and rate<best*.5 then belowHalfBest+=1 end
-            if sum>0 and rate<sum then belowSum+=1 end
+            if worst>0 and rate<worst then counts.belowWorst+=1 end
+            if best>0 and rate<best then counts.belowBest+=1 end
+            if best>0 and rate>best then counts.aboveBest+=1 end
+            if best>0 and rate>best*1.5 then counts.above1_5xBest+=1 end
+            if best>0 and rate>best*2 then counts.above2xBest+=1 end
+            if sum>0 and rate>sum then counts.aboveInputSum+=1 end
         end
+        if inputScaleMin<math.huge and scale<inputScaleMin then counts.scaleBelowInputMin+=1 end
+        if inputScaleMax>0 and scale>inputScaleMax then counts.scaleAboveInputMax+=1 end
     end
     if #rates==0 then return nil end
 
     local rateDist=distributionFromValues(rates,true)
     local n=#rates
-    local scaleMin,scaleMax=math.huge,0
-    local scaleSum=0
-    for _,x in ipairs(inputs) do
-        local sc=tonumber(x.scale) or 0
-        scaleMin=math.min(scaleMin,sc)
-        scaleMax=math.max(scaleMax,sc)
-        scaleSum+=sc
+    local meanScale=inputScaleSum/3
+    local spread=inputScaleMin>0 and inputScaleMax/inputScaleMin or nil
+
+    local function p(count)
+        return n>0 and count/n or nil
     end
-    local meanScale=scaleSum/3
-    local spread=scaleMin>0 and scaleMax/scaleMin or nil
 
     local risk="INDETERMINADO"
-    local pBelowBest=best>0 and belowBest/n or nil
-    local pBelowHalf=best>0 and belowHalfBest/n or nil
-    if pBelowHalf and pBelowHalf>=.35 then
+    local pBelowBest=p(counts.belowBest)
+    local pBelowHalfBest=0
+    for _,rate in ipairs(rates) do
+        if best>0 and rate<best*.5 then pBelowHalfBest+=1 end
+    end
+    pBelowHalfBest=p(pBelowHalfBest)
+
+    if pBelowHalfBest and pBelowHalfBest>=.35 then
         risk="MUITO ALTO"
     elseif pBelowBest and pBelowBest>=.80 then
         risk="ALTO"
@@ -962,18 +989,40 @@ local function economicProjectionFromDraw(dist,inputs)
     end
 
     return {
-        note="Scale-only baseline: assumes same category and NO output mutation. It does not predict mutation inheritance.",
+        note="Scale-only baseline: same category and NO output mutation. Probabilities come from local DrawFusedScale draws, not a guaranteed server result.",
         category=category,
+        drawCount=n,
+        inputWorstEarningsPerSecond=worst,
         inputBestEarningsPerSecond=best,
         inputSumEarningsPerSecond=sum,
         inputMeanScale=meanScale,
-        inputScaleMin=scaleMin,
-        inputScaleMax=scaleMax,
+        inputScaleMin=inputScaleMin,
+        inputScaleMax=inputScaleMax,
         inputScaleSpreadRatio=spread,
         baselineNoMutationRateDistribution=rateDist,
+
+        -- Economic roulette probabilities.
+        probabilityBelowWorstInput=p(counts.belowWorst),
         probabilityBelowBestInput=pBelowBest,
-        probabilityBelowHalfBestInput=best>0 and belowHalfBest/n or nil,
-        probabilityBelowInputSum=sum>0 and belowSum/n or nil,
+        probabilityBelowHalfBestInput=pBelowHalfBest,
+        probabilityAboveBestInput=p(counts.aboveBest),
+        probabilityAbove1_5xBestInput=p(counts.above1_5xBest),
+        probabilityAbove2xBestInput=p(counts.above2xBest),
+        probabilityAboveInputSum=p(counts.aboveInputSum),
+
+        -- Pure Scale checks, useful for validating whether the worst input is a floor.
+        probabilityScaleBelowInputMin=p(counts.scaleBelowInputMin),
+        probabilityScaleAboveInputMax=p(counts.scaleAboveInputMax),
+
+        thresholds={
+            worstInputRate=worst,
+            bestInputRate=best,
+            oneAndHalfBestRate=best*1.5,
+            doubleBestRate=best*2,
+            inputSumRate=sum,
+            inputScaleMin=inputScaleMin,
+            inputScaleMax=inputScaleMax,
+        },
         riskLabel=risk,
     }
 end
@@ -1140,6 +1189,54 @@ local function pollSlots()
     end
 end
 
+local function predictionOutcomeForSample(prediction,rewardSummary,metrics)
+    if type(prediction)~="table" or type(rewardSummary)~="table" or type(metrics)~="table" then return nil end
+
+    local actualRate=tonumber(rewardSummary.earningsPerSecond)
+    local actualScale=tonumber(rewardSummary.scale)
+    local baselineRate=baselineRateForScale(rewardSummary.category,actualScale)
+    local worst=tonumber(prediction.inputWorstEarningsPerSecond or metrics.minEarningsPerSecond)
+    local best=tonumber(prediction.inputBestEarningsPerSecond or metrics.maxEarningsPerSecond)
+    local sum=tonumber(prediction.inputSumEarningsPerSecond or metrics.sumEarningsPerSecond)
+
+    local function flags(rate)
+        if not rate then return nil end
+        return {
+            belowWorstInput=worst and worst>0 and rate<worst or false,
+            belowBestInput=best and best>0 and rate<best or false,
+            aboveBestInput=best and best>0 and rate>best or false,
+            above1_5xBestInput=best and best>0 and rate>best*1.5 or false,
+            above2xBestInput=best and best>0 and rate>best*2 or false,
+            aboveInputSum=sum and sum>0 and rate>sum or false,
+        }
+    end
+
+    return {
+        prediction={
+            belowWorstInput=prediction.probabilityBelowWorstInput,
+            belowBestInput=prediction.probabilityBelowBestInput,
+            aboveBestInput=prediction.probabilityAboveBestInput,
+            above1_5xBestInput=prediction.probabilityAbove1_5xBestInput,
+            above2xBestInput=prediction.probabilityAbove2xBestInput,
+            aboveInputSum=prediction.probabilityAboveInputSum,
+            scaleBelowInputMin=prediction.probabilityScaleBelowInputMin,
+            scaleAboveInputMax=prediction.probabilityScaleAboveInputMax,
+        },
+        thresholds=prediction.thresholds,
+        observed={
+            actualRate=actualRate,
+            baselineNoMutationRate=baselineRate,
+            actualScale=actualScale,
+            actualEconomic=flags(actualRate),
+            scaleOnlyBaseline=flags(baselineRate),
+            scaleBelowInputMin=actualScale and metrics.minScale and actualScale<metrics.minScale or false,
+            scaleAboveInputMax=actualScale and metrics.maxScale and actualScale>metrics.maxScale or false,
+            outputHasMutation=#mutationNames(rewardSummary)>0,
+        },
+        calibrationBasis="scaleOnlyBaseline compares the observed Scale converted to a no-mutation rate against the pre-fusion scale-only probabilities. actualEconomic is stored separately because output mutation can change $/s.",
+    }
+end
+
 local function handleFuseStarted(reward)
     local rewardSummary=summarizeReward(reward)
     local snap=state.lastThree
@@ -1182,6 +1279,11 @@ local function handleFuseStarted(reward)
                         localP90=dist.p90,
                         scaleOnlyEconomicProjection=run.DrawFusedScale.economicProjection,
                     }
+                    kernelValidation.predictionOutcome=predictionOutcomeForSample(
+                        run.DrawFusedScale.economicProjection,
+                        rewardSummary,
+                        metrics
+                    )
                 end
                 break
             end
@@ -1195,6 +1297,8 @@ local function handleFuseStarted(reward)
         source="Client.FuseMachineSignals.FuseStarted",
         inputCaptureMethod=method,
         kernelValidation=kernelValidation,
+        preFusionProbabilityModel=kernelValidation and kernelValidation.scaleOnlyEconomicProjection or nil,
+        predictionOutcome=kernelValidation and kernelValidation.predictionOutcome or nil,
         inputs=inputs,
         inputMetrics=metrics,
         reward=jsonSafe(reward),
@@ -1382,6 +1486,60 @@ if type(Save)=="table" and type(Save.Await)=="function" then
     end)
 end
 
+local CALIBRATION_TARGETS={
+    {key="belowWorstInput",label="Resultado < pior input"},
+    {key="belowBestInput",label="Resultado < melhor input"},
+    {key="aboveBestInput",label="Resultado > melhor input"},
+    {key="above1_5xBestInput",label="Resultado > 1.5x melhor input"},
+    {key="above2xBestInput",label="Resultado > 2x melhor input"},
+    {key="aboveInputSum",label="Resultado > soma dos inputs"},
+    {key="scaleBelowInputMin",label="Scale < menor Scale de entrada"},
+    {key="scaleAboveInputMax",label="Scale > maior Scale de entrada"},
+}
+
+local function newCalibrationTarget(label)
+    local bins={}
+    for idx=1,5 do
+        bins[idx]={
+            minProbability=(idx-1)*.2,
+            maxProbability=idx*.2,
+            n=0,
+            predictedSum=0,
+            observedCount=0,
+        }
+    end
+    return {label=label,n=0,predictedSum=0,observedCount=0,bins=bins}
+end
+
+local function addCalibrationObservation(target,predicted,observed)
+    predicted=tonumber(predicted)
+    if not predicted or type(observed)~="boolean" then return end
+    predicted=math.clamp(predicted,0,1)
+    target.n+=1
+    target.predictedSum+=predicted
+    if observed then target.observedCount+=1 end
+    local idx=math.clamp(math.floor(predicted*5)+1,1,5)
+    local bin=target.bins[idx]
+    bin.n+=1
+    bin.predictedSum+=predicted
+    if observed then bin.observedCount+=1 end
+end
+
+local function finalizeCalibrationTarget(target)
+    if target.n>0 then
+        target.averagePredicted=target.predictedSum/target.n
+        target.observedRate=target.observedCount/target.n
+        target.calibrationGap=target.observedRate-target.averagePredicted
+    end
+    for _,bin in ipairs(target.bins) do
+        if bin.n>0 then
+            bin.averagePredicted=bin.predictedSum/bin.n
+            bin.observedRate=bin.observedCount/bin.n
+            bin.calibrationGap=bin.observedRate-bin.averagePredicted
+        end
+    end
+end
+
 local function buildSessionStatistics()
     local stats={
         sampleCount=#state.samples,
@@ -1397,7 +1555,20 @@ local function buildSessionStatistics()
         },
         mutationBuckets={},
         mutationTypes={},
+        calibration={
+            basis="scale-only prediction vs observed output Scale converted to no-mutation $/s",
+            targets={},
+            samplesWithPrediction=0,
+        },
+        observedOutcomeCounts={
+            actualEconomic={belowWorstInput=0,belowBestInput=0,aboveBestInput=0,above1_5xBestInput=0,above2xBestInput=0,aboveInputSum=0},
+            scaleOnlyBaseline={belowWorstInput=0,belowBestInput=0,aboveBestInput=0,above1_5xBestInput=0,above2xBestInput=0,aboveInputSum=0},
+            scale={belowInputMin=0,aboveInputMax=0},
+        },
     }
+    for _,def in ipairs(CALIBRATION_TARGETS) do
+        stats.calibration.targets[def.key]=newCalibrationTarget(def.label)
+    end
 
     local sumVsInput,sumVsBest,sumScaleRatio=0,0,0
     local nVsInput,nVsBest,nScale=0,0,0
@@ -1428,6 +1599,36 @@ local function buildSessionStatistics()
                 if outName==name then found=true break end
             end
             if found then rec.outputSameMutation+=1 end
+        end
+
+        local po=sample.predictionOutcome
+        if type(po)=="table" and type(po.prediction)=="table" and type(po.observed)=="table" then
+            stats.calibration.samplesWithPrediction+=1
+            local observedBasis=po.observed.scaleOnlyBaseline or {}
+            for _,def in ipairs(CALIBRATION_TARGETS) do
+                local observedValue
+                if def.key=="scaleBelowInputMin" then
+                    observedValue=po.observed.scaleBelowInputMin
+                elseif def.key=="scaleAboveInputMax" then
+                    observedValue=po.observed.scaleAboveInputMax
+                else
+                    observedValue=observedBasis[def.key]
+                end
+                addCalibrationObservation(
+                    stats.calibration.targets[def.key],
+                    po.prediction[def.key],
+                    observedValue
+                )
+            end
+
+            local ae=po.observed.actualEconomic or {}
+            local sb=po.observed.scaleOnlyBaseline or {}
+            for _,key in ipairs({"belowWorstInput","belowBestInput","aboveBestInput","above1_5xBestInput","above2xBestInput","aboveInputSum"}) do
+                if ae[key]==true then stats.observedOutcomeCounts.actualEconomic[key]+=1 end
+                if sb[key]==true then stats.observedOutcomeCounts.scaleOnlyBaseline[key]+=1 end
+            end
+            if po.observed.scaleBelowInputMin==true then stats.observedOutcomeCounts.scale.belowInputMin+=1 end
+            if po.observed.scaleAboveInputMax==true then stats.observedOutcomeCounts.scale.aboveInputMax+=1 end
         end
 
         local inputSum=tonumber(m.sumEarningsPerSecond)
@@ -1470,6 +1671,9 @@ local function buildSessionStatistics()
         if rec.samplesWithInput>0 then
             rec.sameMutationOutputRate=rec.outputSameMutation/rec.samplesWithInput
         end
+    end
+    for _,target in pairs(stats.calibration.targets) do
+        finalizeCalibrationTarget(target)
     end
     return stats
 end
@@ -1547,6 +1751,8 @@ local function exportData()
                 "Compare BandWeightBias weights with those exact bands.",
                 "Replace Monte Carlo-only tail estimates with full-distribution math when verified.",
                 "Keep mutation inheritance separate until its server rule is evidenced.",
+                "Calibrate predicted roulette probabilities against real FuseStarted outcomes in 20% probability bins.",
+                "Test directly whether output can fall below the worst input or rise above the best/1.5x/2x thresholds.",
             },
         },
         predictorDataSources={
@@ -1584,14 +1790,16 @@ local function exportData()
         samples=state.samples,
         events=state.events,
         notes={
-            "Current Save build exposes Peek/Await/Watch/WatchFields and no Get; V2.6 reads committed FusionSlots through Peek.",
+            "Current Save build exposes Peek/Await/Watch/WatchFields and no Get; V2.7 reads committed FusionSlots through Peek.",
             "Input $/s prefers AssetEarnings.CatalogRatePerSecond(decodedItem).",
             "Weight prefers the game's AssetItems.WeightKg helper; raw fields are fallback.",
-            "V2.6 keeps economic retention versus input sum/best input and mutation 0/3..3/3 session buckets.",
+            "V2.7 keeps economic retention versus input sum/best input and mutation 0/3..3/3 session buckets.",
             "V2.3 established DrawFusedScale accepts a single list of exactly 3 input Scales; V2.4 records 256 full local draws per trio.",
             "V2.4 proved BandWeightBias argument 1 expects a table; V2.5 tests (scaleTable, bandStart, bandEnd).",
             "V2.6 exports BandWeightBias rows again in bandWeightFlat so individual weights never disappear behind jsonSafe max-depth.",
             "V2.6 also locates DrawAssetScale through DrawFusedScale upvalues and exports its constants/upvalues to recover the exact client size bands.",
+            "V2.7 records pre-fusion roulette probabilities for below-worst/below-best/above-best/1.5x/2x/input-sum outcomes and calibrates them against real results.",
+            "V2.7 calibration uses the observed output Scale converted to a no-mutation rate, isolating the Scale model from unknown output-mutation effects; actual economic outcome is also stored separately.",
             "Scale-only economic projection assumes the same category and no output mutation; it is a risk baseline, not a mutation predictor.",
             "FuseKernel research runs automatically once per distinct 3-pet slot set and can also be retried with ANALISAR KERNEL.",
             "FuseKernel research uses local-only pcall probes on copied data; it never invokes Fusery remotes or consumes pets.",
@@ -1672,7 +1880,7 @@ title.BackgroundTransparency=1
 title.Position=UDim2.new(0,24,0,14)
 title.Size=UDim2.new(1,-150,0,42)
 title.Font=Enum.Font.GothamBold
-title.Text="FUSION RESEARCH SCANNER • V2.6"
+title.Text="FUSION RESEARCH SCANNER • V2.7"
 title.TextSize=26
 title.TextColor3=Color3.fromRGB(245,248,255)
 title.TextXAlignment=Enum.TextXAlignment.Left
@@ -1816,7 +2024,7 @@ kernel.Activated:Connect(function()
         local d=run.DrawFusedScale or {}
         local p=d.economicProjection or {}
         state.status=string.format(
-            "Kernel V2.6 • Draw:%s • risco:%s",
+            "Kernel V2.7 • Draw:%s • risco:%s",
             tostring(d.confirmedShape or "não identificado"),
             tostring(p.riskLabel or "indeterminado")
         )

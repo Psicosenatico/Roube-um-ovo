@@ -534,6 +534,8 @@ local state={
     watchFieldEvents=0,
     lastKernelSlotSignature="",
     sessionInventoryIncomeTarget=nil,
+    lastProtectedCount=0,
+    protectedSelectionIgnored=0,
     kernelResearch={
         inspected=false,
         functionInfo={},
@@ -610,6 +612,59 @@ local function refreshObservedFromPeek()
     end
 end
 
+-- Protect stars/favorites and deployed pets exactly where scan candidates
+-- are read. InFuse is intentionally NOT a reason to reject actual machine
+-- slots: valid inputs already loaded into the machine will have InFuse=true.
+local function researchUidIn(collection, uid)
+    if type(collection)~="table" then return false end
+    local id=tostring(uid)
+    if collection[uid]==true or collection[id]==true then return true end
+    for key,value in pairs(collection) do
+        if tostring(value)==id then return true end
+        if tostring(key)==id and value~=false and value~=nil then return true end
+        if type(value)=="table"
+            and tostring(value.Uid or value.UID or value.Id or value.AssetUid or "")==id then
+            return true
+        end
+    end
+    return false
+end
+
+local function researchProtectedReason(uid,raw,save)
+    if type(save)~="table" or type(save.Inventory)~="table"
+        or type(raw)~="table" then return "fora do inventário atual" end
+    local stored=save.Inventory[uid] or save.Inventory[tostring(uid)]
+    if type(stored)~="table" then return "fora do inventário atual" end
+    local item=decodeItem(stored)
+    if type(item)~="table" then return "dados indisponíveis" end
+    for _,r in ipairs({stored,item}) do
+        if r.IsFavorite==true or r.Favorite==true or r.Favorited==true
+            or r.Starred==true then
+            return "favorito/protegido"
+        end
+        if r.Placement~=nil or r.IsPlaced==true or r.Placed==true
+            or r.IsEquipped==true then
+            return "colocado na base"
+        end
+        -- HasBeenFirstPlaced is a history flag, not current placement.
+    end
+    for _,key in ipairs({"FavoriteAssets","FavoritePets","Favorites"}) do
+        if researchUidIn(save[key],uid) then return "favorito/protegido" end
+    end
+    if researchUidIn(save.EquippedAssets,uid) then return "equipado/em uso" end
+    return nil
+end
+
+local function researchActiveInventory()
+    refreshObservedFromPeek()
+    local save=getSave()
+    if type(save)=="table" then
+        absorbObservedTable(save,"Protection refresh")
+        return save
+    end
+    return state.observedSave
+end
+
 local function captureSlots()
     refreshObservedFromPeek()
 
@@ -634,18 +689,26 @@ local function captureSlots()
     local slots={}
     local inputs={}
     local decodedInputs={}
+    local blockedSlots={}
     for index,uid in ipairs(fusionSlots) do
         if uid then
             slots[#slots+1]=tostring(uid)
-            local raw=inventory and inventory[uid]
-            local summary=summarizeInput(uid,raw)
-            summary.slot=index
-            inputs[#inputs+1]=summary
-            local item=decodeItem(raw)
-            decodedInputs[#decodedInputs+1]=item or {}
+            local raw=inventory and (inventory[uid] or inventory[tostring(uid)])
+            local reason=researchProtectedReason(uid,raw,save)
+            if reason then
+                blockedSlots[#blockedSlots+1]={slot=index,reason=reason}
+            else
+                local summary=summarizeInput(uid,raw)
+                summary.slot=index
+                inputs[#inputs+1]=summary
+                decodedInputs[#decodedInputs+1]=decodeItem(raw) or {}
+            end
         end
     end
+    state.lastProtectedCount=#blockedSlots
     return {
+        blockedSlots=blockedSlots,
+        allowedForResearch=#blockedSlots==0,
         capturedUnix=os.time(),
         capturedServerTime=Workspace:GetServerTimeNow(),
         capturedClock=os.clock(),
@@ -1111,14 +1174,18 @@ local function scaleForIncomeThreshold(category,target,cap)
 end
 
 local function inventoryIncomeBenchmark()
-    local inventory=state.observedInventory
+    local save=researchActiveInventory()
+    local inventory=type(save)=="table" and save.Inventory
     if type(inventory)~="table" then return nil end
     local best=0
-    for _,raw in pairs(inventory) do
-        local item=decodeItem(raw)
-        if type(item)=="table" then
-            local rate=itemRate(item)
-            if finite(rate) and rate>best then best=rate end
+    for uid,raw in pairs(inventory) do
+        if not researchProtectedReason(uid,raw,save)
+            and not researchUidIn(save.FusionSlots,uid) then
+            local item=decodeItem(raw)
+            if type(item)=="table" then
+                local rate=itemRate(item)
+                if finite(rate) and rate>best then best=rate end
+            end
         end
     end
     return best>0 and best or nil
@@ -1463,8 +1530,9 @@ local function runKernelResearch(snap)
         inputSummary=snap and jsonSafe(snap.inputs) or nil,
         note="Local-only probes on copied/local numeric data; no remotes are invoked and no pets are consumed.",
     }
-    if not snap or #snap.inputs~=3 then
-        run.error="É necessário ter 3 pets carregados para analisar o Kernel."
+    if not snap or snap.allowedForResearch~=true or #(snap.blockedSlots or {})>0
+        or #snap.inputs~=3 then
+        run.error="É necessário ter 3 pets disponíveis (sem favoritos/base) carregados."
         state.kernelResearch.lastRun=run
         state.kernelResearch.probes[#state.kernelResearch.probes+1]=run
         return run
@@ -1501,10 +1569,11 @@ local function runKernelResearch(snap)
     if weightedBands then
         -- Fix this benchmark for the session so comparisons across trios use
         -- the SAME absolute $/s target even if inventory changes after fusion.
-        if not state.sessionInventoryIncomeTarget then
-            state.sessionInventoryIncomeTarget=inventoryIncomeBenchmark()
-        end
-        local invBest=state.sessionInventoryIncomeTarget
+        -- Re-evaluate after every 3-pet selection. If an earlier benchmark
+        -- becomes starred/deployed, it must not remain a fusion target.
+        local liveBest=inventoryIncomeBenchmark()
+        state.sessionInventoryIncomeTarget=liveBest
+        local invBest=liveBest
         run.AnalyticClientBands.inventoryBenchmark=invBest
         run.AnalyticClientBands.localDrawAgreement=analyticModelDrawAgreement(weightedBands,dist)
         run.AnalyticClientBands.economicProjection=analyticIncomeProjection(
@@ -1530,6 +1599,14 @@ local function pollSlots()
     end
     state.lastSlotCount=#snap.inputs
     state.lastSlotSnapshot=snap
+    if #snap.blockedSlots>0 then
+        state.lastThree=nil
+        state.status=string.format(
+            "Scanner: %d pet(s) protegidos/em uso ignorados. Não entram no Predict.",
+            #snap.blockedSlots
+        )
+        return
+    end
     if #snap.inputs==3 then
         state.lastThree=snap
         state.status="3/3 capturados • pronto para fundir"
@@ -1625,11 +1702,21 @@ local function handleFuseStarted(reward)
         method="Save.FusionSlots pre-fuse snapshot"
     else
         local nowSnap=captureSlots()
-        if nowSnap and #nowSnap.inputs==3 then
+        if nowSnap and nowSnap.allowedForResearch==true
+            and #(nowSnap.blockedSlots or {})==0 and #nowSnap.inputs==3 then
             inputs=nowSnap.inputs
             decodedInputs=nowSnap.decodedInputs or {}
             method="Save.FusionSlots at FuseStarted"
         end
+    end
+
+    -- If we could not associate the server result with a fully eligible
+    -- pre-fusion trio, do not pollute the predictor/calibration statistics.
+    -- Server events may arrive after the input records have been consumed.
+    if #inputs~=3 then
+        state.protectedSelectionIgnored+=1
+        state.status="FuseStarted sem trio elegível: resultado excluído da calibração."
+        return
     end
 
     local metrics=calcMetrics(inputs,rewardSummary,decodedInputs)
@@ -2357,6 +2444,9 @@ local function exportData()
             save=jsonSafe(saveDiagnostics),
             fieldSignalEvents=state.fieldSignalEvents,
             watchFieldEvents=state.watchFieldEvents,
+            blockedCurrentSlotCount=state.lastProtectedCount,
+            serverResultsIgnoredWithoutEligibleTrio=state.protectedSelectionIgnored,
+            protectionPolicy="Favorites, placed and equipped pets are not scan candidates or income benchmarks.",
             observedFusionSlots=jsonSafe(state.observedFusionSlots),
             observedInventoryType=typeof(state.observedInventory),
             observedInventoryCount=(function()
@@ -2617,8 +2707,9 @@ end)
 kernel.Activated:Connect(function()
     pollSlots()
     local current=state.lastSlotSnapshot
-    if not current or #current.inputs~=3 then
-        state.status="ANALISAR KERNEL: carregue 3 pets atualmente nos slots."
+    if not current or current.allowedForResearch~=true
+        or #(current.blockedSlots or {})>0 or #current.inputs~=3 then
+        state.status="ANALISAR KERNEL: 3 pets livres; favoritos/base são ignorados."
         return
     end
     local run=runKernelResearch(current)

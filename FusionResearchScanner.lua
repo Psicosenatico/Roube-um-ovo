@@ -1399,6 +1399,40 @@ local function buildSessionStatistics()
     return stats
 end
 
+local function flatBandWeightExport()
+    local out={}
+    local function addRun(run,runIndex,kind)
+        local bias=run and run.BandWeightBias
+        local refs=bias and bias.references
+        if type(refs)~="table" then return end
+        for _,ref in ipairs(refs) do
+            for _,row in ipairs(ref.bands or {}) do
+                out[#out+1]={
+                    runIndex=runIndex,
+                    runKind=kind,
+                    slotSignature=run.slotSignature,
+                    scale1=run.inputSummary and run.inputSummary[1] and run.inputSummary[1].scale or nil,
+                    scale2=run.inputSummary and run.inputSummary[2] and run.inputSummary[2].scale or nil,
+                    scale3=run.inputSummary and run.inputSummary[3] and run.inputSummary[3].scale or nil,
+                    bandStart=tonumber(row.bandStart),
+                    bandEnd=tonumber(row.bandEnd),
+                    weight=tonumber(row.weight),
+                    normalizedWeight=tonumber(row.normalizedWeight),
+                    ok=row.ok==true,
+                    error=row.error and tostring(row.error) or nil,
+                }
+            end
+        end
+    end
+    for idx,run in ipairs(state.kernelResearch.probes or {}) do
+        addRun(run,idx,"probe")
+    end
+    if state.kernelResearch.lastRun then
+        addRun(state.kernelResearch.lastRun,#(state.kernelResearch.probes or {}),"lastRun")
+    end
+    return out
+end
+
 local function exportData()
     local payload={
         scanner=scannerName,
@@ -1425,6 +1459,7 @@ local function exportData()
             FuseMachineSignals=moduleKeys(FuseSignals),
         },
         kernelResearch=jsonSafe(state.kernelResearch),
+        bandWeightFlat=flatBandWeightExport(),
         predictorDataSources={
             petDirect={"Category","Scale","Mutations","BaseMutation","Personality"},
             petDerived={
@@ -1466,6 +1501,7 @@ local function exportData()
             "V2.6 keeps economic retention versus input sum/best input and mutation 0/3..3/3 session buckets.",
             "V2.3 established DrawFusedScale accepts a single list of exactly 3 input Scales; V2.4 records 256 full local draws per trio.",
             "V2.4 proved BandWeightBias argument 1 expects a table; V2.5 tests (scaleTable, bandStart, bandEnd).",
+            "V2.6 exports BandWeightBias rows again in bandWeightFlat so individual weights never disappear behind jsonSafe max-depth.",
             "Scale-only economic projection assumes the same category and no output mutation; it is a risk baseline, not a mutation predictor.",
             "FuseKernel research runs automatically once per distinct 3-pet slot set and can also be retried with ANALISAR KERNEL.",
             "FuseKernel research uses local-only pcall probes on copied data; it never invokes Fusery remotes or consumes pets.",

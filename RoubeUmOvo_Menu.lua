@@ -2063,6 +2063,19 @@ refreshFusionList=function(keepMessage)
             end
             connect(row.MouseButton1Click,function()
                 if State.FusionBusy then return end
+                local current=fusionCurrentSave()
+                local inv=current and current.Inventory
+                local raw=typeof(inv)=="table" and
+                    (inv[entry.uid] or inv[safeString(entry.uid)])
+                local item=raw and fusionDecode(raw)
+                local blocked=fusionProtectedReason(current,entry.uid,raw,item,false)
+                local cfg=item and fusionAssetConfig(item.Category or item.AssetCategory)
+                if blocked or not fusionMayEnter(item,cfg) then
+                    fusionUpdateStatus(blocked or "Pet bloqueado pelo jogo.",
+                        Color3.fromRGB(255,115,115))
+                    refreshFusionList(true)
+                    return
+                end
                 if selected[entry.uid] then
                     fusionRemoveSelected(entry.uid)
                     fusionUpdateStatus()

@@ -1694,19 +1694,23 @@ State.fusionProtectedReason=function(save,uid,raw,item,allowInSlots)
     return nil
 end
 
-local function fusionMayEnter(item,cfg)
-    if not item then return false end
+local function fusionMayEnter(item,cfg,uid,raw)
+    if not item or uid==nil or typeof(raw)~="table" then return false end
     if item.InFuse==true or item.IsFavorite==true or item.Favorite==true
         or item.Favorited==true or item.Starred==true
         or item.Placement~=nil or item.IsPlaced==true or item.Placed==true
         or item.IsEquipped==true then return false end
     if cfg and cfg.CannotFuse==true then return false end
     if typeof(FuseKernel)~="table" then FuseKernel=requireOptional("Shared.Util.FuseKernel") end
-    if typeof(FuseKernel)=="table" and type(FuseKernel.MayEnterFuse)=="function" then
-        local ok,allowed=fusionCallTable(FuseKernel,"MayEnterFuse",item)
-        if ok and type(allowed)=="boolean" then return allowed end
+    if typeof(FuseKernel)~="table" or type(FuseKernel.MayEnterFuse)~="function" then
+        return false
     end
-    return true
+    -- The live client exposes MayEnterFuse as a multi-argument function.
+    -- Match the game's UID/serialized-item admission call. Never fall back
+    -- to 'true' after a failed or incomplete eligibility check.
+    local ok,allowed=pcall(FuseKernel.MayEnterFuse,uid,raw,nil,false)
+    if not ok then ok,allowed=pcall(FuseKernel.MayEnterFuse,FuseKernel,uid,raw,nil,false) end
+    return ok and allowed==true
 end
 
 local function fusionInventoryEntries()
@@ -1720,7 +1724,7 @@ local function fusionInventoryEntries()
             local category=safeString(item.Category)
             local cfg=fusionAssetConfig(category)
             if not State.fusionProtectedReason(save,uid,raw,item,false)
-                and fusionMayEnter(item,cfg) then
+                and fusionMayEnter(item,cfg,uid,raw) then
                 local mutations=fusionMutationNames(item)
                 local display=(cfg and cfg.DisplayName) or item.DisplayName or category
                 local rarity=cfg and cfg.Rarity
@@ -1954,7 +1958,7 @@ runSelectedFusion=function()
         local protectedReason=State.fusionProtectedReason(save,entry.uid,raw,item,false)
         local cfg=item and fusionAssetConfig(item.Category or item.AssetCategory)
         if not item or safeString(item.Category)~=category
-            or protectedReason or not fusionMayEnter(item,cfg) then
+            or protectedReason or not fusionMayEnter(item,cfg,entry.uid,raw) then
             fusionUpdateStatus(protectedReason or "Pet indisponível. Atualize a lista.",Color3.fromRGB(255,115,115))
             State.FusionBusy=false
             task.defer(refreshFusionList)
@@ -1994,7 +1998,7 @@ runSelectedFusion=function()
             currentSave,fresh[i].uid,currentRaw,currentItem,false
         )
         local cfg=currentItem and fusionAssetConfig(currentItem.Category or currentItem.AssetCategory)
-        if reason or not fusionMayEnter(currentItem,cfg) then
+        if reason or not fusionMayEnter(currentItem,cfg,fresh[i].uid,currentRaw) then
             for _,uid in ipairs(loaded) do fusionInvoke("EjectPet",uid) end
             fusionUpdateStatus(reason or "Pet indisponível: fusão cancelada.",Color3.fromRGB(255,115,115))
             State.FusionBusy=false

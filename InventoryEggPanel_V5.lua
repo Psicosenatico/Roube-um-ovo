@@ -1171,7 +1171,7 @@ fusionTitle.TextXAlignment = Enum.TextXAlignment.Center
 
 local fusionHint = label(
     fusionPage,
-    'Selecione 3 pets iguais. A fusão só acontece depois de tocar em CONFIRMAR.',
+    'Somente pets disponíveis: favoritos (★), em uso e já colocados na base ficam fora. Confirme para fundir.',
     UDim2.fromOffset(10, 27),
     UDim2.new(1, -20, 0, 28),
     7
@@ -1423,9 +1423,60 @@ local function fusionIsInSlots(saveData, uid)
     return false
 end
 
+-- Never expose starred/favorite or deployed pets to the direct-fusion picker.
+-- Check both serialized and decoded records: some game builds keep favorite
+-- flags in only one representation. HasBeenFirstPlaced is historical and is
+-- deliberately NOT treated as evidence that a pet is still at the base.
+local function fusionUidListed(records, uid)
+    if type(records) ~= 'table' then return false end
+    local key = tostring(uid)
+    if records[uid] == true or records[key] == true then return true end
+    for k, v in pairs(records) do
+        if tostring(v) == key then return true end
+        if tostring(k) == key and v ~= false and v ~= nil then return true end
+        if type(v) == 'table' and tostring(v.Uid or v.UID or v.Id or v.AssetUid or '') == key then
+            return true
+        end
+    end
+    return false
+end
+
+local function fusionProtectedReason(uid, raw, saveData, allowInSlots)
+    if type(saveData) ~= 'table' or type(saveData.Inventory) ~= 'table'
+        or type(raw) ~= 'table' then return 'inventário indisponível' end
+
+    local saved = saveData.Inventory[uid] or saveData.Inventory[tostring(uid)]
+    if type(saved) ~= 'table' then return 'pet não está no inventário' end
+    local item = fusionDecodeItem(saved)
+    if not item then return 'pet sem dados atuais' end
+
+    for _, record in ipairs({saved, item}) do
+        if record.IsFavorite == true or record.Favorite == true or record.Favorited == true
+            or record.Starred == true then
+            return 'pet favorito/protegido'
+        end
+        if record.Placement ~= nil or record.IsPlaced == true or record.Placed == true
+            or record.IsEquipped == true then
+            return 'pet em uso na base'
+        end
+    end
+
+    for _, key in ipairs({'FavoriteAssets', 'FavoritePets', 'Favorites'}) do
+        if fusionUidListed(saveData[key], uid) then return 'pet favorito/protegido' end
+    end
+    if fusionIsEquipped(saveData, uid) or fusionUidListed(saveData.EquippedAssets, uid) then
+        return 'pet equipado/em uso'
+    end
+    if not allowInSlots and fusionIsInSlots(saveData, uid) then
+        return 'pet já está na máquina'
+    end
+    return nil
+end
+
 local function fusionMayEnter(uid, raw)
+    -- Fail closed if the game's own admission rule cannot be checked.
     if type(FuseKernel) ~= 'table' or type(FuseKernel.MayEnterFuse) ~= 'function' then
-        return true
+        return false
     end
     local ok, allowed = pcall(FuseKernel.MayEnterFuse, uid, raw, nil, false)
     if not ok then
@@ -1440,8 +1491,7 @@ local function fusionAvailablePets(saveData)
 
     for uid, raw in pairs(saveData.Inventory) do
         if type(raw) == 'table'
-            and not fusionIsInSlots(saveData, uid)
-            and not fusionIsEquipped(saveData, uid)
+            and not fusionProtectedReason(uid, raw, saveData, false)
             and fusionMayEnter(uid, raw) then
             local info = fusionPetInfo(uid, raw)
             if info then out[#out + 1] = info end
@@ -1888,9 +1938,12 @@ local function runSelectedFusion()
         local old = FUSION.Selected[i]
         local raw = old and saveData.Inventory[old.Uid]
         local pet = raw and fusionPetInfo(old.Uid, raw)
-        if not pet or not fusionMayEnter(old.Uid, raw) then
+        local protectedReason = fusionProtectedReason(old.Uid, raw, saveData, false)
+        if not pet or protectedReason or not fusionMayEnter(old.Uid, raw) then
             FUSION.Busy = false
-            FUSION.StatusMessage = 'Um dos pets não está mais disponível.'
+            FUSION.StatusMessage = protectedReason
+                and ('Fusão cancelada: ' .. protectedReason .. '.')
+                or 'Um dos pets não está mais disponível.'
             renderFusionList()
             return
         end
@@ -1937,6 +1990,20 @@ local function runSelectedFusion()
 
     local loaded = {}
     for i = 1, 3 do
+        -- Recheck immediately before each LoadPet: favorites/base status can
+        -- change between the selection screen and the confirmation tap.
+        local current = fusionSave()
+        local currentRaw = type(current) == 'table' and type(current.Inventory) == 'table'
+            and (current.Inventory[selected[i].Uid] or current.Inventory[tostring(selected[i].Uid)])
+        local protectedReason = fusionProtectedReason(selected[i].Uid, currentRaw, current, false)
+        if protectedReason or not fusionMayEnter(selected[i].Uid, currentRaw) then
+            for _, loadedUid in ipairs(loaded) do fusionInvoke('EjectPet', loadedUid) end
+            FUSION.Busy = false
+            FUSION.StatusMessage = 'Fusão cancelada: pet protegido ou indisponível.'
+            renderFusionList()
+            return
+        end
+
         FUSION.StatusMessage = ('Carregando pet %d/3...'):format(i)
         fusionSelectionSummary()
 

@@ -1535,6 +1535,20 @@ local function exportData()
         },
         kernelResearch=jsonSafe(state.kernelResearch),
         bandWeightFlat=flatBandWeightExport(),
+        v26ResearchTargets={
+            externalClientFormulaHypotheses={
+                sizeBandCount=11,
+                extraDoublingChance=0.01,
+                scaleHardCap=150,
+                sourceStatus="third-party client-derived wiki; scanner must verify against local client code",
+            },
+            goals={
+                "Recover exact DrawAssetScale bands/weights from the loaded client.",
+                "Compare BandWeightBias weights with those exact bands.",
+                "Replace Monte Carlo-only tail estimates with full-distribution math when verified.",
+                "Keep mutation inheritance separate until its server rule is evidenced.",
+            },
+        },
         predictorDataSources={
             petDirect={"Category","Scale","Mutations","BaseMutation","Personality"},
             petDerived={

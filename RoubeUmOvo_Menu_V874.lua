@@ -1,4 +1,4 @@
--- PSICOSENATICO V8.7.4
+-- PSICOSENATICO V8.7.5 (stable V874 loader path)
 -- Stable loader + server-transition auto execute.
 local Players=game:GetService("Players")
 local HttpService=game:GetService("HttpService")
@@ -95,6 +95,15 @@ task.defer(function()
         local ok=writeState("heartbeat")
         if not game:IsLoaded() then break end
     end
+end)
+
+-- Clear stale diagnostic banners from previous failed attempts.
+_G.PSICO_LAST_LOADER_ERROR=nil
+pcall(function()
+    local ok,h=pcall(function() return gethui and gethui() end)
+    local root=(ok and h) or game:GetService("CoreGui")
+    local old=root:FindFirstChild("PsicoLoaderDiagnostics")
+    if old then old:Destroy() end
 end)
 
 local cb=tostring(os.time())..'_'..tostring(math.random(100000,999999))

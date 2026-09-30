@@ -731,6 +731,69 @@ local function inspectFunction(name,fn)
     return out
 end
 
+local function debugUpvalues(fn)
+    if type(fn)~="function" then return nil end
+    local dbg=debug
+    local getups=(type(dbg)=="table" and dbg.getupvalues) or getupvalues
+    if type(getups)~="function" then return nil end
+    local ok,ups=pcall(getups,fn)
+    return ok and type(ups)=="table" and ups or nil
+end
+
+local function flatPrimitiveTable(tbl,maxDepth)
+    local out={}
+    maxDepth=maxDepth or 4
+    local seen={}
+    local function walk(v,path,depth)
+        if depth>maxDepth then return end
+        local tv=typeof(v)
+        if tv=="number" or tv=="string" or tv=="boolean" then
+            out[#out+1]={path=path,value=v}
+            return
+        end
+        if tv~="table" or seen[v] then return end
+        seen[v]=true
+        local n=0
+        for k,val in pairs(v) do
+            n+=1
+            if n>240 then break end
+            local child=(path=="" and tostring(k)) or (path.."."..tostring(k))
+            walk(val,child,depth+1)
+        end
+        seen[v]=nil
+    end
+    walk(tbl,"",0)
+    return out
+end
+
+local function assetHelpersFromDrawFusedScale()
+    if type(FuseKernel)~="table" or type(FuseKernel.DrawFusedScale)~="function" then
+        return nil,nil
+    end
+    local ups=debugUpvalues(FuseKernel.DrawFusedScale)
+    if not ups then return nil,nil end
+    for k,v in pairs(ups) do
+        if type(v)=="table" and type(v.DrawAssetScale)=="function" then
+            return v,k
+        end
+    end
+    return nil,nil
+end
+
+local function inspectChildUpvalues(fn)
+    local out={functions={},tables={}}
+    local ups=debugUpvalues(fn)
+    if not ups then return out end
+    for k,v in pairs(ups) do
+        if type(v)=="function" then
+            out.functions[tostring(k)]=inspectFunction("upvalue_"..tostring(k),v)
+        elseif type(v)=="table" then
+            out.tables[tostring(k)]=flatPrimitiveTable(v,4)
+        end
+    end
+    return out
+end
+
 local function inspectFuseKernel()
     if state.kernelResearch.inspected then return state.kernelResearch.functionInfo end
     state.kernelResearch.inspected=true
@@ -741,6 +804,18 @@ local function inspectFuseKernel()
         state.kernelResearch.functionInfo.MayEnterFuse=inspectFunction("MayEnterFuse",FuseKernel.MayEnterFuse)
         state.kernelResearch.functionInfo.DrawAssetScale=inspectFunction("DrawAssetScale",AssetItems and AssetItems.DrawAssetScale)
         state.kernelResearch.functionInfo.WeightKgForScale=inspectFunction("WeightKgForScale",AssetItems and AssetItems.WeightKgForScale)
+
+        local helperTable,helperUpvalueKey=assetHelpersFromDrawFusedScale()
+        state.kernelResearch.assetHelperUpvalueKey=helperUpvalueKey and tostring(helperUpvalueKey) or nil
+        state.kernelResearch.assetHelperKeys=moduleKeys(helperTable)
+        if type(helperTable)=="table" then
+            state.kernelResearch.functionInfo.DrawAssetScaleFromFuseUpvalue=
+                inspectFunction("DrawAssetScaleFromFuseUpvalue",helperTable.DrawAssetScale)
+            state.kernelResearch.functionInfo.WeightKgForScaleFromFuseUpvalue=
+                inspectFunction("WeightKgForScaleFromFuseUpvalue",helperTable.WeightKgForScale)
+            state.kernelResearch.drawAssetScaleChildren=inspectChildUpvalues(helperTable.DrawAssetScale)
+            state.kernelResearch.drawAssetScaleHelperPrimitives=flatPrimitiveTable(helperTable,2)
+        end
     end
     return state.kernelResearch.functionInfo
 end
@@ -1502,6 +1577,7 @@ local function exportData()
             "V2.3 established DrawFusedScale accepts a single list of exactly 3 input Scales; V2.4 records 256 full local draws per trio.",
             "V2.4 proved BandWeightBias argument 1 expects a table; V2.5 tests (scaleTable, bandStart, bandEnd).",
             "V2.6 exports BandWeightBias rows again in bandWeightFlat so individual weights never disappear behind jsonSafe max-depth.",
+            "V2.6 also locates DrawAssetScale through DrawFusedScale upvalues and exports its constants/upvalues to recover the exact client size bands.",
             "Scale-only economic projection assumes the same category and no output mutation; it is a risk baseline, not a mutation predictor.",
             "FuseKernel research runs automatically once per distinct 3-pet slot set and can also be retried with ANALISAR KERNEL.",
             "FuseKernel research uses local-only pcall probes on copied data; it never invokes Fusery remotes or consumes pets.",

@@ -1802,14 +1802,16 @@ local function fusionUpdateStatus(message,color)
         fusionStatusLabel.TextColor3=color or Color3.fromRGB(139,164,207)
         return
     end
-    local total=0
-    for _,entry in ipairs(State.FusionSelected) do total+=tonumber(entry.rate) or 0 end
+    local best=0
+    for _,entry in ipairs(State.FusionSelected) do
+        best=math.max(best,tonumber(entry.rate) or 0)
+    end
     local cat=State.fusionSelectedCategory()
     fusionStatusLabel.Text=string.format(
-        "%d/3%s • total %s/s",
+        "%d/3%s • alvo por slot %s/s",
         #State.FusionSelected,
         cat and (" • "..safeString(State.FusionSelected[1].displayName)) or "",
-        formatCompact(total)
+        formatCompact(best)
     )
     fusionStatusLabel.TextColor3=Color3.fromRGB(139,164,207)
     State.fusionUpdateConfirmButton()

@@ -1640,9 +1640,57 @@ local function fusionPetWeight(item)
     return tonumber(item.Weight or item.AssetWeight or item.Kg or item.Mass) or 0
 end
 
+local function fusionUidIn(records,uid)
+    if typeof(records)~="table" then return false end
+    local key=safeString(uid)
+    if records[uid]==true or records[key]==true then return true end
+    for k,v in pairs(records) do
+        if safeString(v)==key then return true end
+        if safeString(k)==key and v~=false and v~=nil then return true end
+        if typeof(v)=="table"
+            and safeString(v.Uid or v.UID or v.Id or v.AssetUid or "")==key then
+            return true
+        end
+    end
+    return false
+end
+
+local function fusionProtectedReason(save,uid,raw,item,allowInSlots)
+    if typeof(save)~="table" or typeof(save.Inventory)~="table"
+        or typeof(raw)~="table" or typeof(item)~="table" then
+        return "Pet ausente do inventário atual."
+    end
+    if typeof(save.Inventory[uid] or save.Inventory[safeString(uid)])~="table" then
+        return "Pet ausente do inventário atual."
+    end
+    for _,v in ipairs({raw,item}) do
+        if v.IsFavorite==true or v.Favorite==true or v.Favorited==true
+            or v.Starred==true then
+            return "Pet favorito (★) protegido."
+        end
+        if v.Placement~=nil or v.IsPlaced==true or v.Placed==true
+            or v.IsEquipped==true then
+            return "Pet colocado na base ou equipado."
+        end
+    end
+    for _,key in ipairs({"FavoriteAssets","FavoritePets","Favorites"}) do
+        if fusionUidIn(save[key],uid) then return "Pet favorito (★) protegido." end
+    end
+    if fusionUidIn(save.EquippedAssets,uid) then
+        return "Pet colocado na base ou equipado."
+    end
+    if not allowInSlots and fusionUidIn(save.FusionSlots,uid) then
+        return "Pet já está na máquina."
+    end
+    return nil
+end
+
 local function fusionMayEnter(item,cfg)
     if not item then return false end
-    if item.InFuse==true or item.IsFavorite==true or item.Favorite==true then return false end
+    if item.InFuse==true or item.IsFavorite==true or item.Favorite==true
+        or item.Favorited==true or item.Starred==true
+        or item.Placement~=nil or item.IsPlaced==true or item.Placed==true
+        or item.IsEquipped==true then return false end
     if cfg and cfg.CannotFuse==true then return false end
     if typeof(FuseKernel)~="table" then FuseKernel=requireOptional("Shared.Util.FuseKernel") end
     if typeof(FuseKernel)=="table" and type(FuseKernel.MayEnterFuse)=="function" then
@@ -1656,14 +1704,14 @@ local function fusionInventoryEntries()
     local save=fusionCurrentSave()
     local inventory=save and save.Inventory
     if typeof(inventory)~="table" then return {},save end
-    local equipped=typeof(save.EquippedAssets)=="table" and save.EquippedAssets or {}
     local out={}
     for uid,raw in pairs(inventory) do
         local item=fusionDecode(raw)
         if item and item.Category then
             local category=safeString(item.Category)
             local cfg=fusionAssetConfig(category)
-            if not equipped[uid] and fusionMayEnter(item,cfg) then
+            if not fusionProtectedReason(save,uid,raw,item,false)
+                and fusionMayEnter(item,cfg) then
                 local mutations=fusionMutationNames(item)
                 local display=(cfg and cfg.DisplayName) or item.DisplayName or category
                 local rarity=cfg and cfg.Rarity
@@ -1864,10 +1912,13 @@ runSelectedFusion=function()
 
     local fresh={}
     for i,entry in ipairs(selected) do
-        local raw=inventory[entry.uid]
+        local raw=inventory[entry.uid] or inventory[safeString(entry.uid)]
         local item=raw and fusionDecode(raw)
-        if not item or safeString(item.Category)~=category then
-            fusionUpdateStatus("Um pet saiu do inventário. Atualize a lista.",Color3.fromRGB(255,115,115))
+        local protectedReason=fusionProtectedReason(save,entry.uid,raw,item,false)
+        local cfg=item and fusionAssetConfig(item.Category or item.AssetCategory)
+        if not item or safeString(item.Category)~=category
+            or protectedReason or not fusionMayEnter(item,cfg) then
+            fusionUpdateStatus(protectedReason or "Pet indisponível. Atualize a lista.",Color3.fromRGB(255,115,115))
             State.FusionBusy=false
             task.defer(refreshFusionList)
             return
@@ -1895,6 +1946,24 @@ runSelectedFusion=function()
 
     local loaded={}
     for i=1,3 do
+        -- If the player favorited/deployed a pet after selecting it, abort
+        -- before loading. Keep pets already loaded during THIS attempt safe.
+        local currentSave=fusionCurrentSave()
+        local currentInv=currentSave and currentSave.Inventory
+        local currentRaw=typeof(currentInv)=="table"
+            and (currentInv[fresh[i].uid] or currentInv[safeString(fresh[i].uid)])
+        local currentItem=currentRaw and fusionDecode(currentRaw)
+        local reason=fusionProtectedReason(
+            currentSave,fresh[i].uid,currentRaw,currentItem,false
+        )
+        local cfg=currentItem and fusionAssetConfig(currentItem.Category or currentItem.AssetCategory)
+        if reason or not fusionMayEnter(currentItem,cfg) then
+            for _,uid in ipairs(loaded) do fusionInvoke("EjectPet",uid) end
+            fusionUpdateStatus(reason or "Pet indisponível: fusão cancelada.",Color3.fromRGB(255,115,115))
+            State.FusionBusy=false
+            task.defer(refreshFusionList)
+            return
+        end
         fusionUpdateStatus(string.format("Carregando pet %d/3...",i),Color3.fromRGB(255,204,102))
         local ok,accepted,reason=fusionInvoke("LoadPet",fresh[i].uid)
         if not ok or accepted~=true then

@@ -88,6 +88,10 @@ local State={
     AutoTrainBeltAt=0,
     FusionSelected={},
     FusionSortMode=1,
+    FusionPetQuery="",
+    FusionRateText="",
+    FusionMutationFilter=1,
+    FusionFilterUpdating=false,
     FusionBusy=false,
     FusionLastResult=nil,
     Stats={EspVisible=0,CatalogPets=0},
@@ -1517,8 +1521,8 @@ fusionPage.Size=UDim2.new(1,-16,1,-16)
 fusionPage.Visible=false
 fusionPage.Parent=contentHost
 
-State.FusionSortModes={"$/S + MUT","$/S","PESO","PET"}
-local fusionSortButton=mkButton(fusionPage,"CLASSIFICAR: $/S + MUT",UDim2.fromOffset(0,0),UDim2.new(.67,-3,0,27))
+State.FusionSortModes={"MUTAÇÃO","PET"}
+local fusionSortButton=mkButton(fusionPage,"ORDEM $/S ↓ • DESEMPATE: MUTAÇÃO",UDim2.fromOffset(0,0),UDim2.new(.67,-3,0,27))
 local fusionRefreshButton=mkButton(fusionPage,"ATUALIZAR",UDim2.new(.68,0,0,0),UDim2.new(.32,0,0,27))
 local fusionStatusLabel=mkLabel(fusionPage,"0/3 • selecione 3 do mesmo pet",UDim2.fromOffset(2,31),UDim2.new(.76,-2,0,21),8)
 fusionStatusLabel.TextColor3=Color3.fromRGB(139,164,207)
@@ -1529,8 +1533,13 @@ local fusionList=Instance.new("ScrollingFrame")
 fusionList.BackgroundColor3=Color3.fromRGB(16,24,38)
 fusionList.BackgroundTransparency=.18
 fusionList.BorderSizePixel=0
-fusionList.Position=UDim2.fromOffset(0,57)
-fusionList.Size=UDim2.new(1,0,1,-91)
+State.FusionPetFilterBox=mkTextBox(fusionPage,"Filtrar pet...",UDim2.fromOffset(0,57),UDim2.new(.53,-2,0,26))
+State.FusionRateFilterBox=mkTextBox(fusionPage,"$/s mínimo: 200M",UDim2.new(.53,2,0,57),UDim2.new(.47,-2,0,26))
+State.FusionMutationFilterButton=mkButton(fusionPage,"MUTAÇÃO: TODAS",UDim2.fromOffset(0,89),UDim2.new(.53,-2,0,26))
+State.FusionFiltersResetButton=mkButton(fusionPage,"LIMPAR FILTROS",UDim2.new(.53,2,0,89),UDim2.new(.47,-2,0,26))
+
+fusionList.Position=UDim2.fromOffset(0,121)
+fusionList.Size=UDim2.new(1,0,1,-155)
 fusionList.CanvasSize=UDim2.fromOffset(0,0)
 fusionList.ScrollBarThickness=3
 fusionList.ScrollBarImageColor3=Color3.fromRGB(94,139,223)
@@ -1820,13 +1829,7 @@ State.fusionSortEntries=function(entries)
         local ar,br=a.rate or 0,b.rate or 0
         if ar~=br then return ar>br end
 
-        if mode=="$/S + MUT" then
-            if a.hasMutation~=b.hasMutation then return a.hasMutation end
-            if a.weight~=b.weight then return a.weight>b.weight end
-        elseif mode=="PESO" then
-            if a.weight~=b.weight then return a.weight>b.weight end
-            if a.hasMutation~=b.hasMutation then return a.hasMutation end
-        elseif mode=="PET" then
+        if mode=="PET" then
             local an,bn=searchText(a.displayName),searchText(b.displayName)
             if an~=bn then return an<bn end
             if a.hasMutation~=b.hasMutation then return a.hasMutation end
@@ -1835,6 +1838,40 @@ State.fusionSortEntries=function(entries)
         end
         return a.uid<b.uid
     end)
+end
+
+State.fusionMinFilter=function(text)
+    local raw=safeString(text or ""):lower():gsub("%s+",""):gsub("%$",""):gsub("/s","")
+    if raw=="" then return 0,true end
+    local digits,suffix=raw:match("^([%d.,]+)([kmbt]?)$")
+    if not digits then return nil,false end
+    if digits:find(",",1,true) then
+        digits=digits:gsub("%.",""):gsub(",",".")
+    else
+        local _,n=digits:gsub("%.","")
+        if n>1 then digits=digits:gsub("%.","") end
+    end
+    local value=tonumber(digits)
+    if not value or value<0 then return nil,false end
+    return value*(({k=1e3,m=1e6,b=1e9,t=1e12})[suffix] or 1),true
+end
+
+State.fusionFilterEntries=function(eligible)
+    local query=searchText(State.FusionPetQuery or "")
+    local minimum,valid=State.fusionMinFilter(State.FusionRateText)
+    local result={}
+    if not valid then return result,false end
+    for _,entry in ipairs(eligible) do
+        local matchesPet=query=="" or searchText(entry.displayName):find(query,1,true)
+            or searchText(entry.category):find(query,1,true)
+        local matchesMut=State.FusionMutationFilter==1
+            or (State.FusionMutationFilter==2 and entry.hasMutation)
+            or (State.FusionMutationFilter==3 and not entry.hasMutation)
+        if matchesPet and matchesMut and (tonumber(entry.rate) or 0)>=minimum then
+            result[#result+1]=entry
+        end
+    end
+    return result,true
 end
 
 State.fusionRemoveSelected=function(uid)
@@ -2013,13 +2050,15 @@ refreshFusionList=function(keepMessage)
         if child:IsA("GuiObject") then child:Destroy() end
     end
 
-    local entries=fusionInventoryEntries()
+    local eligible=fusionInventoryEntries()
     local rosterIds={}
-    for _,pet in ipairs(entries) do rosterIds[#rosterIds+1]=pet.uid end
+    for _,pet in ipairs(eligible) do rosterIds[#rosterIds+1]=pet.uid end
     table.sort(rosterIds)
     State.FusionRosterSignature=table.concat(rosterIds,"|")
+    -- Active filters only hide entries: selected pets are validated against all
+    -- currently eligible records, never against the filtered subset.
     local availableMap={}
-    for _,entry in ipairs(entries) do availableMap[entry.uid]=entry end
+    for _,entry in ipairs(eligible) do availableMap[entry.uid]=entry end
     for i=#State.FusionSelected,1,-1 do
         local current=availableMap[State.FusionSelected[i].uid]
         if not current then
@@ -2029,13 +2068,17 @@ refreshFusionList=function(keepMessage)
         end
     end
 
+    local entries,validFilter=State.fusionFilterEntries(eligible)
     State.fusionSortEntries(entries)
     local selected=State.fusionSelectedMap()
     local selectedCategory=State.fusionSelectedCategory()
     local y=2
 
     if #entries==0 then
-        local empty=mkLabel(fusionList,"Nenhum pet disponível para fusão.",UDim2.fromOffset(8,8),UDim2.new(1,-16,0,26),9)
+        local emptyText=not validFilter and "Filtro $/s inválido (ex: 200M)."
+            or (#eligible==0 and "Nenhum pet livre (★/base protegidos)."
+                or "Nenhum pet corresponde aos filtros.")
+        local empty=mkLabel(fusionList,emptyText,UDim2.fromOffset(8,8),UDim2.new(1,-16,0,26),9)
         empty.TextColor3=Color3.fromRGB(150,165,190)
         fusionList.CanvasSize=UDim2.fromOffset(0,42)
     else
@@ -2109,7 +2152,34 @@ end
 connect(fusionSortButton.MouseButton1Click,function()
     if State.FusionBusy then return end
     State.FusionSortMode=State.FusionSortMode%#State.FusionSortModes+1
-    fusionSortButton.Text="CLASSIFICAR: "..State.FusionSortModes[State.FusionSortMode]
+    fusionSortButton.Text="ORDEM $/S ↓ • DESEMPATE: "..State.FusionSortModes[State.FusionSortMode]
+    refreshFusionList()
+end)
+
+connect(State.FusionPetFilterBox:GetPropertyChangedSignal("Text"),function()
+    State.FusionPetQuery=State.FusionPetFilterBox.Text
+    if not State.FusionBusy and not State.FusionFilterUpdating then refreshFusionList() end
+end)
+connect(State.FusionRateFilterBox:GetPropertyChangedSignal("Text"),function()
+    State.FusionRateText=State.FusionRateFilterBox.Text
+    if not State.FusionBusy and not State.FusionFilterUpdating then refreshFusionList() end
+end)
+connect(State.FusionMutationFilterButton.MouseButton1Click,function()
+    if State.FusionBusy then return end
+    State.FusionMutationFilter=State.FusionMutationFilter%3+1
+    State.FusionMutationFilterButton.Text=({"MUTAÇÃO: TODAS","MUTAÇÃO: COM","MUTAÇÃO: SEM"})[State.FusionMutationFilter]
+    refreshFusionList()
+end)
+connect(State.FusionFiltersResetButton.MouseButton1Click,function()
+    if State.FusionBusy then return end
+    State.FusionFilterUpdating=true
+    State.FusionPetQuery=""
+    State.FusionRateText=""
+    State.FusionMutationFilter=1
+    State.FusionPetFilterBox.Text=""
+    State.FusionRateFilterBox.Text=""
+    State.FusionMutationFilterButton.Text="MUTAÇÃO: TODAS"
+    State.FusionFilterUpdating=false
     refreshFusionList()
 end)
 

@@ -533,6 +533,7 @@ local state={
     fieldSignalEvents=0,
     watchFieldEvents=0,
     lastKernelSlotSignature="",
+    sessionInventoryIncomeTarget=nil,
     kernelResearch={
         inspected=false,
         functionInfo={},
@@ -1485,7 +1486,12 @@ local function runKernelResearch(snap)
         modelStatus=weightedBands and weightedBands.modelStatus or nil,
     }
     if weightedBands then
-        local invBest=inventoryIncomeBenchmark()
+        -- Fix this benchmark for the session so comparisons across trios use
+        -- the SAME absolute $/s target even if inventory changes after fusion.
+        if not state.sessionInventoryIncomeTarget then
+            state.sessionInventoryIncomeTarget=inventoryIncomeBenchmark()
+        end
+        local invBest=state.sessionInventoryIncomeTarget
         run.AnalyticClientBands.inventoryBenchmark=invBest
         run.AnalyticClientBands.localDrawAgreement=analyticModelDrawAgreement(weightedBands,dist)
         run.AnalyticClientBands.economicProjection=analyticIncomeProjection(

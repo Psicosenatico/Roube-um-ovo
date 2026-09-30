@@ -2640,6 +2640,8 @@ clear.Activated:Connect(function()
     table.clear(state.events)
     table.clear(state.kernelResearch.probes)
     state.kernelResearch.lastRun=nil
+    state.lastThree=nil
+    state.lastSlotSnapshot=nil
     state.lastKernelSlotSignature=""
     state.sessionInventoryIncomeTarget=nil
     state.status="Amostras/probes limpos • aguardando nova fusão"

@@ -2123,7 +2123,7 @@ refreshFusionList=function(keepMessage)
                 local item=raw and fusionDecode(raw)
                 local blocked=State.fusionProtectedReason(current,entry.uid,raw,item,false)
                 local cfg=item and fusionAssetConfig(item.Category or item.AssetCategory)
-                if blocked or not fusionMayEnter(item,cfg) then
+                if blocked or not fusionMayEnter(item,cfg,entry.uid,raw) then
                     fusionUpdateStatus(blocked or "Pet bloqueado pelo jogo.",
                         Color3.fromRGB(255,115,115))
                     refreshFusionList(true)

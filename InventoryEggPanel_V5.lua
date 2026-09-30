@@ -1182,7 +1182,7 @@ fusionPage.AnchorPoint = mainPage.AnchorPoint
 fusionPage.Visible = false
 fusionPage.ScrollBarThickness = 3
 fusionPage.ScrollBarImageColor3 = Color3.fromRGB(94, 139, 223)
-fusionPage.CanvasSize = UDim2.fromOffset(0, 640)
+fusionPage.CanvasSize = UDim2.fromOffset(0, 735)
 fusionPage.Parent = host
 
 local fusionTitle = label(fusionPage, 'FUSÃO DE PETS', UDim2.fromOffset(8, 2), UDim2.new(1, -16, 0, 24), 12)
@@ -1220,7 +1220,7 @@ local fusionSlotsLabel = label(fusionPage, 'Selecionados: 0/3', UDim2.fromOffset
 fusionSlotsLabel.Font = Enum.Font.GothamMedium
 fusionSlotsLabel.TextXAlignment = Enum.TextXAlignment.Center
 
-local fusionInputsLabel = label(fusionPage, 'Entradas: —', UDim2.fromOffset(10, 181), UDim2.new(1, -20, 0, 54), 7)
+local fusionInputsLabel = label(fusionPage, 'Entradas: —', UDim2.fromOffset(10, 181), UDim2.new(1, -20, 0, 136), 7)
 fusionInputsLabel.TextWrapped = true
 fusionInputsLabel.TextYAlignment = Enum.TextYAlignment.Top
 fusionInputsLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -1229,31 +1229,31 @@ local fusionPetList = Instance.new('ScrollingFrame')
 fusionPetList.BackgroundColor3 = Color3.fromRGB(18, 27, 42)
 fusionPetList.BackgroundTransparency = .08
 fusionPetList.BorderSizePixel = 0
-fusionPetList.Position = UDim2.fromOffset(8, 238)
-fusionPetList.Size = UDim2.new(1, -16, 0, 202)
+fusionPetList.Position = UDim2.fromOffset(8, 322)
+fusionPetList.Size = UDim2.new(1, -16, 0, 180)
 fusionPetList.CanvasSize = UDim2.fromOffset(0, 0)
 fusionPetList.ScrollBarThickness = 3
 fusionPetList.ScrollBarImageColor3 = Color3.fromRGB(94, 139, 223)
 fusionPetList.Parent = fusionPage
 round(fusionPetList, 8)
 
-local fusionConfirmButton = button(fusionPage, 'SELECIONE 3 PETS • 0/3', UDim2.fromOffset(8, 446), UDim2.new(.72, -10, 0, 31))
+local fusionConfirmButton = button(fusionPage, 'SELECIONE 3 PETS • 0/3', UDim2.fromOffset(8, 508), UDim2.new(.72, -10, 0, 31))
 fusionConfirmButton.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
-local fusionClearButton = button(fusionPage, 'LIMPAR', UDim2.new(.72, 2, 0, 446), UDim2.new(.28, -10, 0, 31))
+local fusionClearButton = button(fusionPage, 'LIMPAR', UDim2.new(.72, 2, 0, 508), UDim2.new(.28, -10, 0, 31))
 
 local fusionDivider = Instance.new('Frame')
 fusionDivider.BackgroundColor3 = Color3.fromRGB(42, 57, 82)
 fusionDivider.BorderSizePixel = 0
-fusionDivider.Position = UDim2.fromOffset(12, 485)
+fusionDivider.Position = UDim2.fromOffset(12, 547)
 fusionDivider.Size = UDim2.new(1, -24, 0, 1)
 fusionDivider.Parent = fusionPage
 
-local fusionVerdict = label(fusionPage, 'RESULTADO: aguardando fusão', UDim2.fromOffset(12, 494), UDim2.new(1, -24, 0, 24), 11)
+local fusionVerdict = label(fusionPage, 'RESULTADO: aguardando fusão', UDim2.fromOffset(12, 556), UDim2.new(1, -24, 0, 24), 11)
 fusionVerdict.Font = Enum.Font.GothamBold
 fusionVerdict.TextXAlignment = Enum.TextXAlignment.Center
 fusionVerdict.TextColor3 = Color3.fromRGB(170, 184, 210)
 
-local fusionResultLabel = label(fusionPage, 'Nenhuma fusão confirmada nesta sessão.', UDim2.fromOffset(16, 522), UDim2.new(1, -32, 0, 72), 8)
+local fusionResultLabel = label(fusionPage, 'Nenhuma fusão confirmada nesta sessão.', UDim2.fromOffset(16, 584), UDim2.new(1, -32, 0, 72), 8)
 fusionResultLabel.TextWrapped = true
 fusionResultLabel.TextYAlignment = Enum.TextYAlignment.Top
 fusionResultLabel.TextXAlignment = Enum.TextXAlignment.Center
@@ -1261,7 +1261,7 @@ fusionResultLabel.TextXAlignment = Enum.TextXAlignment.Center
 local fusionFoot = label(
     fusionPage,
     'OBJETIVO: máximo $/s por slot. A soma sacrificada é secundária; 3 pets viram 1 slot mais forte.',
-    UDim2.fromOffset(14, 598),
+    UDim2.fromOffset(14, 660),
     UDim2.new(1, -28, 0, 28),
     7
 )

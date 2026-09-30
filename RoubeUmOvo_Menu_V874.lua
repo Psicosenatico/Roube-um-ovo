@@ -127,7 +127,9 @@ local function showLoaderError(path,err)
         box.BackgroundColor3=Color3.fromRGB(67,25,32)
         box.BorderSizePixel=0
         box.Parent=screen
-        Instance.new("UICorner",box).CornerRadius=UDim.new(0,10)
+        local corner=Instance.new("UICorner")
+        corner.CornerRadius=UDim.new(0,10)
+        corner.Parent=box
 
         local msg=Instance.new("TextLabel")
         msg.BackgroundTransparency=1
@@ -161,7 +163,7 @@ local function run(path)
 end
 
 if not run('RoubeUmOvo_Menu.lua') then return end
-run('InventoryEggPanel_V5.lua')
+if not run('InventoryEggPanel_V5.lua') then return end
 
 task.defer(function()
     task.wait(.2)
@@ -175,7 +177,7 @@ task.defer(function()
             if m then
                 for _,d in ipairs(m:GetDescendants())do
                     if d:IsA('TextLabel')and d.Text:find('V8.',1,true)==1 then
-                        d.Text='V8.7.4 • INVENTORY COMPACT'
+                        d.Text='V8.7.5 • FUSÃO FILTROS + FAVORITOS'
                         return
                     end
                 end

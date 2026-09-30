@@ -1922,10 +1922,10 @@ local function fusionSelectionSummary()
     end
 
     local lines, bestRate = {}, 0
-    for i, pet in ipairs(FUSION.Selected) do
+    for index, pet in ipairs(FUSION.Selected) do
         bestRate = math.max(bestRate, tonumber(pet.Rate) or 0)
-        lines[#lines + 1] = ('%d. %s • $%s/s • %s'):format(
-            i,
+        lines[#lines + 1] = ('%d. %s • %s/s • %s'):format(
+            index,
             pet.Name,
             compact(pet.Rate),
             fusionMutationText(pet.Mutations)
@@ -1934,9 +1934,44 @@ local function fusionSelectionSummary()
 
     if count == 3 then
         local price = fusionPrice(FUSION.Selected)
-        lines[#lines + 1] = ('Alvo por slot: superar $%s/s • 3→1 slot%s'):format(
+        local costText = price and (' • custo ' .. compact(price)) or ''
+        lines[#lines + 1] = ('Alvo por slot: superar %s/s • 3→1 slot%s'):format(
             compact(bestRate),
-            price and (' • custo     fusionUpdateConfirm()
+            costText
+        )
+
+        local predict = fusionBuildPredict(FUSION.Selected)
+        if FUSION.PredictStatus == 'pronto' and predict then
+            lines[#lines + 1] = ('PREDICT %d× • >melhor %.1f%% • >1.5x %.1f%% • >2x %.1f%%'):format(
+                predict.draws or 0,
+                predict.probabilityAboveBest or 0,
+                predict.probabilityAbove1_5x or 0,
+                predict.probabilityAbove2x or 0
+            )
+            lines[#lines + 1] = ('<pior %.1f%% • <melhor %.1f%%'):format(
+                predict.probabilityBelowWorst or 0,
+                predict.probabilityBelowBest or 0
+            )
+            lines[#lines + 1] = ('Rendimento: p10 %s/s • p50 %s/s • p90 %s/s'):format(
+                compact(predict.rateP10),
+                compact(predict.rateP50),
+                compact(predict.rateP90)
+            )
+            lines[#lines + 1] = ('Scale: p50 %.2fx • p90 %.2fx • chance, não garantia'):format(
+                tonumber(predict.scaleP50) or 0,
+                tonumber(predict.scaleP90) or 0
+            )
+        elseif FUSION.PredictStatus == 'erro' then
+            lines[#lines + 1] = 'PREDICT indisponível: ' .. tostring(predict and predict.error or '?')
+        end
+    else
+        FUSION.PredictKey = nil
+        FUSION.PredictStatus = 'idle'
+        FUSION.PredictData = nil
+    end
+
+    fusionInputsLabel.Text = FUSION.StatusMessage or table.concat(lines, '\n')
+    fusionUpdateConfirm()
 end
 
 local function fusionRemoveSelected(uid)

@@ -2458,17 +2458,29 @@ body.Size=UDim2.new(1,-48,1,-174)
 body.Parent=main
 round(body,16)
 
+local statusScroll=Instance.new("ScrollingFrame")
+statusScroll.BackgroundTransparency=1
+statusScroll.BorderSizePixel=0
+statusScroll.Size=UDim2.fromScale(1,1)
+statusScroll.CanvasSize=UDim2.fromOffset(0,0)
+statusScroll.AutomaticCanvasSize=Enum.AutomaticSize.Y
+statusScroll.ScrollBarThickness=5
+statusScroll.ScrollBarImageColor3=Color3.fromRGB(93,152,209)
+statusScroll.ScrollingDirection=Enum.ScrollingDirection.Y
+statusScroll.Parent=body
+
 local statusLabel=Instance.new("TextLabel")
 statusLabel.BackgroundTransparency=1
-statusLabel.Position=UDim2.new(0,20,0,16)
-statusLabel.Size=UDim2.new(1,-40,1,-32)
+statusLabel.Position=UDim2.new(0,14,0,12)
+statusLabel.Size=UDim2.new(1,-40,0,0)
+statusLabel.AutomaticSize=Enum.AutomaticSize.Y
 statusLabel.Font=Enum.Font.Code
-statusLabel.TextSize=17
+statusLabel.TextSize=16
 statusLabel.TextColor3=Color3.fromRGB(230,237,248)
 statusLabel.TextXAlignment=Enum.TextXAlignment.Left
 statusLabel.TextYAlignment=Enum.TextYAlignment.Top
 statusLabel.TextWrapped=true
-statusLabel.Parent=body
+statusLabel.Parent=statusScroll
 
 local capture=makeButton(main,"LER SLOTS",UDim2.new(0,24,1,-66),UDim2.new(.23,-8,0,44))
 local kernel=makeButton(main,"ANALISAR KERNEL",UDim2.new(.25,4,1,-66),UDim2.new(.23,-8,0,44))
@@ -2480,6 +2492,8 @@ local dragging=false
 local dragStart,startPos
 main.InputBegan:Connect(function(input)
     if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+        -- Only drag by the header so touch-scrolling the data does not move the panel.
+        if input.Position.Y-main.AbsolutePosition.Y>82 then return end
         dragging=true
         dragStart=input.Position
         startPos=main.Position
@@ -2561,7 +2575,7 @@ kernel.Activated:Connect(function()
         local d=run.DrawFusedScale or {}
         local p=d.economicProjection or {}
         state.status=string.format(
-            "Kernel V2.7 • Draw:%s • risco:%s",
+            "Kernel V2.8 • Draw:%s • risco:%s",
             tostring(d.confirmedShape or "não identificado"),
             tostring(p.riskLabel or "indeterminado")
         )
@@ -2606,12 +2620,11 @@ task.spawn(function()
             lines[#lines+1]=""
             for _,x in ipairs(snap.inputs) do
                 lines[#lines+1]=string.format(
-                    "[%d] %s | Scale %.4f | $/s %s | Peso %s",
+                    "[%d] %s | Scale %.4f | $/s %s",
                     x.slot or 0,
                     tostring(x.displayName or x.category or "?"),
                     tonumber(x.scale) or 0,
-                    x.earningsPerSecond and string.format("%.0f",x.earningsPerSecond) or "?",
-                    x.weight and string.format("%.3f",x.weight) or "?"
+                    x.earningsPerSecond and string.format("%.0f",x.earningsPerSecond) or "?"
                 )
             end
         end

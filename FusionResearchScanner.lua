@@ -1550,6 +1550,7 @@ local function predictionOutcomeForSample(prediction,rewardSummary,metrics)
     local worst=tonumber(prediction.inputWorstEarningsPerSecond or metrics.minEarningsPerSecond)
     local best=tonumber(prediction.inputBestEarningsPerSecond or metrics.maxEarningsPerSecond)
     local sum=tonumber(prediction.inputSumEarningsPerSecond or metrics.sumEarningsPerSecond)
+    local inventoryBest=tonumber(prediction.inventoryBestEarningsPerSecond)
 
     local function flags(rate)
         if not rate then return nil end
@@ -1560,6 +1561,7 @@ local function predictionOutcomeForSample(prediction,rewardSummary,metrics)
             above1_5xBestInput=best and best>0 and rate>best*1.5 or false,
             above2xBestInput=best and best>0 and rate>best*2 or false,
             aboveInputSum=sum and sum>0 and rate>sum or false,
+            aboveInventoryBest=inventoryBest and inventoryBest>0 and rate>inventoryBest or false,
         }
     end
 
@@ -1571,6 +1573,7 @@ local function predictionOutcomeForSample(prediction,rewardSummary,metrics)
             above1_5xBestInput=prediction.probabilityAbove1_5xBestInput,
             above2xBestInput=prediction.probabilityAbove2xBestInput,
             aboveInputSum=prediction.probabilityAboveInputSum,
+            aboveInventoryBest=prediction.probabilityAboveInventoryBest,
             scaleBelowInputMin=prediction.probabilityScaleBelowInputMin,
             scaleAboveInputMax=prediction.probabilityScaleAboveInputMax,
         },
@@ -1618,23 +1621,37 @@ local function handleFuseStarted(reward)
             local run=state.kernelResearch.probes[idx]
             if run and run.slotSignature==snapSignature then
                 local dist=run.DrawFusedScale and run.DrawFusedScale.distribution
-                if dist and type(dist.values)=="table" and tonumber(rewardSummary.scale) then
-                    kernelValidation={
-                        matchedKernelProbeIndex=idx,
-                        drawSampleCount=#dist.values,
-                        observedOutputScale=tonumber(rewardSummary.scale),
-                        observedScalePercentile=percentileOf(dist.values,tonumber(rewardSummary.scale)),
-                        insideP10P90=tonumber(rewardSummary.scale)>=tonumber(dist.p10 or -math.huge)
-                            and tonumber(rewardSummary.scale)<=tonumber(dist.p90 or math.huge),
-                        localP10=dist.p10,
-                        localP50=dist.p50,
-                        localP90=dist.p90,
-                        scaleOnlyEconomicProjection=run.DrawFusedScale.economicProjection,
-                    }
+                local observedScale=tonumber(rewardSummary.scale)
+                kernelValidation={
+                    matchedKernelProbeIndex=idx,
+                    observedOutputScale=observedScale,
+                }
+                if dist and type(dist.values)=="table" and observedScale then
+                    kernelValidation.drawSampleCount=#dist.values
+                    kernelValidation.observedScalePercentile=percentileOf(dist.values,observedScale)
+                    kernelValidation.insideP10P90=observedScale>=tonumber(dist.p10 or -math.huge)
+                        and observedScale<=tonumber(dist.p90 or math.huge)
+                    kernelValidation.localP10=dist.p10
+                    kernelValidation.localP50=dist.p50
+                    kernelValidation.localP90=dist.p90
+                    kernelValidation.scaleOnlyEconomicProjection=run.DrawFusedScale.economicProjection
                     kernelValidation.predictionOutcome=predictionOutcomeForSample(
                         run.DrawFusedScale.economicProjection,
                         rewardSummary,
                         metrics
+                    )
+                end
+                local analytic=run.AnalyticClientBands
+                local econ=analytic and analytic.economicProjection
+                if econ and not econ.error then
+                    kernelValidation.analyticBandCount=analytic.clientScaleRules and analytic.clientScaleRules.bandCount
+                    kernelValidation.analyticDrawAgreement=analytic.localDrawAgreement and {
+                        bandOnlyMeanAbsDifference=analytic.localDrawAgreement.bandOnlyMeanAbsDifference,
+                        hypotheticalMeanAbsDifference=analytic.localDrawAgreement.hypotheticalMeanAbsDifference,
+                        hypotheticalMaxAbsDifference=analytic.localDrawAgreement.hypotheticalMaxAbsDifference,
+                    } or nil
+                    kernelValidation.analyticPredictionOutcome=predictionOutcomeForSample(
+                        econ,rewardSummary,metrics
                     )
                 end
                 break
@@ -1651,6 +1668,7 @@ local function handleFuseStarted(reward)
         kernelValidation=kernelValidation,
         preFusionProbabilityModel=kernelValidation and kernelValidation.scaleOnlyEconomicProjection or nil,
         predictionOutcome=kernelValidation and kernelValidation.predictionOutcome or nil,
+        analyticPredictionOutcome=kernelValidation and kernelValidation.analyticPredictionOutcome or nil,
         inputs=inputs,
         inputMetrics=metrics,
         reward=jsonSafe(reward),
@@ -1845,6 +1863,7 @@ local CALIBRATION_TARGETS={
     {key="above1_5xBestInput",label="Resultado > 1.5x melhor input"},
     {key="above2xBestInput",label="Resultado > 2x melhor input"},
     {key="aboveInputSum",label="Resultado > soma dos inputs"},
+    {key="aboveInventoryBest",label="Resultado > melhor pet do inventário (alvo fixado antes)"},
     {key="scaleBelowInputMin",label="Scale < menor Scale de entrada"},
     {key="scaleAboveInputMax",label="Scale > maior Scale de entrada"},
 }

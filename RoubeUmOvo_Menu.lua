@@ -1517,7 +1517,7 @@ fusionPage.Size=UDim2.new(1,-16,1,-16)
 fusionPage.Visible=false
 fusionPage.Parent=contentHost
 
-local FUSION_SORT_MODES={"$/S + MUT","$/S","PESO","PET"}
+State.FusionSortModes={"$/S + MUT","$/S","PESO","PET"}
 local fusionSortButton=mkButton(fusionPage,"CLASSIFICAR: $/S + MUT",UDim2.fromOffset(0,0),UDim2.new(.67,-3,0,27))
 local fusionRefreshButton=mkButton(fusionPage,"ATUALIZAR",UDim2.new(.68,0,0,0),UDim2.new(.32,0,0,27))
 local fusionStatusLabel=mkLabel(fusionPage,"0/3 • selecione 3 do mesmo pet",UDim2.fromOffset(2,31),UDim2.new(.76,-2,0,21),8)
@@ -1640,7 +1640,7 @@ local function fusionPetWeight(item)
     return tonumber(item.Weight or item.AssetWeight or item.Kg or item.Mass) or 0
 end
 
-local function fusionUidIn(records,uid)
+State.fusionUidIn=function(records,uid)
     if typeof(records)~="table" then return false end
     local key=safeString(uid)
     if records[uid]==true or records[key]==true then return true end
@@ -1655,7 +1655,7 @@ local function fusionUidIn(records,uid)
     return false
 end
 
-local function fusionProtectedReason(save,uid,raw,item,allowInSlots)
+State.fusionProtectedReason=function(save,uid,raw,item,allowInSlots)
     if typeof(save)~="table" or typeof(save.Inventory)~="table"
         or typeof(raw)~="table" or typeof(item)~="table" then
         return "Pet ausente do inventário atual."
@@ -1674,12 +1674,12 @@ local function fusionProtectedReason(save,uid,raw,item,allowInSlots)
         end
     end
     for _,key in ipairs({"FavoriteAssets","FavoritePets","Favorites"}) do
-        if fusionUidIn(save[key],uid) then return "Pet favorito (★) protegido." end
+        if State.fusionUidIn(save[key],uid) then return "Pet favorito (★) protegido." end
     end
-    if fusionUidIn(save.EquippedAssets,uid) then
+    if State.fusionUidIn(save.EquippedAssets,uid) then
         return "Pet colocado na base ou equipado."
     end
-    if not allowInSlots and fusionUidIn(save.FusionSlots,uid) then
+    if not allowInSlots and State.fusionUidIn(save.FusionSlots,uid) then
         return "Pet já está na máquina."
     end
     return nil
@@ -1710,7 +1710,7 @@ local function fusionInventoryEntries()
         if item and item.Category then
             local category=safeString(item.Category)
             local cfg=fusionAssetConfig(category)
-            if not fusionProtectedReason(save,uid,raw,item,false)
+            if not State.fusionProtectedReason(save,uid,raw,item,false)
                 and fusionMayEnter(item,cfg) then
                 local mutations=fusionMutationNames(item)
                 local display=(cfg and cfg.DisplayName) or item.DisplayName or category
@@ -1805,8 +1805,8 @@ end
 local refreshFusionList
 local runSelectedFusion
 
-local function fusionSortEntries(entries)
-    local mode=FUSION_SORT_MODES[State.FusionSortMode] or FUSION_SORT_MODES[1]
+State.fusionSortEntries=function(entries)
+    local mode=State.FusionSortModes[State.FusionSortMode] or State.FusionSortModes[1]
     local selectedCategory=fusionSelectedCategory()
     table.sort(entries,function(a,b)
         if selectedCategory then
@@ -1837,7 +1837,7 @@ local function fusionSortEntries(entries)
     end)
 end
 
-local function fusionRemoveSelected(uid)
+State.fusionRemoveSelected=function(uid)
     for i=#State.FusionSelected,1,-1 do
         if State.FusionSelected[i].uid==uid then table.remove(State.FusionSelected,i) end
     end
@@ -1914,7 +1914,7 @@ runSelectedFusion=function()
     for i,entry in ipairs(selected) do
         local raw=inventory[entry.uid] or inventory[safeString(entry.uid)]
         local item=raw and fusionDecode(raw)
-        local protectedReason=fusionProtectedReason(save,entry.uid,raw,item,false)
+        local protectedReason=State.fusionProtectedReason(save,entry.uid,raw,item,false)
         local cfg=item and fusionAssetConfig(item.Category or item.AssetCategory)
         if not item or safeString(item.Category)~=category
             or protectedReason or not fusionMayEnter(item,cfg) then
@@ -1953,7 +1953,7 @@ runSelectedFusion=function()
         local currentRaw=typeof(currentInv)=="table"
             and (currentInv[fresh[i].uid] or currentInv[safeString(fresh[i].uid)])
         local currentItem=currentRaw and fusionDecode(currentRaw)
-        local reason=fusionProtectedReason(
+        local reason=State.fusionProtectedReason(
             currentSave,fresh[i].uid,currentRaw,currentItem,false
         )
         local cfg=currentItem and fusionAssetConfig(currentItem.Category or currentItem.AssetCategory)
@@ -2005,8 +2005,8 @@ runSelectedFusion=function()
     refreshFusionList(true)
 end
 
-local fusionRosterLastCheck=0
-local fusionRosterSignature=nil
+State.FusionRosterLastCheck=0
+State.FusionRosterSignature=nil
 refreshFusionList=function(keepMessage)
     if not fusionList then return end
     for _,child in ipairs(fusionList:GetChildren()) do
@@ -2017,7 +2017,7 @@ refreshFusionList=function(keepMessage)
     local rosterIds={}
     for _,pet in ipairs(entries) do rosterIds[#rosterIds+1]=pet.uid end
     table.sort(rosterIds)
-    fusionRosterSignature=table.concat(rosterIds,"|")
+    State.FusionRosterSignature=table.concat(rosterIds,"|")
     local availableMap={}
     for _,entry in ipairs(entries) do availableMap[entry.uid]=entry end
     for i=#State.FusionSelected,1,-1 do
@@ -2029,7 +2029,7 @@ refreshFusionList=function(keepMessage)
         end
     end
 
-    fusionSortEntries(entries)
+    State.fusionSortEntries(entries)
     local selected=fusionSelectedMap()
     local selectedCategory=fusionSelectedCategory()
     local y=2
@@ -2074,7 +2074,7 @@ refreshFusionList=function(keepMessage)
                 local raw=typeof(inv)=="table" and
                     (inv[entry.uid] or inv[safeString(entry.uid)])
                 local item=raw and fusionDecode(raw)
-                local blocked=fusionProtectedReason(current,entry.uid,raw,item,false)
+                local blocked=State.fusionProtectedReason(current,entry.uid,raw,item,false)
                 local cfg=item and fusionAssetConfig(item.Category or item.AssetCategory)
                 if blocked or not fusionMayEnter(item,cfg) then
                     fusionUpdateStatus(blocked or "Pet bloqueado pelo jogo.",
@@ -2083,7 +2083,7 @@ refreshFusionList=function(keepMessage)
                     return
                 end
                 if selected[entry.uid] then
-                    fusionRemoveSelected(entry.uid)
+                    State.fusionRemoveSelected(entry.uid)
                     fusionUpdateStatus()
                     refreshFusionList()
                     return
@@ -2108,8 +2108,8 @@ end
 
 connect(fusionSortButton.MouseButton1Click,function()
     if State.FusionBusy then return end
-    State.FusionSortMode=State.FusionSortMode%#FUSION_SORT_MODES+1
-    fusionSortButton.Text="CLASSIFICAR: "..FUSION_SORT_MODES[State.FusionSortMode]
+    State.FusionSortMode=State.FusionSortMode%#State.FusionSortModes+1
+    fusionSortButton.Text="CLASSIFICAR: "..State.FusionSortModes[State.FusionSortMode]
     refreshFusionList()
 end)
 
@@ -2572,13 +2572,13 @@ task.defer(function()
         if CONFIG.InstantHit then refreshBats() end
         if CONFIG.AutoTrain then autoTrainTick() end
         if fusionPage.Visible and not State.FusionBusy
-            and os.clock()-fusionRosterLastCheck>=1.5 then
-            fusionRosterLastCheck=os.clock()
+            and os.clock()-State.FusionRosterLastCheck>=1.5 then
+            State.FusionRosterLastCheck=os.clock()
             local live=fusionInventoryEntries()
             local ids={}
             for _,pet in ipairs(live) do ids[#ids+1]=pet.uid end
             table.sort(ids)
-            if table.concat(ids,"|")~=fusionRosterSignature then
+            if table.concat(ids,"|")~=State.FusionRosterSignature then
                 refreshFusionList()
             end
         end

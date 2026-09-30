@@ -1161,7 +1161,7 @@ fusionPage.AnchorPoint = mainPage.AnchorPoint
 fusionPage.Visible = false
 fusionPage.ScrollBarThickness = 3
 fusionPage.ScrollBarImageColor3 = Color3.fromRGB(94, 139, 223)
-fusionPage.CanvasSize = UDim2.fromOffset(0, 570)
+fusionPage.CanvasSize = UDim2.fromOffset(0, 640)
 fusionPage.Parent = host
 
 local fusionTitle = label(fusionPage, 'FUSÃO DE PETS', UDim2.fromOffset(8, 2), UDim2.new(1, -16, 0, 24), 12)
@@ -1181,14 +1181,25 @@ fusionHint.TextXAlignment = Enum.TextXAlignment.Center
 fusionHint.TextYAlignment = Enum.TextYAlignment.Top
 fusionHint.TextColor3 = Color3.fromRGB(139, 164, 207)
 
-local fusionSortButton = button(fusionPage, 'Ordenar: $/s + Mutação', UDim2.fromOffset(8, 58), UDim2.new(.63, -10, 0, 28))
+local fusionSortButton = button(fusionPage, 'Ordem: $/s ↓ | Desempate: Mutação', UDim2.fromOffset(8, 58), UDim2.new(.63, -10, 0, 28))
 local fusionRefreshButton = button(fusionPage, 'Atualizar', UDim2.new(.63, 2, 0, 58), UDim2.new(.37, -10, 0, 28))
 
-local fusionSlotsLabel = label(fusionPage, 'Selecionados: 0/3', UDim2.fromOffset(10, 89), UDim2.new(1, -20, 0, 18), 8)
+local fusionPetFilterBox = textBox(fusionPage, 'Pet: nome ou espécie',
+    UDim2.fromOffset(8,91), UDim2.new(.55,-11,0,29))
+local fusionMinRateBox = textBox(fusionPage, '$/s mínimo: 200M',
+    UDim2.new(.55,0,0,91), UDim2.new(.45,-9,0,29))
+local fusionMutationFilterButton = button(fusionPage, 'Mutação: Todas',
+    UDim2.fromOffset(8,125), UDim2.new(.56,-12,0,27))
+local fusionFilterResetButton = button(fusionPage, 'LIMPAR FILTROS',
+    UDim2.new(.56,0,0,125), UDim2.new(.44,-9,0,27))
+fusionPetFilterBox.TextXAlignment = Enum.TextXAlignment.Center
+fusionMinRateBox.TextXAlignment = Enum.TextXAlignment.Center
+
+local fusionSlotsLabel = label(fusionPage, 'Selecionados: 0/3', UDim2.fromOffset(10, 161), UDim2.new(1, -20, 0, 18), 8)
 fusionSlotsLabel.Font = Enum.Font.GothamMedium
 fusionSlotsLabel.TextXAlignment = Enum.TextXAlignment.Center
 
-local fusionInputsLabel = label(fusionPage, 'Entradas: —', UDim2.fromOffset(10, 108), UDim2.new(1, -20, 0, 54), 7)
+local fusionInputsLabel = label(fusionPage, 'Entradas: —', UDim2.fromOffset(10, 181), UDim2.new(1, -20, 0, 54), 7)
 fusionInputsLabel.TextWrapped = true
 fusionInputsLabel.TextYAlignment = Enum.TextYAlignment.Top
 fusionInputsLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -1197,31 +1208,31 @@ local fusionPetList = Instance.new('ScrollingFrame')
 fusionPetList.BackgroundColor3 = Color3.fromRGB(18, 27, 42)
 fusionPetList.BackgroundTransparency = .08
 fusionPetList.BorderSizePixel = 0
-fusionPetList.Position = UDim2.fromOffset(8, 164)
-fusionPetList.Size = UDim2.new(1, -16, 0, 210)
+fusionPetList.Position = UDim2.fromOffset(8, 238)
+fusionPetList.Size = UDim2.new(1, -16, 0, 202)
 fusionPetList.CanvasSize = UDim2.fromOffset(0, 0)
 fusionPetList.ScrollBarThickness = 3
 fusionPetList.ScrollBarImageColor3 = Color3.fromRGB(94, 139, 223)
 fusionPetList.Parent = fusionPage
 round(fusionPetList, 8)
 
-local fusionConfirmButton = button(fusionPage, 'SELECIONE 3 PETS • 0/3', UDim2.fromOffset(8, 381), UDim2.new(.72, -10, 0, 31))
+local fusionConfirmButton = button(fusionPage, 'SELECIONE 3 PETS • 0/3', UDim2.fromOffset(8, 446), UDim2.new(.72, -10, 0, 31))
 fusionConfirmButton.BackgroundColor3 = Color3.fromRGB(35, 44, 61)
-local fusionClearButton = button(fusionPage, 'LIMPAR', UDim2.new(.72, 2, 0, 381), UDim2.new(.28, -10, 0, 31))
+local fusionClearButton = button(fusionPage, 'LIMPAR', UDim2.new(.72, 2, 0, 446), UDim2.new(.28, -10, 0, 31))
 
 local fusionDivider = Instance.new('Frame')
 fusionDivider.BackgroundColor3 = Color3.fromRGB(42, 57, 82)
 fusionDivider.BorderSizePixel = 0
-fusionDivider.Position = UDim2.fromOffset(12, 421)
+fusionDivider.Position = UDim2.fromOffset(12, 485)
 fusionDivider.Size = UDim2.new(1, -24, 0, 1)
 fusionDivider.Parent = fusionPage
 
-local fusionVerdict = label(fusionPage, 'RESULTADO: aguardando fusão', UDim2.fromOffset(12, 429), UDim2.new(1, -24, 0, 24), 11)
+local fusionVerdict = label(fusionPage, 'RESULTADO: aguardando fusão', UDim2.fromOffset(12, 494), UDim2.new(1, -24, 0, 24), 11)
 fusionVerdict.Font = Enum.Font.GothamBold
 fusionVerdict.TextXAlignment = Enum.TextXAlignment.Center
 fusionVerdict.TextColor3 = Color3.fromRGB(170, 184, 210)
 
-local fusionResultLabel = label(fusionPage, 'Nenhuma fusão confirmada nesta sessão.', UDim2.fromOffset(16, 456), UDim2.new(1, -32, 0, 72), 8)
+local fusionResultLabel = label(fusionPage, 'Nenhuma fusão confirmada nesta sessão.', UDim2.fromOffset(16, 522), UDim2.new(1, -32, 0, 72), 8)
 fusionResultLabel.TextWrapped = true
 fusionResultLabel.TextYAlignment = Enum.TextYAlignment.Top
 fusionResultLabel.TextXAlignment = Enum.TextXAlignment.Center
@@ -1229,7 +1240,7 @@ fusionResultLabel.TextXAlignment = Enum.TextXAlignment.Center
 local fusionFoot = label(
     fusionPage,
     '$/s é o foco principal; peso/Scale e mutações continuam visíveis para pesquisa.',
-    UDim2.fromOffset(14, 534),
+    UDim2.fromOffset(14, 598),
     UDim2.new(1, -28, 0, 28),
     7
 )
@@ -1238,11 +1249,14 @@ fusionFoot.TextXAlignment = Enum.TextXAlignment.Center
 fusionFoot.TextYAlignment = Enum.TextYAlignment.Top
 fusionFoot.TextColor3 = Color3.fromRGB(139, 151, 177)
 
-local FUSION_SORT_MODES = {'$/s + Mutação', '$/s', 'Peso', 'Pet'}
+local FUSION_SORT_MODES = {'Mutação', 'Pet'}
 local FUSION = {
     Inputs = {},
     Selected = {},
     SortMode = 1,
+    PetQuery = '',
+    MinRateText = '',
+    MutationFilter = 1,
     Busy = false,
     StatusMessage = nil,
     PendingReward = nil,
@@ -1536,13 +1550,7 @@ local function fusionSortPets(entries)
         local ar, br = a.Rate or 0, b.Rate or 0
         if ar ~= br then return ar > br end
 
-        if mode == '$/s + Mutação' then
-            if a.HasMutation ~= b.HasMutation then return a.HasMutation end
-            if (a.Weight or 0) ~= (b.Weight or 0) then return (a.Weight or 0) > (b.Weight or 0) end
-        elseif mode == 'Peso' then
-            if (a.Weight or 0) ~= (b.Weight or 0) then return (a.Weight or 0) > (b.Weight or 0) end
-            if a.HasMutation ~= b.HasMutation then return a.HasMutation end
-        elseif mode == 'Pet' then
+        if mode == 'Pet' then
             local an, bn = norm(a.Name), norm(b.Name)
             if an ~= bn then return an < bn end
             if a.HasMutation ~= b.HasMutation then return a.HasMutation end

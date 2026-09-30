@@ -2300,6 +2300,19 @@ local function exportData()
         clientBandFlat=flatAnalyticBandExport(),
         analyticDrawAgreementFlat=flatAnalyticAgreementExport(),
         experimentalTrioComparisons=flatAnalyticTrioComparisons(),
+        v28ResearchTargets={
+            primaryObjective="Maximize the probability of high absolute $/s using Category + the game's unmutated earnings function + each trio's exact Scale-band biases.",
+            weightUsedForOptimization=false,
+            exactClientInputs={"Category","Scale","Mutations"},
+            verifiedFromPriorClientScan={"11 SCALE_BANDS","SCALE_HARD_CAP=150","SCALE_DOUBLING_ODDS=0.01"},
+            openQuestions={
+                "Confirm that the drawn position is uniform within each selected band.",
+                "Confirm how many 1% doubling attempts the exact DrawAssetScale performs, including the cap.",
+                "Determine the server-side output mutation distribution and income effect.",
+                "Calibrate both relative and absolute income probabilities against real FuseStarted outcomes.",
+            },
+            comparisonScope="Distinct trios observed in research scanner slots; no server remotes or automatic fusion.",
+        },
         v26ResearchTargets={
             externalClientFormulaHypotheses={
                 sizeBandCount=11,

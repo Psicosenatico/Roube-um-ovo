@@ -1179,8 +1179,7 @@ local function inventoryIncomeBenchmark()
     if type(inventory)~="table" then return nil end
     local best=0
     for uid,raw in pairs(inventory) do
-        if not researchProtectedReason(uid,raw,save)
-            and not researchUidIn(save.FusionSlots,uid) then
+        if not researchProtectedReason(uid,raw,save) then
             local item=decodeItem(raw)
             if type(item)=="table" then
                 local rate=itemRate(item)
@@ -2293,11 +2292,30 @@ local function flatAnalyticAgreementExport()
 end
 
 local function flatAnalyticTrioComparisons()
+    -- Old test results remain in the research JSON, but must never be offered
+    -- as CURRENT candidate trios if a UID was consumed, favorited or deployed.
+    local live=researchActiveInventory()
     local bySignature={}
+    local ignored=0
     for idx,run in ipairs(state.kernelResearch.probes or {}) do
         local a=run.AnalyticClientBands
         local e=a and a.economicProjection
-        if e and not e.error and type(run.slotSignature)=="string" and run.slotSignature~="" then
+        local ins=run.inputSummary or {}
+        local trioStillFree=type(live)=="table"
+            and type(live.Inventory)=="table" and #ins==3
+        if trioStillFree then
+            for _,pet in ipairs(ins) do
+                local id=pet.uid
+                local raw=live.Inventory[id] or live.Inventory[tostring(id)]
+                if researchProtectedReason(id,raw,live) then
+                    trioStillFree=false
+                    break
+                end
+            end
+        end
+        local benchmarkCurrent=e and e.inventoryBestEarningsPerSecond==state.sessionInventoryIncomeTarget
+        if trioStillFree and benchmarkCurrent and e and not e.error
+            and type(run.slotSignature)=="string" and run.slotSignature~="" then
             local ins=run.inputSummary or {}
             bySignature[run.slotSignature]={
                 probeIndex=idx,
@@ -2320,9 +2338,11 @@ local function flatAnalyticTrioComparisons()
                 fusionPrice=run.inputFusionPrice,
                 localDrawDifference=a.localDrawAgreement
                     and a.localDrawAgreement.hypotheticalMeanAbsDifference or nil,
-                analysisStatus="Experimental no-mutation rate projection, using exact client bands plus hypothetical doubling.",
+                analysisStatus="Eligible right now: not starred, equipped or placed. Experimental no-mutation math.",
                 usesWeight=false,
             }
+        else
+            ignored+=1
         end
     end
     local options={}
@@ -2353,8 +2373,9 @@ local function flatAnalyticTrioComparisons()
         return out
     end
     return {
-        note="Only trios OBSERVED in scanner slots, not all combinations in the inventory. Exploratory math requires validation. No fusion is triggered.",
-        target="Absolute $/s, without using weight. Compare the SAME session benchmark across species.",
+        note="Only CURRENTLY ELIGIBLE trios previously observed in slots; historical/protected ones remain in research probes but are NEVER recommended.",
+        target="Absolute $/s without weight. Revalidate the SAME live eligible inventory benchmark across species.",
+        removedHistoricalOrProtected=ignored,
         fixedSessionTarget=state.sessionInventoryIncomeTarget,
         distinctTrioCount=#options,
         highestExpectedRate=firstN(byExpected),

@@ -1555,7 +1555,7 @@ local fusionConfirmButton=mkButton(
 fusionConfirmButton.TextSize=9
 fusionConfirmButton.BackgroundColor3=Color3.fromRGB(35,44,61)
 
-local function fusionCallTable(tbl,name,...)
+State.fusionCallTable=function(tbl,name,...)
     if typeof(tbl)~="table" or type(tbl[name])~="function" then return false,nil,"função ausente" end
     local fn=tbl[name]
     local args=table.pack(...)
@@ -1566,38 +1566,38 @@ local function fusionCallTable(tbl,name,...)
     return false,nil,tostring(r[2])
 end
 
-local function fusionCurrentSave()
+State.fusionCurrentSave=function()
     if typeof(SaveData)~="table" then SaveData=requireOptional("Shared.Save") end
     if typeof(SaveData)~="table" then return nil end
     for _,name in ipairs({"Peek","Get"}) do
         if type(SaveData[name])=="function" then
-            local ok,data=fusionCallTable(SaveData,name)
+            local ok,data=State.fusionCallTable(SaveData,name)
             if ok and typeof(data)=="table" then return data end
         end
     end
     if type(SaveData.Await)=="function" then
-        local ok,data=fusionCallTable(SaveData,"Await")
+        local ok,data=State.fusionCallTable(SaveData,"Await")
         if ok and typeof(data)=="table" then return data end
     end
     return nil
 end
 
-local function fusionDecode(raw)
+State.fusionDecode=function(raw)
     if typeof(AssetItems)~="table" then AssetItems=requireOptional("Shared.Util.AssetItems") end
     if typeof(AssetItems)=="table" and type(AssetItems.Decode)=="function" then
-        local ok,item=fusionCallTable(AssetItems,"Decode",raw)
+        local ok,item=State.fusionCallTable(AssetItems,"Decode",raw)
         if ok and typeof(item)=="table" then return item end
     end
     return typeof(raw)=="table" and raw or nil
 end
 
-local function fusionAssetConfig(category)
+State.fusionAssetConfig=function(category)
     if typeof(AssetsData)~="table" then return nil end
     local dir=AssetsData.Directory or AssetsData.Configs
     return typeof(dir)=="table" and dir[category] or nil
 end
 
-local function fusionMutationNames(item)
+State.fusionMutationNames=function(item)
     local out,seen={},{}
     local function add(v)
         if v==nil then return end
@@ -1622,7 +1622,7 @@ local function fusionMutationNames(item)
     return out
 end
 
-local function fusionPetRate(item)
+State.fusionPetRate=function(item)
     if typeof(AssetEarnings)~="table" then return 0 end
     for _,name in ipairs({"CatalogRatePerSecond","MutationOnlyRatePerSecond"}) do
         if type(AssetEarnings[name])=="function" then
@@ -1634,16 +1634,16 @@ local function fusionPetRate(item)
                     Mutations=item.Mutations or {},
                 }
             end
-            local ok,value=fusionCallTable(AssetEarnings,name,target)
+            local ok,value=State.fusionCallTable(AssetEarnings,name,target)
             if ok and finite(tonumber(value)) then return tonumber(value) end
         end
     end
     return 0
 end
 
-local function fusionPetWeight(item)
+State.fusionPetWeight=function(item)
     if typeof(AssetItems)=="table" and type(AssetItems.WeightKg)=="function" then
-        local ok,value=fusionCallTable(AssetItems,"WeightKg",item)
+        local ok,value=State.fusionCallTable(AssetItems,"WeightKg",item)
         if ok and finite(tonumber(value)) then return tonumber(value) end
     end
     return tonumber(item.Weight or item.AssetWeight or item.Kg or item.Mass) or 0
@@ -1714,18 +1714,18 @@ local function fusionMayEnter(item,cfg,uid,raw)
 end
 
 local function fusionInventoryEntries()
-    local save=fusionCurrentSave()
+    local save=State.fusionCurrentSave()
     local inventory=save and save.Inventory
     if typeof(inventory)~="table" then return {},save end
     local out={}
     for uid,raw in pairs(inventory) do
-        local item=fusionDecode(raw)
+        local item=State.fusionDecode(raw)
         if item and item.Category then
             local category=safeString(item.Category)
-            local cfg=fusionAssetConfig(category)
+            local cfg=State.fusionAssetConfig(category)
             if not State.fusionProtectedReason(save,uid,raw,item,false)
                 and fusionMayEnter(item,cfg,uid,raw) then
-                local mutations=fusionMutationNames(item)
+                local mutations=State.fusionMutationNames(item)
                 local display=(cfg and cfg.DisplayName) or item.DisplayName or category
                 local rarity=cfg and cfg.Rarity
                 local rarityName=rarity and (rarity.DisplayName or rarity._id) or "?"
@@ -1736,8 +1736,8 @@ local function fusionInventoryEntries()
                     rarity=safeString(rarityName),
                     mutations=mutations,
                     hasMutation=#mutations>0,
-                    rate=fusionPetRate(item),
-                    weight=fusionPetWeight(item),
+                    rate=State.fusionPetRate(item),
+                    weight=State.fusionPetWeight(item),
                     scale=tonumber(item.Scale or item.AssetScale) or 1,
                     item=item,
                 }
@@ -1769,7 +1769,7 @@ State.fusionSelectedPrice=function()
         items[i]=entry.item
     end
 
-    local ok,price=fusionCallTable(FuseKernel,"PriceFor",items)
+    local ok,price=State.fusionCallTable(FuseKernel,"PriceFor",items)
     price=ok and tonumber(price) or nil
     return finite(price) and price or nil
 end
@@ -1910,9 +1910,9 @@ end
 local function fusionRewardText(reward)
     if typeof(reward)~="table" then return "Fusão concluída" end
     local category=reward.AssetCategory or reward.Category
-    local cfg=category and fusionAssetConfig(category) or nil
+    local cfg=category and State.fusionAssetConfig(category) or nil
     local name=localizedPetName((cfg and cfg.DisplayName) or category or "Pet")
-    local muts=fusionMutationNames({Mutations=reward.Mutations or {},BaseMutation=reward.BaseMutation})
+    local muts=State.fusionMutationNames({Mutations=reward.Mutations or {},BaseMutation=reward.BaseMutation})
     local item={
         Category=category,
         AssetCategory=category,
@@ -1921,7 +1921,7 @@ local function fusionRewardText(reward)
         Mutations=reward.Mutations or {},
         BaseMutation=reward.BaseMutation,
     }
-    local rate=fusionPetRate(item)
+    local rate=State.fusionPetRate(item)
     local mutText=#muts>0 and table.concat(muts,", ") or "sem mutação"
     return string.format("%s • %s/s • %.3fx • %s",name,formatCompact(rate),tonumber(item.Scale) or 1,mutText)
 end
@@ -1943,7 +1943,7 @@ runSelectedFusion=function()
         end
     end
 
-    local save=fusionCurrentSave()
+    local save=State.fusionCurrentSave()
     local inventory=save and save.Inventory
     if typeof(inventory)~="table" then
         fusionUpdateStatus("Inventário indisponível.",Color3.fromRGB(255,115,115))
@@ -1954,9 +1954,9 @@ runSelectedFusion=function()
     local fresh={}
     for i,entry in ipairs(selected) do
         local raw=inventory[entry.uid] or inventory[safeString(entry.uid)]
-        local item=raw and fusionDecode(raw)
+        local item=raw and State.fusionDecode(raw)
         local protectedReason=State.fusionProtectedReason(save,entry.uid,raw,item,false)
-        local cfg=item and fusionAssetConfig(item.Category or item.AssetCategory)
+        local cfg=item and State.fusionAssetConfig(item.Category or item.AssetCategory)
         if not item or safeString(item.Category)~=category
             or protectedReason or not fusionMayEnter(item,cfg,entry.uid,raw) then
             fusionUpdateStatus(protectedReason or "Pet indisponível. Atualize a lista.",Color3.fromRGB(255,115,115))
@@ -1969,7 +1969,7 @@ runSelectedFusion=function()
 
     if typeof(FuseKernel)=="table" and type(FuseKernel.PriceFor)=="function" then
         local items={fresh[1].item,fresh[2].item,fresh[3].item}
-        local ok,price=fusionCallTable(FuseKernel,"PriceFor",items)
+        local ok,price=State.fusionCallTable(FuseKernel,"PriceFor",items)
         local money=tonumber(save.Money)
         if ok and finite(tonumber(price)) and money and money<tonumber(price) then
             fusionUpdateStatus("Dinheiro insuficiente • custo "..formatCompact(tonumber(price)),Color3.fromRGB(255,115,115))
@@ -1989,15 +1989,15 @@ runSelectedFusion=function()
     for i=1,3 do
         -- If the player favorited/deployed a pet after selecting it, abort
         -- before loading. Keep pets already loaded during THIS attempt safe.
-        local currentSave=fusionCurrentSave()
+        local currentSave=State.fusionCurrentSave()
         local currentInv=currentSave and currentSave.Inventory
         local currentRaw=typeof(currentInv)=="table"
             and (currentInv[fresh[i].uid] or currentInv[safeString(fresh[i].uid)])
-        local currentItem=currentRaw and fusionDecode(currentRaw)
+        local currentItem=currentRaw and State.fusionDecode(currentRaw)
         local reason=State.fusionProtectedReason(
             currentSave,fresh[i].uid,currentRaw,currentItem,false
         )
-        local cfg=currentItem and fusionAssetConfig(currentItem.Category or currentItem.AssetCategory)
+        local cfg=currentItem and State.fusionAssetConfig(currentItem.Category or currentItem.AssetCategory)
         if reason or not fusionMayEnter(currentItem,cfg,fresh[i].uid,currentRaw) then
             for _,uid in ipairs(loaded) do fusionInvoke("EjectPet",uid) end
             fusionUpdateStatus(reason or "Pet indisponível: fusão cancelada.",Color3.fromRGB(255,115,115))
@@ -2116,13 +2116,13 @@ refreshFusionList=function(keepMessage)
             end
             connect(row.MouseButton1Click,function()
                 if State.FusionBusy then return end
-                local current=fusionCurrentSave()
+                local current=State.fusionCurrentSave()
                 local inv=current and current.Inventory
                 local raw=typeof(inv)=="table" and
                     (inv[entry.uid] or inv[safeString(entry.uid)])
-                local item=raw and fusionDecode(raw)
+                local item=raw and State.fusionDecode(raw)
                 local blocked=State.fusionProtectedReason(current,entry.uid,raw,item,false)
-                local cfg=item and fusionAssetConfig(item.Category or item.AssetCategory)
+                local cfg=item and State.fusionAssetConfig(item.Category or item.AssetCategory)
                 if blocked or not fusionMayEnter(item,cfg,entry.uid,raw) then
                     fusionUpdateStatus(blocked or "Pet bloqueado pelo jogo.",
                         Color3.fromRGB(255,115,115))

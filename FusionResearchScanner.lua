@@ -2593,6 +2593,7 @@ clear.Activated:Connect(function()
     table.clear(state.kernelResearch.probes)
     state.kernelResearch.lastRun=nil
     state.lastKernelSlotSignature=""
+    state.sessionInventoryIncomeTarget=nil
     state.status="Amostras/probes limpos • aguardando nova fusão"
 end)
 
@@ -2606,6 +2607,17 @@ local function cleanup()
 end
 _G.PSICO_FUSION_SCAN_CLEANUP=cleanup
 close.Activated:Connect(cleanup)
+
+local function incomeLabel(n)
+    n=tonumber(n)
+    if not finite(n) then return "?" end
+    local a=math.abs(n)
+    if a>=1e12 then return string.format("%.2fT",n/1e12) end
+    if a>=1e9 then return string.format("%.2fB",n/1e9) end
+    if a>=1e6 then return string.format("%.2fM",n/1e6) end
+    if a>=1e3 then return string.format("%.2fK",n/1e3) end
+    return string.format("%.0f",n)
+end
 
 task.spawn(function()
     while state.alive and gui.Parent do
@@ -2668,6 +2680,14 @@ task.spawn(function()
                     o.above2xBestInput and "SIM" or "não"
                 )
             end
+            local analyticOutcome=last.analyticPredictionOutcome
+            if analyticOutcome and analyticOutcome.prediction then
+                lines[#lines+1]=string.format(
+                    "V2.8 previsto: >melhor %.1f%% | >2x %.1f%% • resultado real guardado",
+                    100*(analyticOutcome.prediction.aboveBestInput or 0),
+                    100*(analyticOutcome.prediction.above2xBestInput or 0)
+                )
+            end
         end
         local kr=state.kernelResearch.lastRun
         if kr then
@@ -2711,6 +2731,51 @@ task.spawn(function()
                         "Scale: <mínimo %.0f%% | >máximo %.0f%%",
                         100*(tonumber(p.probabilityScaleBelowInputMin) or 0),
                         100*(tonumber(p.probabilityScaleAboveInputMax) or 0)
+                    )
+                end
+
+                local an=kr.AnalyticClientBands
+                local ae=an and an.economicProjection
+                if an and an.available and ae and not ae.error then
+                    lines[#lines+1]=""
+                    lines[#lines+1]=string.format(
+                        "V2.8 • %d faixas REAIS • $/s SEM mutação (EXPERIMENTAL)",
+                        an.clientScaleRules and an.clientScaleRules.bandCount or 0
+                    )
+                    lines[#lines+1]=string.format(
+                        "Analítico: >melhor %.1f%% | >2x %.1f%% | >soma %.1f%%",
+                        100*(ae.probabilityAboveBestInput or 0),
+                        100*(ae.probabilityAbove2xBestInput or 0),
+                        100*(ae.probabilityAboveInputSum or 0)
+                    )
+                    lines[#lines+1]=string.format(
+                        "$/s: p10 %s | mediana %s | p90 %s",
+                        incomeLabel(ae.outputRateQuantiles and ae.outputRateQuantiles.p10),
+                        incomeLabel(ae.outputRateQuantiles and ae.outputRateQuantiles.p50),
+                        incomeLabel(ae.outputRateQuantiles and ae.outputRateQuantiles.p90)
+                    )
+                    lines[#lines+1]=string.format(
+                        "$/s médio estimado: %s (cauda rara incluída)",
+                        incomeLabel(ae.expectedEarningsPerSecond)
+                    )
+                    if ae.inventoryBestEarningsPerSecond and ae.probabilityAboveInventoryBest then
+                        lines[#lines+1]=string.format(
+                            "Alvo fixo %s/s: chance %.2f%%",
+                            incomeLabel(ae.inventoryBestEarningsPerSecond),
+                            100*ae.probabilityAboveInventoryBest
+                        )
+                    end
+                    local agreement=an.localDrawAgreement
+                    if agreement then
+                        lines[#lines+1]=string.format(
+                            "Diferença modelo vs 256 draws: %.1f pontos percentuais",
+                            100*(agreement.hypotheticalMeanAbsDifference or 0)
+                        )
+                    end
+                    lines[#lines+1]="Faixas/bias do cliente verificados; duplicação ainda é hipótese."
+                elseif an then
+                    lines[#lines+1]="Modelo analítico: "..tostring(
+                        an.error or (ae and ae.error) or "indisponível"
                     )
                 end
             end

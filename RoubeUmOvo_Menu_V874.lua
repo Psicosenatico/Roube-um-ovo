@@ -1,4 +1,4 @@
--- PSICOSENATICO V8.7.5 (stable V874 loader path)
+-- PSICOSENATICO V8.7.6 (stable V874 loader path)
 -- Stable loader + server-transition auto execute.
 local Players=game:GetService("Players")
 local HttpService=game:GetService("HttpService")
@@ -186,7 +186,7 @@ task.defer(function()
             if m then
                 for _,d in ipairs(m:GetDescendants())do
                     if d:IsA('TextLabel')and d.Text:find('V8.',1,true)==1 then
-                        d.Text='V8.7.5 • FUSÃO FILTROS + FAVORITOS'
+                        d.Text='V8.7.6 • FUSÃO $/S POR SLOT'
                         return
                     end
                 end

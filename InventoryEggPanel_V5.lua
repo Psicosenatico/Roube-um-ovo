@@ -1801,6 +1801,113 @@ local function fusionUpdateConfirm()
     fusionConfirmButton.BackgroundColor3 = Color3.fromRGB(42, 91, 190)
 end
 
+local function fusionPredictKey(inputs)
+    if type(inputs)~='table' or #inputs~=3 then return nil end
+    local parts={tostring(inputs[1].Category or '')}
+    for i=1,3 do
+        parts[#parts+1]=string.format('%.9f',tonumber(inputs[i].Scale) or 1)
+        parts[#parts+1]=tostring(inputs[i].Uid or '')
+    end
+    return table.concat(parts,'|')
+end
+
+local function fusionPredictQuantile(sorted,q)
+    if type(sorted)~='table' or #sorted==0 then return nil end
+    local index=math.clamp(math.floor((#sorted-1)*q+.5)+1,1,#sorted)
+    return sorted[index]
+end
+
+local function fusionPredictRate(category,scale)
+    return fusionRate({
+        Category=category,
+        AssetCategory=category,
+        Scale=tonumber(scale) or 1,
+        AssetScale=tonumber(scale) or 1,
+        Mutations={},
+    })
+end
+
+local function fusionBuildPredict(inputs)
+    local key=fusionPredictKey(inputs)
+    if not key then
+        FUSION.PredictKey=nil
+        FUSION.PredictStatus='idle'
+        FUSION.PredictData=nil
+        return nil
+    end
+    if FUSION.PredictKey==key and FUSION.PredictStatus=='pronto' then
+        return FUSION.PredictData
+    end
+    FUSION.PredictKey=key
+    FUSION.PredictStatus='calculando'
+    FUSION.PredictData=nil
+
+    if type(FuseKernel)~='table' or type(FuseKernel.DrawFusedScale)~='function' then
+        FUSION.PredictStatus='erro'
+        FUSION.PredictData={error='DrawFusedScale indisponível'}
+        return FUSION.PredictData
+    end
+
+    local category=inputs[1].Category
+    local scales={}
+    local best,worst=0,math.huge
+    for i=1,3 do
+        scales[i]=tonumber(inputs[i].Scale) or 1
+        local rate=tonumber(inputs[i].Rate) or 0
+        best=math.max(best,rate)
+        if rate>0 then worst=math.min(worst,rate) end
+    end
+    if worst==math.huge then worst=0 end
+
+    local rates,outScales={},{}
+    local belowWorst,belowBest,aboveBest,above15,above2=0,0,0,0,0
+    local requested=math.clamp(tonumber(FUSION.PredictDraws) or 256,64,1024)
+
+    for _=1,requested do
+        local ok,scale=pcall(FuseKernel.DrawFusedScale,scales)
+        if not ok then ok,scale=pcall(FuseKernel.DrawFusedScale,FuseKernel,scales) end
+        scale=ok and tonumber(scale) or nil
+        if scale then
+            local rate=tonumber(fusionPredictRate(category,scale))
+            if rate then
+                rates[#rates+1]=rate
+                outScales[#outScales+1]=scale
+                if worst>0 and rate<worst then belowWorst+=1 end
+                if best>0 and rate<best then belowBest+=1 end
+                if best>0 and rate>best then aboveBest+=1 end
+                if best>0 and rate>best*1.5 then above15+=1 end
+                if best>0 and rate>best*2 then above2+=1 end
+            end
+        end
+    end
+
+    local count=#rates
+    if count<32 then
+        FUSION.PredictStatus='erro'
+        FUSION.PredictData={error='amostras insuficientes: '..tostring(count)}
+        return FUSION.PredictData
+    end
+    table.sort(rates)
+    table.sort(outScales)
+    local function pct(v) return 100*v/count end
+
+    FUSION.PredictData={
+        draws=count,
+        probabilityBelowWorst=pct(belowWorst),
+        probabilityBelowBest=pct(belowBest),
+        probabilityAboveBest=pct(aboveBest),
+        probabilityAbove1_5x=pct(above15),
+        probabilityAbove2x=pct(above2),
+        rateP10=fusionPredictQuantile(rates,.10),
+        rateP50=fusionPredictQuantile(rates,.50),
+        rateP90=fusionPredictQuantile(rates,.90),
+        scaleP50=fusionPredictQuantile(outScales,.50),
+        scaleP90=fusionPredictQuantile(outScales,.90),
+    }
+    FUSION.PredictStatus='pronto'
+    return FUSION.PredictData
+end
+
 local function fusionSelectionSummary()
     local count = #FUSION.Selected
     fusionSlotsLabel.Text = ('Selecionados: %d/3%s'):format(

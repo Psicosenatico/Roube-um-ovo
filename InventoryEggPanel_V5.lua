@@ -1151,6 +1151,26 @@ end
 -- The same page keeps the existing server-confirmed result / predict display.
 -- ============================================================================
 
+local FUSION = {
+    Inputs = {},
+    Selected = {},
+    SortMode = 1,
+    PetQuery = '',
+    MinRateText = '',
+    MutationFilter = 1,
+    Busy = false,
+    StatusMessage = nil,
+    PendingReward = nil,
+    LastResult = nil,
+    SignalVersion = 0,
+    ProcessedSignalVersion = 0,
+    SaveRewardRef = nil,
+    ActiveSlotSignature = '',
+    RosterSignature=nil,
+    RosterCheckedAt=0,
+}
+
+
 local fusionPage = Instance.new('ScrollingFrame')
 fusionPage.Name = 'FusionPredictPageV5'
 fusionPage.BackgroundTransparency = 1
@@ -1184,16 +1204,16 @@ fusionHint.TextColor3 = Color3.fromRGB(139, 164, 207)
 local fusionSortButton = button(fusionPage, 'Ordem: $/s ↓ | Desempate: Mutação', UDim2.fromOffset(8, 58), UDim2.new(.63, -10, 0, 28))
 local fusionRefreshButton = button(fusionPage, 'Atualizar', UDim2.new(.63, 2, 0, 58), UDim2.new(.37, -10, 0, 28))
 
-local fusionPetFilterBox = textBox(fusionPage, 'Pet: nome ou espécie',
+FUSION.PetFilterBox = textBox(fusionPage, 'Pet: nome ou espécie',
     UDim2.fromOffset(8,91), UDim2.new(.55,-11,0,29))
-local fusionMinRateBox = textBox(fusionPage, '$/s mínimo: 200M',
+FUSION.MinRateBox = textBox(fusionPage, '$/s mínimo: 200M',
     UDim2.new(.55,0,0,91), UDim2.new(.45,-9,0,29))
-local fusionMutationFilterButton = button(fusionPage, 'Mutação: Todas',
+FUSION.MutationFilterButton = button(fusionPage, 'Mutação: Todas',
     UDim2.fromOffset(8,125), UDim2.new(.56,-12,0,27))
-local fusionFilterResetButton = button(fusionPage, 'LIMPAR FILTROS',
+FUSION.FilterResetButton = button(fusionPage, 'LIMPAR FILTROS',
     UDim2.new(.56,0,0,125), UDim2.new(.44,-9,0,27))
-fusionPetFilterBox.TextXAlignment = Enum.TextXAlignment.Center
-fusionMinRateBox.TextXAlignment = Enum.TextXAlignment.Center
+FUSION.PetFilterBox.TextXAlignment = Enum.TextXAlignment.Center
+FUSION.MinRateBox.TextXAlignment = Enum.TextXAlignment.Center
 
 local fusionSlotsLabel = label(fusionPage, 'Selecionados: 0/3', UDim2.fromOffset(10, 161), UDim2.new(1, -20, 0, 18), 8)
 fusionSlotsLabel.Font = Enum.Font.GothamMedium
@@ -1250,22 +1270,6 @@ fusionFoot.TextYAlignment = Enum.TextYAlignment.Top
 fusionFoot.TextColor3 = Color3.fromRGB(139, 151, 177)
 
 local FUSION_SORT_MODES = {'Mutação', 'Pet'}
-local FUSION = {
-    Inputs = {},
-    Selected = {},
-    SortMode = 1,
-    PetQuery = '',
-    MinRateText = '',
-    MutationFilter = 1,
-    Busy = false,
-    StatusMessage = nil,
-    PendingReward = nil,
-    LastResult = nil,
-    SignalVersion = 0,
-    ProcessedSignalVersion = 0,
-    SaveRewardRef = nil,
-    ActiveSlotSignature = '',
-}
 
 local ptTranslator
 local localizedFusionNames = {}
@@ -1824,7 +1828,6 @@ end
 
 local renderFusionList
 
-local fusionRosterSignature = nil
 renderFusionList = function()
     for _, child in ipairs(fusionPetList:GetChildren()) do
         if child:IsA('GuiObject') then child:Destroy() end
@@ -1843,7 +1846,7 @@ renderFusionList = function()
     local rosterIds={}
     for _,pet in ipairs(eligible) do rosterIds[#rosterIds+1]=pet.Uid end
     table.sort(rosterIds)
-    fusionRosterSignature=table.concat(rosterIds,"|")
+    FUSION.RosterSignature=table.concat(rosterIds,"|")
     -- Selection is validated against ALL eligible pets, not the filtered list.
     local currentByUid = {}
     for _,pet in ipairs(eligible) do currentByUid[pet.Uid]=pet end
@@ -2127,28 +2130,28 @@ conn(fusionSortButton.Activated, function()
     renderFusionList()
 end)
 
-conn(fusionPetFilterBox:GetPropertyChangedSignal('Text'), function()
-    FUSION.PetQuery=fusionPetFilterBox.Text
+conn(FUSION.PetFilterBox:GetPropertyChangedSignal('Text'), function()
+    FUSION.PetQuery=FUSION.PetFilterBox.Text
     if not FUSION.Busy then renderFusionList() end
 end)
-conn(fusionMinRateBox:GetPropertyChangedSignal('Text'), function()
-    FUSION.MinRateText=fusionMinRateBox.Text
+conn(FUSION.MinRateBox:GetPropertyChangedSignal('Text'), function()
+    FUSION.MinRateText=FUSION.MinRateBox.Text
     if not FUSION.Busy then renderFusionList() end
 end)
-conn(fusionMutationFilterButton.Activated, function()
+conn(FUSION.MutationFilterButton.Activated, function()
     if FUSION.Busy then return end
     FUSION.MutationFilter=FUSION.MutationFilter%3+1
-    fusionMutationFilterButton.Text=({'Mutação: Todas','Mutação: Com','Mutação: Sem'})[FUSION.MutationFilter]
+    FUSION.MutationFilterButton.Text=({'Mutação: Todas','Mutação: Com','Mutação: Sem'})[FUSION.MutationFilter]
     renderFusionList()
 end)
-conn(fusionFilterResetButton.Activated, function()
+conn(FUSION.FilterResetButton.Activated, function()
     if FUSION.Busy then return end
     FUSION.PetQuery=''
     FUSION.MinRateText=''
     FUSION.MutationFilter=1
-    fusionPetFilterBox.Text=''
-    fusionMinRateBox.Text=''
-    fusionMutationFilterButton.Text='Mutação: Todas'
+    FUSION.PetFilterBox.Text=''
+    FUSION.MinRateBox.Text=''
+    FUSION.MutationFilterButton.Text='Mutação: Todas'
     renderFusionList()
 end)
 
@@ -2460,7 +2463,6 @@ end)
 refreshBaseControls()
 
 local placementSignature = ''
-local fusionRosterCheckedAt=0
 local function inventorySignature()
     local inv = readInventoryEggs(false)
     if type(inv) ~= 'table' then return '' end
@@ -2500,15 +2502,15 @@ task.spawn(function()
 
         if fusionPage.Visible then
             refreshFusionPage()
-            if not FUSION.Busy and os.clock()-fusionRosterCheckedAt>=1.5
+            if not FUSION.Busy and os.clock()-FUSION.RosterCheckedAt>=1.5
                 and type(saveData)=="table" and type(saveData.Inventory)=="table" then
-                fusionRosterCheckedAt=os.clock()
+                FUSION.RosterCheckedAt=os.clock()
                 local eligible=fusionAvailablePets(saveData)
                 local ids={}
                 for _,pet in ipairs(eligible) do ids[#ids+1]=pet.Uid end
                 table.sort(ids)
                 local signature=table.concat(ids,"|")
-                if signature~=fusionRosterSignature then
+                if signature~=FUSION.RosterSignature then
                     renderFusionList()
                 end
             end
